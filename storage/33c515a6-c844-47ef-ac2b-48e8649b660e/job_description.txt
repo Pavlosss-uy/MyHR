@@ -1,0 +1,43 @@
+Job Title: Junior Software Engineer / Mobile Application Developer
+
+Job Description:
+
+A driven Computer Science undergraduate with strong experience in mobile application development using Flutter and solid foundations in Object-Oriented Programming and Data Structures. Skilled in designing intuitive, secure, and efficient software solutions, with hands-on experience developing real-world projects in Java, C++, and Dart.
+
+Proficient in building cross-platform applications, implementing secure systems, and managing code using Git and GitHub. Experienced in developing systems such as digital wallets, expense trackers, and league management platforms. Passionate about problem-solving, continuous learning, and contributing to collaborative development environments.
+
+Actively participates in technical communities and extracurricular activities, including game development and scouting leadership, demonstrating strong teamwork, communication, and leadership skills.
+
+Key Responsibilities:
+
+Develop and maintain mobile applications using Flutter and Dart
+
+Design and implement OOP-based systems in Java and C++
+
+Build secure and efficient software solutions
+
+Collaborate with team members using Git/GitHub
+
+Analyze requirements and translate them into functional software
+
+Test, debug, and optimize applications for performance
+
+Continuously learn new technologies and best practices
+
+Key Skills:
+
+Flutter & Dart
+
+Java, C++, C# (Basics)
+
+Object-Oriented Programming (OOP)
+
+Data Structures & Algorithms
+
+Git & GitHub
+
+SQL (Basics)
+
+Problem Solving & Analytical Thinking
+
+Communication & Team Leadership
