@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+langgraph
+langchain
+langchain-openai
+llama-index
+llama-index-embeddings-huggingface
+deepgram-sdk
+python-dotenv
+streamlit>=1.40.0
+langchain-groq

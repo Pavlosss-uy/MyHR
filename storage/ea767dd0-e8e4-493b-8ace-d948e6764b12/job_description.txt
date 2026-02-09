@@ -1,0 +1,24 @@
+Job Description: Junior Machine Learning Engineer
+About the Role
+
+We are seeking a motivated Junior Machine Learning Engineer with strong foundations in machine learning, data analysis, and applied AI. The ideal candidate has hands-on experience building end-to-end ML pipelines, working with real datasets, and translating business problems into data-driven solutions.
+
+Responsibilities
+
+Design, develop, and evaluate machine learning models for prediction, classification, and forecasting tasks
+
+Perform data preprocessing, feature engineering, and exploratory data analysis
+
+Build and optimize ML pipelines using Python and modern ML frameworks
+
+Apply supervised and unsupervised learning techniques to real-world datasets
+
+Evaluate models using appropriate metrics (MSE, R², accuracy, etc.) and cross-validation
+
+Develop data visualizations and dashboards to communicate insights effectively
+
+Collaborate with team members to deploy and improve AI-powered solutions
+
+Required Skills & Qualifications
+
+Strong proficiency
