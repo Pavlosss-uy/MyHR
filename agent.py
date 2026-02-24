@@ -32,6 +32,7 @@ class AgentState(TypedDict):
     current_search_query: str
     retrieved_context: str
     loop_count: int
+    drill_down_count: int
     last_question: str
     last_answer: str
     multimodal_analysis: dict

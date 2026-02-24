@@ -80,7 +80,9 @@ else:
                         st.session_state.messages.append({"role": "user", "content": resp["transcription"]})
                         
                         if resp.get("status") == "completed":
-                            st.success("Interview Finished!")
+                            # Make sure it grabs the transcription from the final turn!
+                            st.session_state.messages.append({"role": "user", "content": resp.get("transcription", "")})
+                            st.success("Interview Finished! Report generated.")
                             st.json(resp["report"])
                         else:
                             # Add AI Response

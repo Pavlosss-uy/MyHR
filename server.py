@@ -89,6 +89,10 @@ async def submit_answer(session_id: str = Form(...), audio: UploadFile = File(..
     current_state["multimodal_analysis"] = {"primary_emotion": dominant_tone, "full_analysis": tone_report}
     
     # --- LOGIC FIX: Explicit Routing ---
+    # Add this right before evaluating the answer
+    if "last_question" in current_state:
+        current_state["conversation_history"].append(f"AI: {current_state['last_question']}")
+    current_state["conversation_history"].append(f"Candidate: {transcription}")
     
     # A. Evaluate
     eval_out = evaluate_answer_node(current_state)
@@ -100,8 +104,22 @@ async def submit_answer(session_id: str = Form(...), audio: UploadFile = File(..
     
     if next_step == END:
         from ingest import save_interview_report
-        save_interview_report(session_id, current_state["initial_job_context"]["candidate_name"], current_state["evaluations"])
-        return {"status": "completed", "report": current_state["evaluations"]}
+        save_interview_report(...)
+        return {
+            "status": "completed", 
+            "report": current_state["evaluations"],
+        "transcription": transcription # <-- This prevents the crash!
+    }
+
+    # Add this right after deciding the next step
+    if current_state.get("next_action") == "drill_down":
+        current_state["drill_down_count"] = current_state.get("drill_down_count", 0) + 1
+        if current_state["drill_down_count"] >= 2:
+            current_state["next_action"] = "switch"
+            next_step = "rewrite"
+            current_state["drill_down_count"] = 0
+    else:
+    current_state["drill_down_count"] = 0
         
     # C. Conditional Routing (The Missing Link)
     if next_step == "generate":
