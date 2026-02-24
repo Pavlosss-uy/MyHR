@@ -146,7 +146,9 @@ def evaluate_answer_node(state: AgentState):
         "question": state["last_question"],
         "answer": state["last_answer"],
         "score": res.score,
-        "feedback": res.feedback
+        "feedback": res.feedback,
+        "tone": state.get("multimodal_analysis", {}).get("primary_emotion", "N/A"),
+        "tone_details": state.get("multimodal_analysis", {}).get("full_analysis", {})
     }
     
     return {
