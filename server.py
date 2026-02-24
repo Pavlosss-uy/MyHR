@@ -21,6 +21,16 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 session_store = {}
 
+import re
+def _clean_candidate_name(filename: str) -> str:
+    """Extract a clean candidate name from the CV filename."""
+    name = os.path.splitext(filename)[0]  # Remove extension
+    name = name.replace('_', ' ').replace('-', ' ')
+    # Remove common suffixes like CV, Resume, etc.
+    name = re.sub(r'\b(cv|resume|curriculum\s*vitae)\b', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'\s+', ' ', name).strip()  # Clean up extra spaces
+    return name if name else "Candidate"
+
 @app.post("/start_interview")
 async def start_interview(cv: UploadFile = File(...), jd: str = Form(...)):
     session_id = str(uuid.uuid4())
@@ -46,7 +56,7 @@ async def start_interview(cv: UploadFile = File(...), jd: str = Form(...)):
         "initial_job_context": {
             "jd_text": jd,
             "job_title": jd.split('\n')[0] if jd else "Position",
-            "candidate_name": cv.filename.replace('.pdf', '').replace('_', ' ') if cv.filename else "Candidate",
+            "candidate_name": _clean_candidate_name(cv.filename) if cv.filename else "Candidate",
             "cv_path": cv_path
         },
         "multimodal_analysis": {}
@@ -55,7 +65,9 @@ async def start_interview(cv: UploadFile = File(...), jd: str = Form(...)):
     result = app_graph.invoke(initial_state)
     session_store[session_id] = result
     
-    question_text = result["last_question"]
+    candidate_name = initial_state["initial_job_context"]["candidate_name"]
+    welcome = f"Hi {candidate_name}! I'm Sarah, and I'll be your interviewer today. Thanks for taking the time to chat with me. Let's get started!\n\n"
+    question_text = welcome + result["last_question"]
     audio_path = generate_audio(question_text)
     audio_url = f"http://localhost:8000/static/audio/{os.path.basename(audio_path)}" if audio_path else None
 
@@ -88,6 +100,12 @@ async def submit_answer(session_id: str = Form(...), audio: UploadFile = File(..
     current_state["last_answer"] = transcription
     current_state["multimodal_analysis"] = {"primary_emotion": dominant_tone, "full_analysis": tone_report}
     
+    # Update conversation history with the Q&A pair
+    history = current_state.get("conversation_history", [])
+    history.append(f"Interviewer: {current_state.get('last_question', '')}")
+    history.append(f"Candidate: {transcription}")
+    current_state["conversation_history"] = history
+    
     # --- LOGIC FIX: Explicit Routing ---
     
     # A. Evaluate
@@ -101,7 +119,7 @@ async def submit_answer(session_id: str = Form(...), audio: UploadFile = File(..
     if next_step == END:
         from ingest import save_interview_report
         save_interview_report(session_id, current_state["initial_job_context"]["candidate_name"], current_state["evaluations"])
-        return {"status": "completed", "report": current_state["evaluations"]}
+        return {"status": "completed", "report": current_state["evaluations"], "transcription": transcription}
         
     # C. Conditional Routing (The Missing Link)
     if next_step == "generate":
@@ -111,16 +129,23 @@ async def submit_answer(session_id: str = Form(...), audio: UploadFile = File(..
         pass 
     else:
         # SWITCH / CONTINUE: Find new context.
-        # 1. Rewrite Query (Missing in your previous code)
-        print("🔄 Action: Switching Topic (Rewriting & Retrieving)")
+        # 1. Rewrite Query
+        print(f"🔄 Action: {current_state.get('next_action', 'continue').title()} (Rewriting & Retrieving)")
         rewrite_out = rewrite_query_node(current_state)
         current_state.update(rewrite_out)
+        
+        # Update topic so we don't stay on the same one
+        current_state["current_topic"] = rewrite_out.get("current_search_query", current_state["current_topic"])
         
         # 2. Retrieve
         retrieve_out = retrieve_node(current_state)
         current_state.update(retrieve_out)
     
     # D. Generate Question
+    # Provide list of already-asked questions to avoid repetition
+    asked = [e["question"] for e in current_state.get("evaluations", [])]
+    current_state["conversation_history"].append(f"[SYSTEM: Already asked questions: {asked}. Do NOT repeat these.]")
+    
     gen_out = generate_question_node(current_state)
     current_state.update(gen_out)
     
