@@ -23,7 +23,7 @@ const Navbar = () => {
                         <Brain className="w-5 h-5 text-primary-foreground" />
                     </div>
                     <span className="text-lg font-bold text-foreground tracking-tight">
-                        Interv<span className="text-cobalt-light">AI</span>
+                        My<span className="text-cobalt-light">HR</span>
                     </span>
                 </Link>
 

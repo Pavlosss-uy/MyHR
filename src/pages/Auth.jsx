@@ -52,7 +52,7 @@ const Auth = () => {
                                 <Brain className="w-5 h-5 text-primary-foreground" />
                             </div>
                             <span className="text-xl font-bold text-foreground">
-                                Interv<span className="text-cobalt-light">AI</span>
+                                My<span className="text-cobalt-light">HR</span>
                             </span>
                         </Link>
                         <p className="text-sm text-muted-foreground">
