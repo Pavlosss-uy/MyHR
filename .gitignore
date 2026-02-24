@@ -1,18 +1,24 @@
-# Environment variables (Crucial for keeping API keys secure)
-.env
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Python compilation files
-__pycache__/
-*.pyc
+node_modules
+dist
+dist-ssr
+*.local
 
-# Candidate uploads (CVs and recorded audio answers)
-uploads/
-
-# LlamaIndex / Vector DB storage (Indexes, graphs, docstores)
-storage/
-
-# Generated TTS audio files
-static/audio/
-
-# Generated markdown interview reports
-reports/
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
