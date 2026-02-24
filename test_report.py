@@ -20,26 +20,32 @@ mock_evaluations = [
     {
         "question": "Tell me about your experience with Python.",
         "answer": "I have used Python for 5 years, mostly with Django and Flask.",
-        "score": 8,
-        "feedback": "Good experience but lacked details on async."
+        "score": 78,
+        "feedback": "Good experience but lacked details on async.",
+        "tone": "Neutral",
+        "tone_details": {"neu": "72.3%", "hap": "15.1%", "ang": "2.4%", "sad": "10.2%"}
     },
     {
         "question": "How do you handle memory leaks?",
         "answer": "I don't really know, I just restart the server.",
-        "score": 2,
-        "feedback": "Poor answer. Restarting is not a fix."
+        "score": 15,
+        "feedback": "Poor answer. Restarting is not a fix.",
+        "tone": "Sad",
+        "tone_details": {"neu": "20.1%", "hap": "5.3%", "ang": "8.9%", "sad": "65.7%"}
     },
     {
         "question": "Explain RAG architecture.",
         "answer": "Retrieval Augmented Generation uses a vector DB to fetch context.",
-        "score": 9,
-        "feedback": "Excellent and concise definition."
+        "score": 88,
+        "feedback": "Excellent and concise definition.",
+        "tone": "Happy",
+        "tone_details": {"neu": "30.5%", "hap": "55.2%", "ang": "1.1%", "sad": "13.2%"}
     }
 ]
 
 mock_tone_analysis = {
-    "primary_emotion": "Calm",
-    "full_analysis": "The candidate sounded confident but hesitant on question 2."
+    "primary_emotion": "Neutral",
+    "full_analysis": "The candidate showed varied emotional responses across the interview."
 }
 
 print("🚀 Generating Report... Please wait.")

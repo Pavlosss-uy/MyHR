@@ -1,0 +1,18 @@
+# Environment variables (Crucial for keeping API keys secure)
+.env
+
+# Python compilation files
+__pycache__/
+*.pyc
+
+# Candidate uploads (CVs and recorded audio answers)
+uploads/
+
+# LlamaIndex / Vector DB storage (Indexes, graphs, docstores)
+storage/
+
+# Generated TTS audio files
+static/audio/
+
+# Generated markdown interview reports
+reports/
