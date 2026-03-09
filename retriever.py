@@ -17,36 +17,38 @@ from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core.postprocessor import SentenceTransformerRerank
 from ingest import get_session_index
 
+# 👇 CACHE THE MODEL IN MEMORY 👇
+_reranker = None
+
+def get_reranker():
+    global _reranker
+    if _reranker is None:
+        print("🧠 Loading Cross-Encoder Reranker into memory...")
+        _reranker = SentenceTransformerRerank(
+            model="cross-encoder/ms-marco-MiniLM-L-12-v2", 
+            top_n=3
+        )
+    return _reranker
+
 def get_retriever_pipeline(session_id: str):
-    # 1. Load the specific session index from Pinecone
     index = get_session_index(session_id)
     if not index:
         raise ValueError(f"No index found for session {session_id}")
-        
-    # 2. Dense Vector Retriever (Replacing local BM25)
     vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=5)
-    
     return vector_retriever
 
 def retrieve_context(session_id: str, query: str):
-    # Pass session_id to get the correct retriever
     retriever = get_retriever_pipeline(session_id)
-    
-    # Run Retrieval
     nodes = retriever.retrieve(query)
     
-    # 3. Rerank (Cross-Encoder) - Keeps precision extremely high!
-    reranker = SentenceTransformerRerank(
-        model="cross-encoder/ms-marco-MiniLM-L-12-v2", 
-        top_n=3
-    )
+    # 👇 USE THE CACHED MODEL 👇
+    reranker = get_reranker()
     
     reranked_nodes = reranker.postprocess_nodes(
         nodes, 
         query_bundle=QueryBundle(query)
     )
     
-    # Format Output
     results = []
     for node in reranked_nodes:
         results.append(f"[Score: {node.score:.4f}] {node.text}")

@@ -102,6 +102,6 @@ REQUIRED JSON OUTPUT:
 {{
     "score": 0,                
     "feedback": "string",      
-    "topic_status": "string"   // "switch" (if good), "drill_down" (if vague/bad).
+    "topic_status": "string"   // "continue" (if adequate), "switch" (if good), "drill_down" (if vague/bad).
 }}
 """)

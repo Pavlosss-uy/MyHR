@@ -79,6 +79,8 @@ async def start_interview(
     
     # 6. Run LangGraph Agent
     result = app_graph.invoke(initial_state)
+
+    result["conversation_history"].append(f"AI: {result['last_question']}")
     
     # 7. SAVE TO POSTGRESQL DATABASE (Task 1.1 Achieved)
     # Replaces: session_store[session_id] = result
