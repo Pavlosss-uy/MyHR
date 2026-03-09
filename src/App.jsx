@@ -4,6 +4,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
+import ProtectedRoute from "@/components/ProtectedRoute";
+import Welcome from "./pages/Welcome";
 import Landing from "./pages/Landing";
 import Auth from "./pages/Auth";
 import GoogleAuthCallback from "./pages/GoogleAuthCallback";
@@ -29,19 +31,23 @@ const App = () => (
                 <Sonner />
                 <BrowserRouter>
                     <Routes>
-                        <Route path="/" element={<Landing />} />
+                        {/* Public routes */}
+                        <Route path="/" element={<Welcome />} />
                         <Route path="/auth" element={<Auth />} />
                         <Route path="/auth/callback/google" element={<GoogleAuthCallback />} />
                         <Route path="/auth/callback/linkedin" element={<LinkedInAuthCallback />} />
-                        <Route path="/hr/dashboard" element={<HRDashboard />} />
-                        <Route path="/hr/jobs" element={<JobManagement />} />
-                        <Route path="/hr/analytics" element={<Analytics />} />
-                        <Route path="/hr/candidate/:id" element={<CandidateProfile />} />
-                        <Route path="/candidate" element={<CandidateHome />} />
-                        <Route path="/candidate/history" element={<InterviewHistory />} />
-                        <Route path="/interview" element={<InterviewRoom />} />
-                        <Route path="/feedback" element={<FeedbackReport />} />
-                        <Route path="/settings" element={<Settings />} />
+
+                        {/* Protected routes — require login */}
+                        <Route path="/home" element={<ProtectedRoute><Landing /></ProtectedRoute>} />
+                        <Route path="/hr/dashboard" element={<ProtectedRoute><HRDashboard /></ProtectedRoute>} />
+                        <Route path="/hr/jobs" element={<ProtectedRoute><JobManagement /></ProtectedRoute>} />
+                        <Route path="/hr/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+                        <Route path="/hr/candidate/:id" element={<ProtectedRoute><CandidateProfile /></ProtectedRoute>} />
+                        <Route path="/candidate" element={<ProtectedRoute><CandidateHome /></ProtectedRoute>} />
+                        <Route path="/candidate/history" element={<ProtectedRoute><InterviewHistory /></ProtectedRoute>} />
+                        <Route path="/interview" element={<ProtectedRoute><InterviewRoom /></ProtectedRoute>} />
+                        <Route path="/feedback" element={<ProtectedRoute><FeedbackReport /></ProtectedRoute>} />
+                        <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
                         <Route path="*" element={<NotFound />} />
                     </Routes>
                 </BrowserRouter>

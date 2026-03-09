@@ -1,9 +1,26 @@
-import { motion } from "framer-motion";
-import { Link } from "react-router-dom";
+import { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Link, useNavigate } from "react-router-dom";
 import Navbar from "@/components/Navbar";
 import CircularProgress from "@/components/CircularProgress";
 import { Button } from "@/components/ui/button";
-import { Mic, Clock, TrendingUp, Trophy, ArrowRight, Play, Star } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+    Mic,
+    Clock,
+    TrendingUp,
+    Trophy,
+    ArrowRight,
+    Play,
+    Star,
+    Upload,
+    FileText,
+    X,
+    Briefcase,
+    Loader2,
+    CheckCircle2,
+} from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 const pastInterviews = [
@@ -15,7 +32,34 @@ const pastInterviews = [
 
 const CandidateHome = () => {
     const { user } = useAuth();
+    const navigate = useNavigate();
     const displayName = user?.name || "there";
+
+    // Modal state
+    const [showSetupModal, setShowSetupModal] = useState(false);
+    const [cvFile, setCvFile] = useState(null);
+    const [jobDescription, setJobDescription] = useState("");
+    const [isStarting, setIsStarting] = useState(false);
+
+    const handleCvUpload = (e) => {
+        const file = e.target.files?.[0];
+        if (file && file.type === "application/pdf") {
+            setCvFile(file);
+        }
+    };
+
+    const handleRemoveCv = () => {
+        setCvFile(null);
+    };
+
+    const handleStartInterview = async () => {
+        setIsStarting(true);
+        // Mock delay — later this will send CV + JD to the backend
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        setIsStarting(false);
+        setShowSetupModal(false);
+        navigate("/interview");
+    };
 
     return (
         <div className="min-h-screen bg-background">
@@ -46,12 +90,10 @@ const CandidateHome = () => {
                                 <Button
                                     size="lg"
                                     className="bg-card text-primary hover:bg-card/90 shadow-lg"
-                                    asChild
+                                    onClick={() => setShowSetupModal(true)}
                                 >
-                                    <Link to="/interview">
-                                        <Mic className="w-4 h-4 mr-2" />
-                                        Start Mock Interview
-                                    </Link>
+                                    <Mic className="w-4 h-4 mr-2" />
+                                    Start Mock Interview
                                 </Button>
                                 <Button
                                     variant="ghost"
@@ -168,8 +210,13 @@ const CandidateHome = () => {
                             <h3 className="font-semibold text-foreground mb-6">Interview Readiness</h3>
                             <CircularProgress value={78} size={160} strokeWidth={10} color="cobalt" />
                             <p className="text-sm text-muted-foreground mt-4">Your readiness score is based on recent performance and practice frequency.</p>
-                            <Button variant="hero" size="sm" className="mt-4 w-full" asChild>
-                                <Link to="/interview">Improve Score</Link>
+                            <Button
+                                variant="hero"
+                                size="sm"
+                                className="mt-4 w-full"
+                                onClick={() => setShowSetupModal(true)}
+                            >
+                                Improve Score
                             </Button>
                         </motion.div>
 
@@ -209,6 +256,163 @@ const CandidateHome = () => {
                     </div>
                 </div>
             </main>
+
+            {/* ─── Interview Setup Modal ─── */}
+            <AnimatePresence>
+                {showSetupModal && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) setShowSetupModal(false);
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                            transition={{ duration: 0.25 }}
+                            className="w-full max-w-lg bg-card rounded-2xl border border-border shadow-cobalt-lg overflow-hidden"
+                        >
+                            {/* Header */}
+                            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-9 h-9 rounded-xl gradient-cobalt flex items-center justify-center shadow-cobalt">
+                                        <Mic className="w-4 h-4 text-primary-foreground" />
+                                    </div>
+                                    <div>
+                                        <h2 className="text-lg font-semibold text-foreground">Setup Your Interview</h2>
+                                        <p className="text-xs text-muted-foreground">Upload your CV and provide the job description</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setShowSetupModal(false)}
+                                    className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                                >
+                                    <X className="w-4 h-4" />
+                                </button>
+                            </div>
+
+                            {/* Body */}
+                            <div className="px-6 py-5 space-y-5">
+                                {/* CV Upload */}
+                                <div className="space-y-2">
+                                    <Label className="text-sm font-medium text-foreground flex items-center gap-2">
+                                        <Upload className="w-4 h-4 text-cobalt-light" />
+                                        Upload Your CV (PDF)
+                                    </Label>
+                                    {cvFile ? (
+                                        <div className="flex items-center gap-3 p-3 rounded-xl border border-mint/30 bg-mint/5">
+                                            <div className="w-10 h-10 rounded-lg bg-mint/15 flex items-center justify-center">
+                                                <FileText className="w-5 h-5 text-mint" />
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-medium text-foreground truncate">{cvFile.name}</p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {(cvFile.size / 1024).toFixed(1)} KB · PDF
+                                                </p>
+                                            </div>
+                                            <button
+                                                onClick={handleRemoveCv}
+                                                className="w-7 h-7 rounded-full flex items-center justify-center text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+                                            >
+                                                <X className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <label className="flex flex-col items-center gap-2 p-6 rounded-xl border-2 border-dashed border-border hover:border-cobalt-lighter/40 hover:bg-muted/30 cursor-pointer transition-all">
+                                            <div className="w-12 h-12 rounded-xl bg-cobalt/10 flex items-center justify-center">
+                                                <Upload className="w-5 h-5 text-cobalt-light" />
+                                            </div>
+                                            <div className="text-center">
+                                                <p className="text-sm font-medium text-foreground">Click to upload PDF</p>
+                                                <p className="text-xs text-muted-foreground mt-0.5">or drag and drop</p>
+                                            </div>
+                                            <input
+                                                type="file"
+                                                accept=".pdf,application/pdf"
+                                                onChange={handleCvUpload}
+                                                className="hidden"
+                                            />
+                                        </label>
+                                    )}
+                                </div>
+
+                                {/* Job Description */}
+                                <div className="space-y-2">
+                                    <Label className="text-sm font-medium text-foreground flex items-center gap-2">
+                                        <Briefcase className="w-4 h-4 text-cobalt-light" />
+                                        Job Description
+                                    </Label>
+                                    <textarea
+                                        value={jobDescription}
+                                        onChange={(e) => setJobDescription(e.target.value)}
+                                        placeholder="Paste the job description here... e.g. responsibilities, required skills, qualifications"
+                                        rows={5}
+                                        className="w-full rounded-xl border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none leading-relaxed"
+                                    />
+                                    <p className="text-xs text-muted-foreground">
+                                        Our AI will extract key competencies and generate tailored interview questions.
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Footer */}
+                            <div className="px-6 py-4 border-t border-border bg-muted/20 flex items-center justify-between">
+                                <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                                    <span className="flex items-center gap-1">
+                                        {cvFile ? (
+                                            <CheckCircle2 className="w-3.5 h-3.5 text-mint" />
+                                        ) : (
+                                            <div className="w-3.5 h-3.5 rounded-full border border-border" />
+                                        )}
+                                        CV
+                                    </span>
+                                    <span className="flex items-center gap-1">
+                                        {jobDescription.trim().length > 10 ? (
+                                            <CheckCircle2 className="w-3.5 h-3.5 text-mint" />
+                                        ) : (
+                                            <div className="w-3.5 h-3.5 rounded-full border border-border" />
+                                        )}
+                                        Job Description
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setShowSetupModal(false)}
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        variant="hero"
+                                        size="sm"
+                                        onClick={handleStartInterview}
+                                        disabled={isStarting || !cvFile || jobDescription.trim().length < 10}
+                                        className="gap-2"
+                                        title={!cvFile || jobDescription.trim().length < 10 ? "Please upload a CV and enter a job description" : ""}
+                                    >
+                                        {isStarting ? (
+                                            <>
+                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                Preparing...
+                                            </>
+                                        ) : (
+                                            <>
+                                                Start Interview
+                                                <ArrowRight className="w-4 h-4" />
+                                            </>
+                                        )}
+                                    </Button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
         </div>
     );
 };
