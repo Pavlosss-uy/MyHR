@@ -1,8 +1,9 @@
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Brain, Menu, X } from "lucide-react";
+import { Brain, Menu, X, LogOut } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
 const navLinks = [
     { label: "For HR", href: "/hr/dashboard" },
@@ -14,6 +15,25 @@ const navLinks = [
 const Navbar = () => {
     const [mobileOpen, setMobileOpen] = useState(false);
     const location = useLocation();
+    const navigate = useNavigate();
+    const { user, isAuthenticated, logout } = useAuth();
+
+    const handleLogout = () => {
+        logout();
+        navigate("/");
+    };
+
+    // Get user initials for avatar
+    const getInitials = (name) => {
+        if (!name) return "U";
+        const parts = name.trim().split(" ");
+        if (parts.length >= 2) {
+            return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+        }
+        return name[0].toUpperCase();
+    };
+
+    const firstName = user?.name?.split(" ")[0] || "User";
 
     return (
         <nav className="fixed top-0 left-0 right-0 z-50 glass">
@@ -45,12 +65,37 @@ const Navbar = () => {
                 </div>
 
                 <div className="hidden md:flex items-center gap-3">
-                    <Button variant="ghost" size="sm" asChild>
-                        <Link to="/auth">Sign In</Link>
-                    </Button>
-                    <Button variant="hero" size="sm" asChild>
-                        <Link to="/auth?mode=signup">Get Started</Link>
-                    </Button>
+                    {isAuthenticated ? (
+                        <>
+                            <div className="flex items-center gap-2.5">
+                                {user?.picture ? (
+                                    <img
+                                        src={user.picture}
+                                        alt={user.name}
+                                        className="w-8 h-8 rounded-full object-cover border-2 border-cobalt/20"
+                                    />
+                                ) : (
+                                    <div className="w-8 h-8 rounded-full gradient-cobalt flex items-center justify-center text-xs font-bold text-primary-foreground">
+                                        {getInitials(user?.name)}
+                                    </div>
+                                )}
+                                <span className="text-sm font-medium text-foreground">{firstName}</span>
+                            </div>
+                            <Button variant="ghost" size="sm" onClick={handleLogout} className="gap-1.5 text-muted-foreground hover:text-foreground">
+                                <LogOut className="w-4 h-4" />
+                                Sign Out
+                            </Button>
+                        </>
+                    ) : (
+                        <>
+                            <Button variant="ghost" size="sm" asChild>
+                                <Link to="/auth">Sign In</Link>
+                            </Button>
+                            <Button variant="hero" size="sm" asChild>
+                                <Link to="/auth?mode=signup">Get Started</Link>
+                            </Button>
+                        </>
+                    )}
                 </div>
 
                 <button
@@ -74,12 +119,37 @@ const Navbar = () => {
                         </Link>
                     ))}
                     <div className="pt-2 flex flex-col gap-2">
-                        <Button variant="ghost" size="sm" asChild>
-                            <Link to="/auth" onClick={() => setMobileOpen(false)}>Sign In</Link>
-                        </Button>
-                        <Button variant="hero" size="sm" asChild>
-                            <Link to="/auth?mode=signup" onClick={() => setMobileOpen(false)}>Get Started</Link>
-                        </Button>
+                        {isAuthenticated ? (
+                            <>
+                                <div className="flex items-center gap-2.5 px-4 py-2">
+                                    {user?.picture ? (
+                                        <img
+                                            src={user.picture}
+                                            alt={user.name}
+                                            className="w-8 h-8 rounded-full object-cover border-2 border-cobalt/20"
+                                        />
+                                    ) : (
+                                        <div className="w-8 h-8 rounded-full gradient-cobalt flex items-center justify-center text-xs font-bold text-primary-foreground">
+                                            {getInitials(user?.name)}
+                                        </div>
+                                    )}
+                                    <span className="text-sm font-medium text-foreground">{firstName}</span>
+                                </div>
+                                <Button variant="ghost" size="sm" onClick={() => { handleLogout(); setMobileOpen(false); }} className="gap-1.5">
+                                    <LogOut className="w-4 h-4" />
+                                    Sign Out
+                                </Button>
+                            </>
+                        ) : (
+                            <>
+                                <Button variant="ghost" size="sm" asChild>
+                                    <Link to="/auth" onClick={() => setMobileOpen(false)}>Sign In</Link>
+                                </Button>
+                                <Button variant="hero" size="sm" asChild>
+                                    <Link to="/auth?mode=signup" onClick={() => setMobileOpen(false)}>Get Started</Link>
+                                </Button>
+                            </>
+                        )}
                     </div>
                 </div>
             )}

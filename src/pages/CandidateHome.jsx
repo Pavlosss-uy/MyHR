@@ -4,6 +4,7 @@ import Navbar from "@/components/Navbar";
 import CircularProgress from "@/components/CircularProgress";
 import { Button } from "@/components/ui/button";
 import { Mic, Clock, TrendingUp, Trophy, ArrowRight, Play, Star } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 
 const pastInterviews = [
     { id: 1, role: "Senior Frontend Developer", company: "TechCorp", date: "Feb 5, 2026", score: 88, duration: "22 min" },
@@ -13,6 +14,9 @@ const pastInterviews = [
 ];
 
 const CandidateHome = () => {
+    const { user } = useAuth();
+    const displayName = user?.name || "there";
+
     return (
         <div className="min-h-screen bg-background">
             <Navbar />
@@ -22,7 +26,7 @@ const CandidateHome = () => {
                     animate={{ opacity: 1, y: 0 }}
                     className="mb-8"
                 >
-                    <h1 className="text-2xl font-bold text-foreground">Welcome back, Alex 👋</h1>
+                    <h1 className="text-2xl font-bold text-foreground">Welcome back, {displayName} 👋</h1>
                     <p className="text-muted-foreground mt-1">Track your progress and practice for your next interview.</p>
                 </motion.div>
 

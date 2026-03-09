@@ -9,6 +9,7 @@ import { Slider } from "@/components/ui/slider";
 import { User, Bell, Mic, CreditCard, Shield, ChevronRight, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 
 const tabs = [
     { id: "profile", label: "Profile", icon: User },
@@ -28,6 +29,16 @@ const Settings = () => {
     const [activeTab, setActiveTab] = useState("profile");
     const [sensitivity, setSensitivity] = useState([70]);
     const { toast } = useToast();
+    const { user } = useAuth();
+
+    // Parse user name into first/last
+    const nameParts = (user?.name || "").trim().split(" ");
+    const firstName = nameParts[0] || "";
+    const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
+    const userEmail = user?.email || "";
+    const initials = firstName && lastName
+        ? (firstName[0] + lastName[0]).toUpperCase()
+        : firstName ? firstName[0].toUpperCase() : "U";
 
     const handleSaveProfile = () => {
         toast({
@@ -93,9 +104,13 @@ const Settings = () => {
                                 </div>
                                 <div className="p-5 space-y-5">
                                     <div className="flex items-center gap-4">
-                                        <div className="w-16 h-16 rounded-full gradient-cobalt flex items-center justify-center text-xl font-bold text-primary-foreground">
-                                            AD
-                                        </div>
+                                        {user?.picture ? (
+                                            <img src={user.picture} alt={user.name} className="w-16 h-16 rounded-full object-cover border-2 border-cobalt/20" />
+                                        ) : (
+                                            <div className="w-16 h-16 rounded-full gradient-cobalt flex items-center justify-center text-xl font-bold text-primary-foreground">
+                                                {initials}
+                                            </div>
+                                        )}
                                         <div>
                                             <Button variant="outline" size="sm">Change Photo</Button>
                                             <p className="text-xs text-muted-foreground mt-1">JPG, PNG. Max 5MB.</p>
@@ -104,15 +119,15 @@ const Settings = () => {
                                     <div className="grid sm:grid-cols-2 gap-4">
                                         <div className="space-y-2">
                                             <Label>First Name</Label>
-                                            <Input defaultValue="Alex" />
+                                            <Input defaultValue={firstName} />
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Last Name</Label>
-                                            <Input defaultValue="Developer" />
+                                            <Input defaultValue={lastName} />
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Email</Label>
-                                            <Input type="email" defaultValue="alex@company.com" />
+                                            <Input type="email" defaultValue={userEmail} />
                                         </div>
                                         <div className="space-y-2">
                                             <Label>Role</Label>
