@@ -9,3 +9,8 @@ llama-index-embeddings-huggingface
 deepgram-sdk
 python-dotenv
 streamlit>=1.40.0
+sqlalchemy
+psycopg2-binary
+boto3
+pinecone-client 
+llama-index-vector-stores-pinecone

@@ -3,16 +3,16 @@ from typing import TypedDict, List, Literal, Dict
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
+from langchain_groq import ChatGroq
 
 # Import your custom modules
-from ingest import get_session_retriever
 from retriever import retrieve_context
 from prompts import (
     COT_QUESTION_PROMPT, 
     RUBRIC_PROMPT, 
     REWRITE_QUERY_PROMPT, 
     GRADE_CONTEXT_PROMPT,
-    DRILL_DOWN_PROMPT  # <--- Ensure this is imported
+    DRILL_DOWN_PROMPT  
 )
 
 # --- State Definitions (Unchanged) ---
@@ -39,11 +39,11 @@ class AgentState(TypedDict):
     evaluations: List[dict]
     next_action: str
 
+
 # --- LLM CONFIGURATION ---
-llm = ChatOpenAI(
+llm = ChatGroq(
     model="llama-3.3-70b-versatile", 
-    openai_api_key=os.getenv("GROQ_API_KEY"),
-    openai_api_base="https://api.groq.com/openai/v1",
+    api_key=os.getenv("GROQ_API_KEY"),
     temperature=0.3
 )
 

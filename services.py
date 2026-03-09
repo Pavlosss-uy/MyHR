@@ -63,3 +63,30 @@ def generate_audio(text: str) -> str:
     except Exception as e:
         print(f"TTS Error: {e}")
         return None
+
+def transcribe_audio_url(audio_url: str) -> str:
+    """STT: Converts Audio -> Text using Deepgram API via a public URL."""
+    if not DEEPGRAM_API_KEY:
+        print("❌ Deepgram API Key missing.")
+        return ""
+
+    url = "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&language=en"
+    headers = {
+        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # Deepgram accepts a JSON payload with the URL
+    payload = {"url": audio_url}
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Extract transcript safely
+        return data["results"]["channels"][0]["alternatives"][0]["transcript"]
+            
+    except Exception as e:
+        print(f"STT Error: {e}")
+        return ""
