@@ -66,153 +66,114 @@ def get_session_retriever(session_id: str):
 
 def save_interview_report(session_id: str, candidate_name: str, report_data: list):
     """
-    Saves the structured interview data back into the index for future retrieval.
-    Also generates a readable markdown report file automatically.
-    Research Ref: Section 7.3 
+    Saves the structured interview data back into the index for future retrieval,
+    AND saves a readable Markdown report file to the reports/ folder.
     """
+    # --- 1. Save to Vector Index (existing behavior) ---
     index = get_session_index(session_id)
-    if not index:
-        return
-
-    # Convert the full report list to a JSON string
-    text_content = json.dumps(report_data, indent=2)
+    if index:
+        text_content = json.dumps(report_data, indent=2)
+        report_doc = Document(
+            text=f"INTERVIEW REPORT FOR {candidate_name}\nDATE: {datetime.now()}\n\n{text_content}",
+            metadata={
+                "type": "interview_report",
+                "session_id": session_id,
+                "candidate_name": candidate_name,
+                "date": str(datetime.now().date())
+            }
+        )
+        index.insert(report_doc)
+        index.storage_context.persist(persist_dir=os.path.join(STORAGE_DIR, session_id))
     
-    # Create a document with rich metadata
-    report_doc = Document(
-        text=f"INTERVIEW REPORT FOR {candidate_name}\nDATE: {datetime.now()}\n\n{text_content}",
-        metadata={
-            "type": "interview_report",
-            "session_id": session_id,
-            "candidate_name": candidate_name,
-            "date": str(datetime.now().date())
-        }
-    )
-    
-    # Insert into the existing index
-    index.insert(report_doc)
-    
-    # Persist changes to disk
-    index.storage_context.persist(persist_dir=os.path.join(STORAGE_DIR, session_id))
-    
-    # === AUTO-GENERATE READABLE MARKDOWN REPORT ===
-    # Save reports in a separate folder (not in session folder with JSON)
-    reports_dir = os.path.join(os.path.dirname(STORAGE_DIR), "reports")
+    # --- 2. Save readable Markdown report file ---
+    reports_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
     os.makedirs(reports_dir, exist_ok=True)
     
-    # Create readable filename with candidate name and date
-    safe_name = candidate_name.replace(" ", "_").replace("/", "-")[:30]
-    report_filename = f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-    report_path = os.path.join(reports_dir, report_filename)
+    date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    safe_name = candidate_name.replace(' ', '_')
+    filename = f"{safe_name}_{date_str}.md"
+    filepath = os.path.join(reports_dir, filename)
     
-    try:
-        md_content = f"# Interview Report for {candidate_name}\n\n"
-        md_content += f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-        md_content += f"**Session ID:** {session_id}\n\n"
-        md_content += "---\n\n"
+    # Calculate stats
+    scores = [e.get("score", 0) for e in report_data]
+    avg_score = sum(scores) / len(scores) if scores else 0
+    tones = [e.get("tone", "N/A") for e in report_data]
+    
+    # Determine recommendation
+    if avg_score >= 75:
+        recommendation = "✅ STRONG HIRE"
+        rec_summary = "The candidate demonstrated strong technical competency and clear communication throughout the interview."
+    elif avg_score >= 55:
+        recommendation = "⚠️ CONDITIONAL HIRE"
+        rec_summary = "The candidate showed promise in several areas but needs improvement in others. Consider with additional evaluation or onboarding support."
+    else:
+        recommendation = "❌ NO HIRE"
+        rec_summary = "The candidate did not meet the minimum requirements for this role based on the interview performance."
+    
+    # Build Markdown content
+    md = f"# 📋 Interview Report: {candidate_name}\n\n"
+    md += f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+    md += f"**Average Score:** {avg_score:.1f}/100\n\n"
+    md += "---\n\n"
+    
+    # Executive Summary
+    md += "## 📝 Executive Summary\n\n"
+    md += f"**Recommendation:** {recommendation}\n\n"
+    md += f"{rec_summary}\n\n"
+    md += "---\n\n"
+    
+    # Detailed Q&A with Tone
+    md += "## 🎯 Detailed Interview Analysis\n\n"
+    for i, entry in enumerate(report_data, 1):
+        score = entry.get("score", "N/A")
+        tone = entry.get("tone", "N/A")
+        tone_details = entry.get("tone_details", {})
         
-        total_score = 0
-        tone_counts = {}  # Track tone occurrences
-        
-        for i, item in enumerate(report_data, 1):
-            question = item.get("question", "N/A")
-            answer = item.get("answer", "N/A")
-            score = item.get("score", 0)
-            feedback = item.get("feedback", "N/A")
-            tone = item.get("tone", "Neutral")
-            total_score += score
-            
-            # Count tones for summary
-            tone_counts[tone] = tone_counts.get(tone, 0) + 1
-            
-            md_content += f"## Question {i}\n\n"
-            md_content += f"**Q:** {question}\n\n"
-            md_content += f"**A:** {answer}\n\n"
-            md_content += f"**Score:** {score}/100 | **Tone:** {tone}\n\n"
-            md_content += f"**Feedback:** {feedback}\n\n"
-            md_content += "---\n\n"
-        
-        # Summary table with scores
-        avg_score = total_score / len(report_data) if report_data else 0
-        md_content += "## Summary\n\n"
-        md_content += "### Scores\n\n"
-        md_content += "| Question | Score | Tone |\n"
-        md_content += "|----------|-------|------|\n"
-        for i, item in enumerate(report_data, 1):
-            md_content += f"| Q{i} | {item.get('score', 0)} | {item.get('tone', 'Neutral')} |\n"
-        md_content += f"| **Average** | **{avg_score:.1f}** | - |\n\n"
-        
-        # Tone Analysis Summary
-        md_content += "### Voice Tone Analysis\n\n"
-        if tone_counts:
-            dominant_tone = max(tone_counts, key=tone_counts.get)
-            md_content += f"**Dominant Emotion:** {dominant_tone}\n\n"
-            md_content += "**Tone Distribution:**\n"
-            for tone, count in sorted(tone_counts.items(), key=lambda x: -x[1]):
-                percentage = (count / len(report_data)) * 100
-                md_content += f"- {tone}: {count} questions ({percentage:.0f}%)\n"
+        # Score emoji
+        if isinstance(score, (int, float)):
+            score_emoji = "🟢" if score >= 70 else "🟡" if score >= 40 else "🔴"
         else:
-            md_content += "No tone data available.\n"
+            score_emoji = "⚪"
         
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write(md_content)
+        md += f"### Question {i} {score_emoji}\n\n"
+        md += f"**Q:** {entry.get('question', 'N/A')}\n\n"
+        md += f"**A:** {entry.get('answer', 'N/A')}\n\n"
+        md += f"**Score:** {score}/100 | **Tone:** {tone}\n\n"
+        md += f"**Feedback:** {entry.get('feedback', 'N/A')}\n\n"
         
-        print(f"📄 Markdown report saved: {report_path}")
-    except Exception as e:
-        print(f"Warning: Could not generate markdown report: {e}")
-    
-    print(f"✅ Interview Report saved for session {session_id}")
-
-
-def get_candidate_history(candidate_name: str) -> str:
-    """
-    Queries vector DB for past interview reports for this candidate.
-    Research Ref: Section 7.3 - Longitudinal Memory
-    
-    Args:
-        candidate_name: Name of the candidate to search for.
+        # Tone details if available
+        if tone_details and isinstance(tone_details, dict):
+            md += "**Tone Breakdown:** "
+            tone_parts = [f"{k}: {v}" for k, v in tone_details.items()]
+            md += " | ".join(tone_parts) + "\n\n"
         
-    Returns:
-        str: Summary of past weak points, or empty string if no history.
-    """
-    # Search all session directories for matching candidate reports
-    if not os.path.exists(STORAGE_DIR):
-        return ""
+        md += "---\n\n"
     
-    past_reports = []
+    # Tone Analysis Summary
+    md += "## 🎭 Behavioral & Communication Insights\n\n"
+    tone_counts = {}
+    for t in tones:
+        tone_counts[t] = tone_counts.get(t, 0) + 1
+    dominant_tone = max(tone_counts, key=tone_counts.get) if tone_counts else "N/A"
     
-    for session_dir in os.listdir(STORAGE_DIR):
-        session_path = os.path.join(STORAGE_DIR, session_dir)
-        if not os.path.isdir(session_path):
-            continue
-            
-        try:
-            index = get_session_index(session_dir)
-            if not index:
-                continue
-                
-            # Query for interview reports matching candidate name
-            retriever = index.as_retriever(similarity_top_k=3)
-            nodes = retriever.retrieve(f"interview report {candidate_name}")
-            
-            for node in nodes:
-                metadata = node.node.metadata
-                if (metadata.get("type") == "interview_report" and 
-                    metadata.get("candidate_name", "").lower() == candidate_name.lower()):
-                    past_reports.append({
-                        "date": metadata.get("date", "Unknown"),
-                        "content": node.node.text[:500]  # Truncate for context
-                    })
-        except Exception as e:
-            print(f"Warning: Could not read session {session_dir}: {e}")
-            continue
+    md += f"**Dominant Tone Across Interview:** {dominant_tone}\n\n"
+    md += "**Tone Distribution:**\n\n"
+    md += "| Tone | Occurrences |\n"
+    md += "|------|-------------|\n"
+    for tone, count in sorted(tone_counts.items(), key=lambda x: -x[1]):
+        md += f"| {tone} | {count}/{len(tones)} questions |\n"
+    md += "\n---\n\n"
     
-    if not past_reports:
-        return ""
+    # Scoring Table
+    md += "## 📊 Scoring Breakdown\n\n"
+    md += "| # | Topic | Score | Tone |\n"
+    md += "|---|-------|-------|------|\n"
+    for i, entry in enumerate(report_data, 1):
+        q_short = entry.get("question", "N/A")[:60] + "..." if len(entry.get("question", "")) > 60 else entry.get("question", "N/A")
+        md += f"| {i} | {q_short} | {entry.get('score', 'N/A')}/100 | {entry.get('tone', 'N/A')} |\n"
+    md += f"\n**Average:** {avg_score:.1f}/100\n"
     
-    # Format summary of past performance
-    summary = f"PAST INTERVIEW HISTORY FOR {candidate_name}:\n"
-    for idx, report in enumerate(past_reports[:3], 1):  # Limit to 3 most recent
-        summary += f"\n--- Report {idx} (Date: {report['date']}) ---\n"
-        summary += report['content'] + "\n"
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(md)
     
-    return summary
+    print(f"✅ Interview Report saved: {filepath}")

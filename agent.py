@@ -3,8 +3,6 @@ from typing import TypedDict, List, Literal, Dict
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
-from prompts import FINAL_REPORT_PROMPT
-from config import llm
 
 # Import your custom modules
 from ingest import get_session_retriever
@@ -34,6 +32,7 @@ class AgentState(TypedDict):
     current_search_query: str
     retrieved_context: str
     loop_count: int
+    drill_down_count: int
     last_question: str
     last_answer: str
     multimodal_analysis: dict
@@ -41,12 +40,12 @@ class AgentState(TypedDict):
     next_action: str
 
 # --- LLM CONFIGURATION ---
-# llm = ChatOpenAI(
-#     model="llama-3.3-70b-versatile", 
-#     openai_api_key=os.getenv("GROQ_API_KEY"),
-#     openai_api_base="https://api.groq.com/openai/v1",
-#     temperature=0.3
-# )
+llm = ChatOpenAI(
+    model="llama-3.3-70b-versatile", 
+    openai_api_key=os.getenv("GROQ_API_KEY"),
+    openai_api_base="https://api.groq.com/openai/v1",
+    temperature=0.3
+)
 
 # --- Nodes ---
 
@@ -58,7 +57,7 @@ def rewrite_query_node(state: AgentState):
     chain = REWRITE_QUERY_PROMPT | llm
     response = chain.invoke({"history": str(history[-3:]), "last_answer": last_answer})
     
-    print(f"Rewrote Query: {response.content}")
+    print(f"🔄 Rewrote Query: {response.content}")
     return {"current_search_query": response.content, "loop_count": state.get("loop_count", 0)}
 
 def retrieve_node(state: AgentState):
@@ -69,7 +68,7 @@ def retrieve_node(state: AgentState):
     try:
         context = retrieve_context(session_id, query) 
     except Exception as e:
-        print(f"Retrieval Error: {e}")
+        print(f"⚠️ Retrieval Error: {e}")
         context = "No specific context found."
         
     return {"retrieved_context": context}
@@ -97,7 +96,7 @@ def generate_question_node(state: AgentState):
     
     # CASE 1: DRILL DOWN (Humanized)
     if state.get("next_action") == "drill_down":
-        print("Mode: Generating Humanized Follow-Up")
+        print("⚡ Mode: Generating Humanized Follow-Up")
         chain = DRILL_DOWN_PROMPT | llm
         
         # Softened guidance
@@ -138,62 +137,23 @@ def evaluate_answer_node(state: AgentState):
     structured_llm = llm.with_structured_output(EvaluationResult, method="json_mode")
     chain = RUBRIC_PROMPT | structured_llm
     
-    # Get tone analysis data
-    tone_data = state.get("multimodal_analysis", {})
-    
     res = chain.invoke({
         "question": state["last_question"],
         "answer": state["last_answer"],
-        "tone_data": str(tone_data)
+        "tone_data": str(state["multimodal_analysis"])
     })
     
-    # Include tone data in report entry
     report_entry = {
         "question": state["last_question"],
         "answer": state["last_answer"],
         "score": res.score,
-        "feedback": res.feedback,
-        "tone": tone_data.get("primary_emotion", "Neutral")  # Add tone per question
+        "feedback": res.feedback
     }
     
     return {
         "evaluations": state.get("evaluations", []) + [report_entry],
         "next_action": res.topic_status
     }
-
-
-
-def generate_final_markdown_report(candidate_name, job_desc, evaluations, tone_summary):
-    """
-    Compiles all interview data and asks the LLM to write the structured Markdown report.
-    """
-    
-    # 1. Format the interview history for the LLM
-    interview_text = ""
-    total_score = 0
-    for i, turn in enumerate(evaluations, 1):
-        interview_text += f"\n### Question {i}\n"
-        interview_text += f"Q: {turn['question']}\n"
-        interview_text += f"A: {turn['answer']}\n"
-        interview_text += f"Rubric Score: {turn['score']}/10\n"
-        interview_text += f"Rubric Feedback: {turn['feedback']}\n"
-        total_score += turn.get('score', 0)
-
-    # 2. Prepare Tone Context
-    tone_context = f"Primary Emotion: {tone_summary.get('primary_emotion', 'Neutral')}\n"
-    tone_context += f"Detailed Analysis: {tone_summary.get('full_analysis', 'Audio analysis indicates stable speech patterns.')}"
-
-    # 3. Invoke the LLM
-    chain = FINAL_REPORT_PROMPT | llm
-    
-    response = chain.invoke({
-        "candidate_name": candidate_name,
-        "job_description": job_desc[:500] + "...", # Truncate to save tokens
-        "interview_data": interview_text,
-        "tone_analysis": tone_context
-    })
-    
-    return response.content
 
 # --- Graph Wiring ---
 workflow = StateGraph(AgentState)
@@ -217,19 +177,18 @@ workflow.add_conditional_edges("grade", check_grade)
 workflow.add_node("process_answer", evaluate_answer_node)
 
 def decide_next_step(state):
-    """Decides whether to switch topic (rewrite) or drill down (generate)."""
     if len(state.get("evaluations", [])) >= 5:
         return END
     
-    # FIX 2B: Proper topic status handling
-    topic_status = state.get("next_action", "continue")
+    evaluations = state.get("evaluations", [])
+    if evaluations:
+        last_eval = evaluations[-1]
+        topic_status = state.get("next_action", "continue")
+        
+        if topic_status == "drill_down":
+            return "generate"
     
-    if topic_status == "switch":
-        return "rewrite"  # Go get new context for new topic
-    elif topic_status == "drill_down":
-        return "generate"  # Stay on topic, skip retrieval
-    
-    return "rewrite"  # Default: continue with new context
+    return "rewrite"
 
 workflow.add_conditional_edges("process_answer", decide_next_step)
 app_graph = workflow.compile()

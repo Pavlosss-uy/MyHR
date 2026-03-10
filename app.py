@@ -15,7 +15,7 @@ if "last_audio_url" not in st.session_state:
 if "processed_audio_hash" not in st.session_state:
     st.session_state.processed_audio_hash = None
 
-st.title("MyHR: AI Interviewer")
+st.title("🎙️ MyHR: AI Interviewer")
 
 # --- STEP 1: SETUP ---
 if not st.session_state.session_id:
@@ -80,19 +80,10 @@ else:
                         st.session_state.messages.append({"role": "user", "content": resp["transcription"]})
                         
                         if resp.get("status") == "completed":
-                            st.balloons() # precise celebration
-                            st.success("Interview Finished! Generating Final Report...")
-        
-                            # Render the Markdown Report
-                            st.markdown(resp["report"]) 
-        
-                            # Optional: Add a download button for the report
-                            st.download_button(
-                                label="Download Report",
-                                data=resp["report"],
-                                file_name="interview_report.md",
-                                mime="text/markdown"
-                            )
+                            # Make sure it grabs the transcription from the final turn!
+                            st.session_state.messages.append({"role": "user", "content": resp.get("transcription", "")})
+                            st.success("Interview Finished! Report generated.")
+                            st.json(resp["report"])
                         else:
                             # Add AI Response
                             st.session_state.messages.append({"role": "ai", "content": resp["next_question"]})

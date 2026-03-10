@@ -18,9 +18,9 @@ def load_tone_model():
         try:
             _feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(MODEL_NAME)
             _model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_NAME)
-            print("Tone Model Loaded Successfully.")
+            print("✅ Tone Model Loaded Successfully.")
         except Exception as e:
-            print(f"Failed to load Tone Model: {e}")
+            print(f"❌ Failed to load Tone Model: {e}")
 
 def analyze_voice_tone(audio_path):
     """
