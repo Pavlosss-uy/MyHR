@@ -14,3 +14,14 @@ psycopg2-binary
 boto3
 pinecone-client 
 llama-index-vector-stores-pinecone
+torch
+transformers
+librosa
+numpy
+sentence-transformers
+scikit-learn
+spacy
+pypdf2
+langchain-groq
+celery
+redis

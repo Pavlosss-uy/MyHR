@@ -13,6 +13,7 @@ import json
 from fastapi import BackgroundTasks # <-- Add this to your fastapi imports
 from s3_utils import upload_file_to_s3 # <-- Assuming you created s3_utils.py from the previous step
 from services import transcribe_audio_url, generate_audio
+from models.registry import registry
 import io
 import PyPDF2
 from services import transcribe_audio, generate_audio
@@ -59,6 +60,19 @@ async def start_interview(
     except Exception as e:
         print(f"Ingestion Warning: {e}")
     
+    # 5. Pre-compute skill match once for the session
+    try:
+        skill_matcher = registry.load_skill_matcher()
+        skill_score = skill_matcher.calculate_match_score(cv_text, jd)
+        if isinstance(skill_score, (int, float)):
+            skill_score = float(skill_score)
+            skill_score = skill_score if skill_score <= 1.0 else skill_score / 100.0
+        else:
+            skill_score = 0.5
+    except Exception as e:
+        print(f"Skill Match Warning: {e}")
+        skill_score = 0.5
+
     # 5. Initialize State
     initial_state = {
         "session_id": session_id,
@@ -74,7 +88,8 @@ async def start_interview(
             "candidate_name": cv.filename.replace('.pdf', '').replace('_', ' ') if cv.filename else "Candidate",
             "cv_url": s3_cv_url  # Store S3 URL instead of local path
         },
-        "multimodal_analysis": {}
+        "multimodal_analysis": {},
+        "skill_match_score": skill_score
     }
     
     # 6. Run LangGraph Agent
@@ -133,7 +148,7 @@ async def submit_answer(
 
     # Set a placeholder so the LangGraph agent doesn't crash right now
     current_state["last_answer"] = transcription
-    current_state["multimodal_analysis"] = {"primary_emotion": "Processing...", "full_analysis": {}}
+    current_state["multimodal_analysis"] = {"primary_emotion": "Processing...", "full_analysis": {}, "confidence": 0.5}
     
     # --- LOGIC FIX: Explicit Routing ---
     if "last_question" in current_state:

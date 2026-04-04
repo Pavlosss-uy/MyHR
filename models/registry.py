@@ -106,7 +106,7 @@ class ModelRegistry:
     def load_performance_predictor(self):
         if "predictor" not in self.loaded_models:
             print("Loading Performance Predictor...")
-            model = PerformancePredictor(input_features=8).to(self.device)
+            model = PerformancePredictor(input_dim=8).to(self.device)
             model.load_state_dict(torch.load(self._get_path("predictor"), map_location=self.device))
             model.eval()
             self.loaded_models["predictor"] = model

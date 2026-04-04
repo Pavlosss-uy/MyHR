@@ -5,7 +5,7 @@ import os
 import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models.scoring_model import InterviewScorerMLP
+from models.scoring_model import CandidateScoringMLP
 
 def generate_synthetic_embeddings(num_samples=2500):
     print(f"🧬 Generating {num_samples} synthetic 1538-dim embedding pairs for training...")
@@ -44,7 +44,7 @@ def generate_synthetic_embeddings(num_samples=2500):
 
 def train():
     print("🎓 Starting True Deep Learning Training Pipeline...")
-    model = InterviewScorerMLP(input_dim=1538)
+    model = CandidateScoringMLP(input_dim=1538)
     X_train, y_train = generate_synthetic_embeddings(2500)
     
     optimizer = optim.Adam(model.parameters(), lr=0.005)
