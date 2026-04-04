@@ -16,3 +16,13 @@ static/audio/
 
 # Generated markdown interview reports
 reports/
+interview_report.md
+
+# Raw data and dummy data
+data/raw/
+data/*.csv
+data/*.txt
+
+# Model checkpoints (trained weights)
+models/checkpoints/
+*.pt
