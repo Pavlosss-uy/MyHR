@@ -4,6 +4,8 @@ from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
+from models.scoring_model import scorer
+from models.registry import registry
 
 # Import your custom modules
 from retriever import retrieve_context
@@ -17,7 +19,7 @@ from prompts import (
 
 # --- State Definitions (Unchanged) ---
 class EvaluationResult(BaseModel):
-    score: int = Field(description="Score between 0-100")
+    # We removed 'score: int' from here!
     feedback: str = Field(description="One sentence feedback")
     topic_status: Literal["continue", "switch", "drill_down"] = Field(description="Next move")
 
@@ -92,34 +94,42 @@ def grade_context_node(state: AgentState):
         return {"next_action": "rewrite_query", "loop_count": state["loop_count"] + 1}
 
 def generate_question_node(state: AgentState):
-    """Generates the question using Chain of Thought OR Drill Down."""
+    """Generates the question using Adaptive Difficulty + CoT/Drill Down."""
+    
+    # --- MOD-7: Adaptive Difficulty Integration ---
+    diff_engine = registry.load_difficulty_engine()
+    
+    # Extract score history (just the 'overall' numbers)
+    score_history = [e['score'] for e in state.get("evaluations", [])]
+    current_diff = state.get("current_difficulty", 3)
+    
+    # Get the next optimal difficulty level (1-5)
+    next_diff = diff_engine.decide_next_difficulty(score_history, current_diff)
+
+    # Inject difficulty into guidance
+    difficulty_guidance = f" Set question difficulty to Level {next_diff}/5."
     
     # CASE 1: DRILL DOWN (Humanized)
     if state.get("next_action") == "drill_down":
-        print("⚡ Mode: Generating Humanized Follow-Up")
+        print(f"⚡ Mode: Generating Follow-Up (Diff: {next_diff})")
         chain = DRILL_DOWN_PROMPT | llm
-        
-        # Softened guidance
-        guidance = "The candidate's last answer was vague or they didn't know. Be supportive. If they are stuck, pivot gently."
+        guidance = "The candidate's last answer was vague. Be supportive." + difficulty_guidance
         
         response = chain.invoke({
             "history": state["conversation_history"],
             "guidance": guidance
         })
-        
-        return {"last_question": response.content, "loop_count": 0}
+        return {"last_question": response.content, "loop_count": 0, "current_difficulty": next_diff}
 
     # CASE 2: STANDARD QUESTION (Humanized CoT)
     else:
         chain = COT_QUESTION_PROMPT | llm
-        
-        # Softened guidance
-        guidance = "Ask a natural, friendly interview question."
+        guidance = "Ask a natural interview question." + difficulty_guidance
         if state.get("next_action") == "switch":
-            guidance = "Smoothly transition to a new topic from the Job Description. Use a bridge phrase."
+            guidance = "Transition to a new topic." + difficulty_guidance
         
         job_context = state.get("initial_job_context", {})
-        global_context = f"Job Title: {job_context.get('job_title', 'N/A')}\nJob Description Summary: {job_context.get('jd_text', 'N/A')[:500]}...\nCandidate: {job_context.get('candidate_name', 'Candidate')}"
+        global_context = f"Job Title: {job_context.get('job_title', 'N/A')}\nCandidate: {job_context.get('candidate_name', 'Candidate')}"
         
         response = chain.invoke({
             "global_context": global_context,
@@ -130,29 +140,65 @@ def generate_question_node(state: AgentState):
         })
         
         content = response.content.split("</thinking>")[-1].strip()
-        return {"last_question": content, "loop_count": 0}
+        return {"last_question": content, "loop_count": 0, "current_difficulty": next_diff}
 
 def evaluate_answer_node(state: AgentState):
-    """Evaluates answer using the Rubric."""
+    """Evaluates answer using Multi-Head Evaluator (MOD-4) + Performance Predictor (MOD-6)."""
+
+    # 1. Load Models from Registry
+    evaluator = registry.load_evaluator() 
+    predictor = registry.load_performance_predictor()
+    
+    # 2. Extract the 8 Features for the Neural Networks
+    # [skill_match, relevance, clarity, depth, confidence, consistency, gaps_inverted, experience]
+    tone_data = state.get("multimodal_analysis", {})
+    
+    # Simple feature extraction logic (can be expanded)
+    features = torch.tensor([[
+        state.get("skill_match_score", 0.5), # From MOD-3
+        0.7, # Relevance proxy
+        0.8, # Clarity proxy
+        0.6, # Depth proxy
+        tone_data.get("confidence", 0.5),
+        0.9, # Consistency
+        0.8, # Gaps inverted
+        0.7  # Experience level
+    ]], dtype=torch.float32)
+
+    # 3. 🧠 Neural Evaluation (MOD-4)
+    # Returns: {'relevance': x, 'clarity': y, 'technical_depth': z, 'overall': total}
+    neural_results = evaluator.evaluate_answer(features)
+    
+    # 4. 📈 Performance Prediction (MOD-6)
+    # Returns a 1.0 - 10.0 forecast
+    job_prediction = predictor.predict_performance(features)
+
+    # 5. LLM generates feedback text
     structured_llm = llm.with_structured_output(EvaluationResult, method="json_mode")
     chain = RUBRIC_PROMPT | structured_llm
-    
+
     res = chain.invoke({
         "question": state["last_question"],
         "answer": state["last_answer"],
-        "tone_data": str(state["multimodal_analysis"])
+        "tone_data": str(tone_data)
     })
-    
+
     report_entry = {
         "question": state["last_question"],
         "answer": state["last_answer"],
-        "score": res.score,
+        "score": neural_results["overall"], 
+        "detailed_scores": neural_results,
+        "predicted_job_performance": job_prediction,
         "feedback": res.feedback
     }
-    
+
+    print(f"📊 Multi-Head Neural Score: {neural_results['overall']}/100")
+    print(f"🔮 Predicted Job Performance: {job_prediction}/10.0")
+
     return {
         "evaluations": state.get("evaluations", []) + [report_entry],
-        "next_action": res.topic_status
+        "next_action": res.topic_status,
+        "predicted_performance": job_prediction # Store for final report
     }
 
 # --- Graph Wiring ---
