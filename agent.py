@@ -4,8 +4,10 @@ from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
+import torch
 from models.scoring_model import scorer
 from models.registry import registry
+from models.feature_extractor import extractor
 
 # Import your custom modules
 from retriever import retrieve_context
@@ -104,7 +106,7 @@ def generate_question_node(state: AgentState):
     current_diff = state.get("current_difficulty", 3)
     
     # Get the next optimal difficulty level (1-5)
-    next_diff = diff_engine.decide_next_difficulty(score_history, current_diff)
+    next_diff, _diff_probs = diff_engine.decide_next_difficulty(score_history, current_diff)
 
     # Inject difficulty into guidance
     difficulty_guidance = f" Set question difficulty to Level {next_diff}/5."
@@ -146,24 +148,21 @@ def evaluate_answer_node(state: AgentState):
     """Evaluates answer using Multi-Head Evaluator (MOD-4) + Performance Predictor (MOD-6)."""
 
     # 1. Load Models from Registry
-    evaluator = registry.load_evaluator() 
+    evaluator = registry.load_evaluator()
     predictor = registry.load_performance_predictor()
-    
-    # 2. Extract the 8 Features for the Neural Networks
+
+    # 2. Extract the 8 real features for the neural networks
     # [skill_match, relevance, clarity, depth, confidence, consistency, gaps_inverted, experience]
     tone_data = state.get("multimodal_analysis", {})
-    
-    # Simple feature extraction logic (can be expanded)
-    features = torch.tensor([[
-        state.get("skill_match_score", 0.5), # From MOD-3
-        0.7, # Relevance proxy
-        0.8, # Clarity proxy
-        0.6, # Depth proxy
-        tone_data.get("confidence", 0.5),
-        0.9, # Consistency
-        0.8, # Gaps inverted
-        0.7  # Experience level
-    ]], dtype=torch.float32)
+    features = extractor.extract(
+        question=state.get("last_question", ""),
+        answer=state.get("last_answer", ""),
+        jd_text=state.get("initial_job_context", {}).get("jd_text", ""),
+        cv_text=state.get("retrieved_context", ""),
+        tone_data=tone_data,
+        conversation_history=state.get("conversation_history", []),
+        precomputed_skill_match=state.get("skill_match_score"),
+    )
 
     # 3. 🧠 Neural Evaluation (MOD-4)
     # Returns: {'relevance': x, 'clarity': y, 'technical_depth': z, 'overall': total}
@@ -208,7 +207,7 @@ workflow.add_node("rewrite", rewrite_query_node)
 workflow.add_node("retrieve", retrieve_node)
 workflow.add_node("grade", grade_context_node)
 workflow.add_node("generate", generate_question_node)
-workflow.add_node("evaluate", evaluate_answer_node)
+# Note: evaluation is handled by the "process_answer" node below
 
 workflow.set_entry_point("rewrite")
 workflow.add_edge("rewrite", "retrieve")

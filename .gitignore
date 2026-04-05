@@ -26,3 +26,6 @@ data/*.txt
 # Model checkpoints (trained weights)
 models/checkpoints/
 *.pt
+
+# Test output logs
+divergence_output.txt

@@ -21,15 +21,29 @@ def process_audio_tone_task(audio_path: str, session_id: str):
         
         # 1. Run the heavy Wav2Vec2 model
         dominant_tone, tone_report = analyze_voice_tone(audio_path)
-        
+        confidence = 0.5
+        if isinstance(tone_report, dict):
+            numeric_scores = []
+            for value in tone_report.values():
+                if isinstance(value, str) and value.endswith("%"):
+                    try:
+                        numeric_scores.append(float(value.rstrip("%")) / 100.0)
+                    except ValueError:
+                        pass
+                elif isinstance(value, (int, float)):
+                    numeric_scores.append(float(value))
+            if numeric_scores:
+                confidence = max(numeric_scores)
+
         # 2. Save the results directly to PostgreSQL
         db = SessionLocal()
         record = db.query(SessionRecord).filter(SessionRecord.session_id == session_id).first()
         if record:
             state = record.state_data
             state["multimodal_analysis"] = {
-                "primary_emotion": dominant_tone, 
-                "full_analysis": tone_report
+                "primary_emotion": dominant_tone,
+                "full_analysis": tone_report,
+                "confidence": confidence
             }
             record.state_data = state
             db.commit()
