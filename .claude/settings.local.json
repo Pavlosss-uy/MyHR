@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"uncertainty\\\\|MC.*Dropout\\\\|mc_dropout\" /d/GP/MyHR/models/*.py)"
+    ]
+  }
+}

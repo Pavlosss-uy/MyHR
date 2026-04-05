@@ -6,6 +6,8 @@ import os
 import random
 
 from models.performance_predictor import PerformancePredictor
+from training.metrics import regression_metrics, make_writer
+
 
 class DummyPerformanceDataset(Dataset):
     """
@@ -19,95 +21,127 @@ class DummyPerformanceDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
-        # Generate random normalized features (0.0 to 1.0)
-        # Features: [skill_match, relevance, clarity, depth, confidence, consistency, gaps_inverted, experience]
         features = torch.empty(8).uniform_(0.2, 1.0)
-        
-        # We simulate a "ground truth" performance score based heavily on their interview skills
-        # We give high weight to skill_match (idx 0), clarity (idx 2), and depth (idx 3)
-        base_score = (features[0]*2.5 + features[2]*2.0 + features[3]*2.5 + features.mean()*3.0)
-        
-        # Add some real-world randomness/noise
+        base_score = (features[0] * 2.5 + features[2] * 2.0 +
+                      features[3] * 2.5 + features.mean() * 3.0)
         noise = random.uniform(-1.0, 1.0)
-        final_score = base_score + noise
-        
-        # Clamp between 1.0 and 10.0
-        final_score = max(1.0, min(10.0, final_score.item()))
-        
+        final_score = max(1.0, min(10.0, (base_score + noise).item()))
         return features, torch.tensor([final_score], dtype=torch.float32)
+
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Starting Performance Predictor training on {device}...")
 
-    # 1. Setup Data
-    dataset = DummyPerformanceDataset(num_samples=1000)
-    # 80/20 train-validation split
+    # 1. Setup Data — 80/20 split
+    dataset    = DummyPerformanceDataset(num_samples=1000)
     train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
-    
+    val_size   = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size]
+    )
+
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    
-    # 2. Setup Model and Optimizer
-    model = PerformancePredictor(input_dim=8).to(device)
+    val_loader   = DataLoader(val_dataset,   batch_size=32)
+
+    # 2. Model, optimizer, scheduler
+    model     = PerformancePredictor(input_dim=8).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=0.005, weight_decay=0.01)
-    
-    # MSE Loss is the standard for regression (predicting continuous numbers)
     criterion = nn.MSELoss()
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", patience=5, factor=0.5
+    )
+    writer = make_writer("performance_predictor")
 
-    epochs = 30
-    best_loss = float('inf')
+    epochs      = 30
+    best_loss   = float("inf")
+    best_spearman = -1.0
+    patience_counter = 0
 
-    # 3. Training Loop
+    # 3. Training loop
     for epoch in range(epochs):
+        # --- train ---
         model.train()
-        total_loss = 0.0
-
+        train_loss_total = 0.0
         for features, target_score in train_loader:
-            features = features.to(device)
+            features     = features.to(device)
             target_score = target_score.to(device)
-
             optimizer.zero_grad()
-            
-            # Predict the 1-10 score
             predictions = model(features)
-            
-            # Calculate how far off the prediction was from the actual score
             loss = criterion(predictions, target_score)
             loss.backward()
             optimizer.step()
+            train_loss_total += loss.item()
 
-            total_loss += loss.item()
+        avg_train_loss = train_loss_total / len(train_loader)
 
-        avg_loss = total_loss / len(train_loader)
-        
-        # Print every 5 epochs
+        # --- validate ---
+        model.eval()
+        val_loss_total = 0.0
+        val_preds, val_true = [], []
+        with torch.no_grad():
+            for features, target_score in val_loader:
+                features     = features.to(device)
+                target_score = target_score.to(device)
+                predictions  = model(features)
+                loss = criterion(predictions, target_score)
+                val_loss_total += loss.item()
+                val_preds.extend(predictions.squeeze().cpu().tolist())
+                val_true.extend(target_score.squeeze().cpu().tolist())
+
+        avg_val_loss = val_loss_total / len(val_loader)
+        metrics = regression_metrics(val_true, val_preds)
+
+        # --- TensorBoard ---
+        writer.add_scalar("Loss/train",        avg_train_loss,          epoch)
+        writer.add_scalar("Loss/val",          avg_val_loss,            epoch)
+        writer.add_scalar("Metric/mae",        metrics["mae"],          epoch)
+        writer.add_scalar("Metric/rmse",       metrics["rmse"],         epoch)
+        writer.add_scalar("Metric/spearman",   metrics["spearman_rho"], epoch)
+        writer.add_scalar("Metric/pearson",    metrics["pearson_r"],    epoch)
+        writer.add_scalar("LR", optimizer.param_groups[0]["lr"],        epoch)
+
         if (epoch + 1) % 5 == 0:
-            print(f"Epoch {epoch+1}/{epochs} | MSE Loss: {avg_loss:.4f}")
+            print(
+                f"Epoch {epoch+1}/{epochs} | "
+                f"train_loss={avg_train_loss:.4f}  val_loss={avg_val_loss:.4f} | "
+                f"MAE={metrics['mae']:.4f}  RMSE={metrics['rmse']:.4f}  "
+                f"Spearman={metrics['spearman_rho']:.4f}"
+            )
 
-        # Save the best model
-        if avg_loss < best_loss:
-            best_loss = avg_loss
+        scheduler.step(avg_val_loss)
+
+        # Early stopping on val loss
+        if avg_val_loss < best_loss:
+            best_loss      = avg_val_loss
+            best_spearman  = metrics["spearman_rho"]
+            patience_counter = 0
             os.makedirs("models/checkpoints", exist_ok=True)
-            torch.save(model.state_dict(), "models/checkpoints/performance_predictor_v1.pt")
-    
-    print("\n--> Checkpoint saved: models/checkpoints/performance_predictor_v1.pt")
+            torch.save(
+                model.state_dict(),
+                "models/checkpoints/performance_predictor_v1.pt"
+            )
+        else:
+            patience_counter += 1
+            if patience_counter >= 7:
+                print(f"Early stopping at epoch {epoch+1}")
+                break
 
-    # 4. Quick Inference Test
+    writer.close()
+    print(
+        f"\nCheckpoint saved: models/checkpoints/performance_predictor_v1.pt"
+        f"\nBest val loss: {best_loss:.4f}  |  Best Spearman ρ: {best_spearman:.4f}"
+    )
+
+    # 4. Quick inference test
     print("\n--- Quick Inference Test ---")
-    
-    # Candidate 1: Rockstar interview (all features around 0.9 - 1.0)
-    rockstar_features = torch.tensor([[0.95, 0.9, 0.92, 0.98, 0.85, 0.9, 0.95, 0.9]])
-    
-    # Candidate 2: Mediocre interview (all features around 0.4 - 0.6)
-    mediocre_features = torch.tensor([[0.5, 0.4, 0.55, 0.45, 0.6, 0.5, 0.4, 0.5]])
-    
-    rockstar_pred = model.predict_performance(rockstar_features)
-    mediocre_pred = model.predict_performance(mediocre_features)
-    
-    print(f"Predicted Job Performance for Rockstar Candidate: {rockstar_pred} / 10.0")
-    print(f"Predicted Job Performance for Mediocre Candidate: {mediocre_pred} / 10.0")
+    model.eval()
+    with torch.no_grad():
+        rockstar = torch.tensor([[0.95, 0.9, 0.92, 0.98, 0.85, 0.9, 0.95, 0.9]])
+        mediocre = torch.tensor([[0.5,  0.4, 0.55, 0.45, 0.6,  0.5, 0.4,  0.5]])
+        print(f"Rockstar candidate: {model.predict_performance(rockstar)} / 10.0")
+        print(f"Mediocre candidate: {model.predict_performance(mediocre)} / 10.0")
+
 
 if __name__ == "__main__":
     main()

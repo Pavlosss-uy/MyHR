@@ -1,17 +1,18 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import os
-import torch.nn.functional as F
 
-from recommender.candidate_ranker import NeuralCandidateRanker
+from models.candidate_ranker import NeuralCandidateRanker
+from training.metrics import ranking_metrics, make_writer
+
 
 class DummyRankingDataset(Dataset):
     """
-    Simulates past interview data. 
-    Each item contains an Ideal Profile, a Hired Candidate's features, 
-    and a Rejected Candidate's features.
+    Simulates past interview data.
+    Each item: ideal profile, hired candidate features, rejected candidate features.
     """
     def __init__(self, num_samples=200):
         self.num_samples = num_samples
@@ -20,101 +21,129 @@ class DummyRankingDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
-        # 8 normalized features: [skill_match, relevance, clarity, depth, confidence, consistency, gaps(inverted), experience]
-        ideal_profile = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=torch.float32)
-        
-        # Hired candidate: High scores, close to ideal (between 0.8 and 1.0)
-        hired_features = ideal_profile * torch.empty(8).uniform_(0.8, 1.0)
-        
-        # Rejected candidate: Lower scores (between 0.3 and 0.7)
+        ideal_profile    = torch.tensor([1.0] * 8, dtype=torch.float32)
+        hired_features   = ideal_profile * torch.empty(8).uniform_(0.8, 1.0)
         rejected_features = ideal_profile * torch.empty(8).uniform_(0.3, 0.7)
-        
         return ideal_profile, hired_features, rejected_features
+
+
+def evaluate_ranking(model, val_loader, device):
+    """
+    Collect similarity scores and binary labels for ranking metric computation.
+    """
+    model.eval()
+    all_scores, all_labels = [], []
+
+    with torch.no_grad():
+        for ideal, hired, rejected in val_loader:
+            ideal    = ideal.to(device)
+            hired    = hired.to(device)
+            rejected = rejected.to(device)
+
+            ideal_emb    = model(ideal)
+            hired_emb    = model(hired)
+            rejected_emb = model(rejected)
+
+            sim_hired    = F.cosine_similarity(hired_emb,    ideal_emb).cpu().tolist()
+            sim_rejected = F.cosine_similarity(rejected_emb, ideal_emb).cpu().tolist()
+
+            for sh, sr in zip(sim_hired, sim_rejected):
+                # Treat each (hired, rejected) pair as a ranking task:
+                # scores = [sim_hired, sim_rejected], labels = [1, 0]
+                all_scores.append([sh, sr])
+                all_labels.append([1,   0])
+
+    return ranking_metrics(all_scores, all_labels, k=2)
+
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Starting Pairwise Ranking training on {device}...")
 
-    # 1. Setup Data
-    dataset = DummyRankingDataset(num_samples=300)
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+    # 1. Data — 80/20 split
+    dataset    = DummyRankingDataset(num_samples=300)
+    train_size = int(0.8 * len(dataset))
+    val_size   = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size]
+    )
 
-    # 2. Setup Model and Optimizer
-    model = NeuralCandidateRanker(input_features=8, embedding_dim=32).to(device)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    val_loader   = DataLoader(val_dataset,   batch_size=16)
+
+    # 2. Model, optimizer
+    model     = NeuralCandidateRanker(input_features=8, embedding_dim=32).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
-    
-    # MarginRankingLoss pushes sim(hired) to be strictly greater than sim(rejected) by at least 'margin'
     criterion = nn.MarginRankingLoss(margin=0.2)
+    writer    = make_writer("candidate_ranker")
 
-    epochs = 20
-    best_loss = float('inf')
+    epochs    = 20
+    best_loss = float("inf")
 
-    # 3. Training Loop
+    # 3. Training loop
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
 
-        for ideal, hired, rejected in dataloader:
-            ideal = ideal.to(device)
-            hired = hired.to(device)
+        for ideal, hired, rejected in train_loader:
+            ideal    = ideal.to(device)
+            hired    = hired.to(device)
             rejected = rejected.to(device)
 
             optimizer.zero_grad()
-            
-            # Pass all profiles through the neural network to get their 32-dimensional embeddings
-            ideal_emb = model(ideal)
-            hired_emb = model(hired)
+            ideal_emb    = model(ideal)
+            hired_emb    = model(hired)
             rejected_emb = model(rejected)
-            
-            # Calculate how similar both candidates are to the ideal profile
-            sim_hired = F.cosine_similarity(hired_emb, ideal_emb)
+
+            sim_hired    = F.cosine_similarity(hired_emb,    ideal_emb)
             sim_rejected = F.cosine_similarity(rejected_emb, ideal_emb)
-            
-            # The target is 1, meaning we expect sim_hired to be > sim_rejected
-            target = torch.ones_like(sim_hired)
-            
-            # Calculate loss and update weights
+            target       = torch.ones_like(sim_hired)
+
             loss = criterion(sim_hired, sim_rejected, target)
             loss.backward()
             optimizer.step()
-
             total_loss += loss.item()
 
-        avg_loss = total_loss / len(dataloader)
-        
-        # Print every 2 epochs to keep terminal clean
+        avg_loss     = total_loss / len(train_loader)
+        rank_metrics = evaluate_ranking(model, val_loader, device)
+
+        # TensorBoard
+        writer.add_scalar("Loss/train",              avg_loss,                          epoch)
+        writer.add_scalar("Metric/ndcg_at_2",        rank_metrics["ndcg_at_k"],         epoch)
+        writer.add_scalar("Metric/pairwise_accuracy",rank_metrics["pairwise_accuracy"], epoch)
+
         if (epoch + 1) % 2 == 0:
-            print(f"Epoch {epoch+1}/{epochs} | Ranking Loss: {avg_loss:.4f}")
+            print(
+                f"Epoch {epoch+1}/{epochs} | "
+                f"Ranking Loss: {avg_loss:.4f} | "
+                f"NDCG@2: {rank_metrics['ndcg_at_k']:.4f}  "
+                f"Pairwise Acc: {rank_metrics['pairwise_accuracy']:.4f}"
+            )
 
         if avg_loss < best_loss:
             best_loss = avg_loss
             os.makedirs("models/checkpoints", exist_ok=True)
-            torch.save(model.state_dict(), "models/checkpoints/candidate_ranker_v1.pt")
-    
-    print("\n--> Checkpoint saved: models/checkpoints/candidate_ranker_v1.pt")
+            torch.save(
+                model.state_dict(),
+                "models/checkpoints/candidate_ranker_v1.pt"
+            )
 
-    # 4. Quick Inference Test
+    writer.close()
+    print("\nCheckpoint saved: models/checkpoints/candidate_ranker_v1.pt")
+
+    # 4. Inference test
     print("\n--- Quick Inference Test ---")
     model.eval()
     with torch.no_grad():
-        ideal = torch.tensor([[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]])
-        
-        # Candidate A: Strong technically, good clarity
+        ideal  = torch.tensor([[1.0] * 8])
         cand_a = torch.tensor([[0.9, 0.85, 0.9, 0.95, 0.8, 0.9, 0.85, 0.9]])
-        
-        # Candidate B: Weak technical depth, lots of skill gaps
-        cand_b = torch.tensor([[0.4, 0.5, 0.6, 0.3, 0.5, 0.4, 0.2, 0.5]])
-        
-        # Combine into a batch
+        cand_b = torch.tensor([[0.4, 0.5,  0.6, 0.3,  0.5, 0.4, 0.2,  0.5]])
         candidates = torch.cat([cand_a, cand_b], dim=0)
-        
-        # Call the rank_candidates function we built
         scores, indices = model.rank_candidates(candidates, ideal)
-        
-        print("Candidate Profiles Ranked:")
         for rank, idx in enumerate(indices):
-            cand_name = "Candidate A (Strong)" if idx == 0 else "Candidate B (Weak)"
-            print(f"Rank {rank+1}: {cand_name} - Match Score: {scores[rank]:.4f}")
+            name = "Candidate A (Strong)" if idx == 0 else "Candidate B (Weak)"
+            print(f"Rank {rank+1}: {name} — Match Score: {scores[rank]:.4f}")
+
 
 if __name__ == "__main__":
     main()
