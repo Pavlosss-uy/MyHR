@@ -144,7 +144,10 @@ async def submit_answer(
     if not transcription: transcription = "(No speech detected)"
     
     # 6. Hand off Tone Analysis to Celery (Instantly returns!)
-    process_audio_tone_task.delay(temp_audio_path, session_id)
+    try:
+        process_audio_tone_task.delay(temp_audio_path, session_id)
+    except Exception as e:
+        print(f"⚠️ Celery/Redis unavailable, skipping async tone analysis: {e}")
 
     # Set a placeholder so the LangGraph agent doesn't crash right now
     current_state["last_answer"] = transcription

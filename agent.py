@@ -106,7 +106,8 @@ def generate_question_node(state: AgentState):
     current_diff = state.get("current_difficulty", 3)
     
     # Get the next optimal difficulty level (1-5)
-    next_diff, _diff_probs = diff_engine.decide_next_difficulty(score_history, current_diff)
+    diff_result = diff_engine.decide_next_difficulty(score_history, current_diff)
+    next_diff = diff_result[0] if isinstance(diff_result, tuple) else diff_result
 
     # Inject difficulty into guidance
     difficulty_guidance = f" Set question difficulty to Level {next_diff}/5."
@@ -193,6 +194,9 @@ def evaluate_answer_node(state: AgentState):
 
     print(f"📊 Multi-Head Neural Score: {neural_results['overall']}/100")
     print(f"🔮 Predicted Job Performance: {job_prediction}/10.0")
+
+    print(f"\n📊 DYNAMIC FEATURES EXTRACTED for {state['last_answer'][:20]}...")
+    print(features)
 
     return {
         "evaluations": state.get("evaluations", []) + [report_entry],
