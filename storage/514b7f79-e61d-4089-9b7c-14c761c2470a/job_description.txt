@@ -1,0 +1,31 @@
+Title: Senior Python Engineer (AI & Backend)
+Company: TechNova Solutions
+
+About Us:
+TechNova is building the next generation of HR automation tools. We are looking for a backend engineer who is passionate about Large Language Models and building scalable agentic systems.
+
+Responsibilities:
+
+Design and build scalable backend services using Python and FastAPI.
+
+Develop and orchestrate AI agents using LangChain and LangGraph.
+
+Implement Retrieval-Augmented Generation (RAG) pipelines using vector databases (Pinecone, Weaviate).
+
+Collaborate with data engineering teams to optimize document parsing and embedding strategies.
+
+Ensure code quality through rigorous testing and code reviews.
+
+Requirements:
+
+5+ years of experience in Python backend development.
+
+Strong experience with FastAPI or Django.
+
+Proven experience building LLM-powered applications (RAG, Agents).
+
+Familiarity with vector databases and embedding models.
+
+Experience with containerization (Docker, Kubernetes).
+
+Strong problem-solving skills and ability to work in a fast-paced environment.
