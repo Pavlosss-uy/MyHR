@@ -53,7 +53,7 @@ WARMUP_STEPS = 100
 TRAIN_SPLIT = 0.8
 
 # Additional data generation
-GENERATE_EXTRA_SAMPLES = True
+GENERATE_EXTRA_SAMPLES = False
 EXTRA_SAMPLE_COUNT = 300  # On top of existing ~200
 
 SEED = 42
@@ -234,6 +234,7 @@ def load_and_prepare_data() -> tuple:
         else:
             ce_samples = generate_extra_data(ce_samples)
 
+    
     # Shuffle and split
     random.seed(SEED)
     random.shuffle(ce_samples)
@@ -283,6 +284,10 @@ def train_cross_encoder(train_examples: list) -> CrossEncoder:
         output_path=CHECKPOINT_DIR,
         show_progress_bar=True,
     )
+    
+    # Sentence-Transformers fit() without an evaluator does NOT save automatically.
+    # Explicity save the model:
+    model.save(CHECKPOINT_DIR)
 
     print(f"\n✅ Model fine-tuned and saved to {CHECKPOINT_DIR}")
     return model

@@ -1,0 +1,51 @@
+﻿============================================================
+python : Traceback (most 
+recent call last):
+At line:1 char:1
++ python training/train_ev
+aluator.py 2>&1 | 
+Out-File -FilePath 
+training ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (T  
+  raceback (most recent   
+  call last)::String)     
+[], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+  File "C:\Users\Remo\Docu
+ments\MyHR\training\train_
+evaluator.py", line 340, 
+in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Remo\Docu
+ments\MyHR\training\train_
+evaluator.py", line 260, 
+in main
+    print("  \U0001f9e0 
+Multi-Head Evaluator 
+Training")
+    ~~~~~^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Remo\AppD
+ata\Local\Programs\Python\
+Python314\Lib\encodings\cp
+1252.py", line 19, in 
+encode
+    return codecs.charmap_
+encode(input,self.errors,e
+ncoding_table)[0]
+           ~~~~~~~~~~~~~~~
+~~~~~~^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^
+UnicodeEncodeError: 
+'charmap' codec can't 
+encode character 
+'\U0001f9e0' in position 
+2: character maps to 
+<undefined>

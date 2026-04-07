@@ -16,6 +16,7 @@ from models.skill_matcher import SkillMatchSiameseNet
 from models.multi_head_evaluator import MultiHeadEvaluator
 from models.difficulty_engine import AdaptiveDifficultyEngine
 from models.performance_predictor import PerformancePredictor
+from models.cross_encoder_scorer import InterviewCrossEncoderScorer
 
 # Import from the recommender folder
 try:
@@ -33,12 +34,13 @@ class ModelRegistry:
         # Centralized version control
         self.versions = {
             "scorer": "scorer_v1.pt", # Or v2 depending on your latest
-            "emotion": "emotion_finetuned_v1.pt",
+            "emotion": "emotion_finetuned_v2.pt",
             "skill_matcher": "skill_matcher_v1.pt",
-            "evaluator": None, # Evaluator shares the scorer backbone (MOD-4)
+            "evaluator": "evaluator_v1.pt", # Evaluator shares the scorer backbone (MOD-4)
             "difficulty": "difficulty_engine_v1.pt",
             "ranker": "candidate_ranker_v1.pt",
-            "predictor": "performance_predictor_v1.pt"
+            "predictor": "performance_predictor_v1.pt",
+            "cross_encoder": "cross_encoder_scorer_v1"
         }
         
         # Cache to keep models loaded in memory so we don't reload them on every request
@@ -90,7 +92,7 @@ class ModelRegistry:
         if "evaluator" not in self.loaded_models:
             print("Loading Multi-Head Evaluator...")
             # Initialize the Multi-Head Evaluator (MOD-4)
-            model = MultiHeadEvaluator(input_dim=8).to(self.device)
+            model = MultiHeadEvaluator(input_dim=768).to(self.device)
             
             # If you saved a specific checkpoint for it, load it. 
             # Otherwise, it will safely initialize with default weights.
@@ -111,6 +113,19 @@ class ModelRegistry:
             model.eval()
             self.loaded_models["predictor"] = model
         return self.loaded_models["predictor"]
+
+    def load_cross_encoder(self):
+        if "cross_encoder" not in self.loaded_models:
+            print("Loading Cross-Encoder Scorer...")
+            model_path = self._get_path("cross_encoder")
+            try:
+                # The InterviewCrossEncoderScorer handles loading the directory
+                model = InterviewCrossEncoderScorer(model_name_or_path=model_path)
+            except Exception as e:
+                print(f"Failed to load cross-encoder from path {model_path}, falling back to base. Error: {e}")
+                model = InterviewCrossEncoderScorer()
+            self.loaded_models["cross_encoder"] = model
+        return self.loaded_models["cross_encoder"]
 
 # Create a global singleton instance to be imported across the app
 registry = ModelRegistry()

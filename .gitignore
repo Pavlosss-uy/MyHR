@@ -19,6 +19,7 @@ reports/
 interview_report.md
 
 # Raw data and dummy data
+data/
 data/raw/
 data/*.csv
 data/*.txt

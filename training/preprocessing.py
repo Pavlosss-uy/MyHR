@@ -15,14 +15,14 @@ TARGET_EMOTIONS = [
 # RAVDESS filename format: Modality-VocalChannel-Emotion-Intensity-Statement-Repetition-Actor.wav
 # Example: 03-01-06-01-02-01-12.wav (06 = fearful)
 RAVDESS_EMOTION_MAP = {
-    "01": "neutral",       # Neutral -> neutral
-    "02": "neutral",       # Calm -> neutral
-    "03": "enthusiastic",  # Happy -> enthusiastic
-    "04": "uncertain",     # Sad -> uncertain / hesitant
-    "05": "frustrated",    # Angry -> frustrated
-    "06": "nervous",       # Fearful -> nervous
-    "07": "frustrated",    # Disgust -> frustrated
-    "08": "engaged"        # Surprised -> engaged
+    "01": "neutral",        # Neutral
+    "02": "confident",      # Calm → confident  (was "neutral")
+    "03": "enthusiastic",   # Happy
+    "04": "uncertain",      # Sad
+    "05": "frustrated",     # Angry
+    "06": "nervous",        # Fearful
+    "07": "frustrated",     # Disgust
+    "08": "engaged",        # Surprised
 }
 
 def parse_ravdess(dataset_path):
@@ -53,7 +53,49 @@ def parse_ravdess(dataset_path):
     return data
 
 # -------------------------------------------------------------------
-# 2. IEMOCAP Mapping & Parsing
+# 2. CREMA-D Mapping & Parsing
+# -------------------------------------------------------------------
+# CREMA-D filename format: {ActorID}_{Sentence}_{Emotion}_{Level}.wav
+# Example: 1001_DFA_ANG_XX.wav
+# Emotions: ANG (Angry), DIS (Disgust), FEA (Fear), HAP (Happy), NEU (Neutral), SAD (Sad)
+CREMA_EMOTION_MAP = {
+    "ANG": "frustrated",    # Angry -> frustrated
+    "DIS": "frustrated",    # Disgust -> frustrated
+    "FEA": "nervous",       # Fear -> nervous
+    "HAP": "enthusiastic",  # Happy -> enthusiastic
+    "NEU": "neutral",       # Neutral -> neutral
+    "SAD": "hesitant",      # Sad -> hesitant
+}
+
+def parse_cremad(dataset_path):
+    """Parses CREMA-D audio directory and returns a list of dictionaries."""
+    data = []
+    path = Path(dataset_path)
+
+    if not path.exists():
+        print(f"Warning: CREMA-D path {dataset_path} not found.")
+        return data
+
+    for audio_file in path.glob("*.wav"):
+        filename = audio_file.stem  # e.g., "1001_DFA_ANG_XX"
+        parts = filename.split("_")
+
+        if len(parts) >= 3:
+            emotion_code = parts[2]  # 3rd field is emotion
+            target_label = CREMA_EMOTION_MAP.get(emotion_code)
+
+            if target_label:
+                data.append({
+                    "file_path": str(audio_file.resolve()),
+                    "original_label": emotion_code,
+                    "target_label": target_label,
+                    "source": "CREMA-D"
+                })
+    return data
+
+
+# -------------------------------------------------------------------
+# 3. IEMOCAP Mapping & Parsing (kept for completeness)
 # -------------------------------------------------------------------
 # IEMOCAP labels are found in the EmoEvaluation text files.
 IEMOCAP_EMOTION_MAP = {
@@ -65,7 +107,6 @@ IEMOCAP_EMOTION_MAP = {
     "fru": "frustrated",   # Frustrated
     "fea": "nervous",      # Fearful
     "sur": "engaged",      # Surprised
-    # IEMOCAP also has 'xxx' (unclassified) and 'oth' (other) which we will ignore.
 }
 
 def parse_iemocap(dataset_path):
@@ -77,7 +118,6 @@ def parse_iemocap(dataset_path):
         print(f"Warning: IEMOCAP path {dataset_path} not found.")
         return data
 
-    # Find all evaluation files
     for session_dir in path.glob("Session*"):
         eval_dir = session_dir / "dialog" / "EmoEvaluation"
         wav_dir = session_dir / "sentences" / "wav"
@@ -89,8 +129,6 @@ def parse_iemocap(dataset_path):
             with open(eval_file, 'r') as f:
                 content = f.read()
                 
-                # Regex to extract the filename and the emotion label
-                # Example line: [00:06.2900 - 00:08.2300]	Ses01F_impro01_F000	neu	[2.5000, 2.5000, 2.5000]
                 pattern = re.compile(r'\[.+\]\s+(Ses\w+)\s+([a-z]{3})\s+\[.+\]')
                 matches = pattern.findall(content)
                 
@@ -98,8 +136,6 @@ def parse_iemocap(dataset_path):
                     target_label = IEMOCAP_EMOTION_MAP.get(emotion_code)
                     
                     if target_label:
-                        # Construct path to the actual wav chunk
-                        # e.g., Session1/sentences/wav/Ses01F_impro01/Ses01F_impro01_F000.wav
                         impro_id = "_".join(wav_id.split("_")[:2])
                         audio_file = wav_dir / impro_id / f"{wav_id}.wav"
                         
@@ -113,22 +149,33 @@ def parse_iemocap(dataset_path):
     return data
 
 # -------------------------------------------------------------------
-# 3. Main Execution
+# 4. Main Execution
 # -------------------------------------------------------------------
-def generate_combined_dataset(ravdess_path, iemocap_path, output_csv="data/interview_emotions_train.csv"):
-    print("Parsing RAVDESS dataset...")
-    ravdess_data = parse_ravdess(ravdess_path)
-    print(f"Found {len(ravdess_data)} usable RAVDESS samples.")
+def generate_combined_dataset(ravdess_path, cremad_path, iemocap_path=None, 
+                              output_csv="data/interview_emotions_train.csv"):
+    print("=" * 60)
+    print("  🎵 Emotion Dataset Preprocessing")
+    print("=" * 60)
 
-    print("Parsing IEMOCAP dataset...")
-    iemocap_data = parse_iemocap(iemocap_path)
-    print(f"Found {len(iemocap_data)} usable IEMOCAP samples.")
+    print("\nParsing RAVDESS dataset...")
+    ravdess_data = parse_ravdess(ravdess_path)
+    print(f"  Found {len(ravdess_data)} usable RAVDESS samples.")
+
+    print("Parsing CREMA-D dataset...")
+    cremad_data = parse_cremad(cremad_path)
+    print(f"  Found {len(cremad_data)} usable CREMA-D samples.")
+
+    iemocap_data = []
+    if iemocap_path:
+        print("Parsing IEMOCAP dataset...")
+        iemocap_data = parse_iemocap(iemocap_path)
+        print(f"  Found {len(iemocap_data)} usable IEMOCAP samples.")
 
     # Combine data
-    all_data = ravdess_data + iemocap_data
+    all_data = ravdess_data + cremad_data + iemocap_data
     
     if not all_data:
-        print("No data parsed. Please check your dataset paths.")
+        print("\n❌ No data parsed. Please check your dataset paths.")
         return
 
     df = pd.DataFrame(all_data)
@@ -137,16 +184,22 @@ def generate_combined_dataset(ravdess_path, iemocap_path, output_csv="data/inter
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
     df.to_csv(output_csv, index=False)
     
-    print(f"\nSuccessfully combined datasets! Saved to {output_csv}")
-    print("\nClass Distribution:")
-    print(df['target_label'].value_counts())
+    print(f"\n✅ Combined dataset saved to {output_csv}")
+    print(f"   Total samples: {len(df)}")
+    print(f"\n📊 Source Distribution:")
+    print(df['source'].value_counts().to_string())
+    print(f"\n📊 Class Distribution:")
+    print(df['target_label'].value_counts().to_string())
     
-    # Identify underrepresented classes that need synthetic data
-    print("\nNote: Classes with 0 or very low counts (like 'confident') will need to be populated via the synthetic data generator.")
+    # Identify underrepresented classes
+    missing = set(TARGET_EMOTIONS) - set(df['target_label'].unique())
+    if missing:
+        print(f"\n⚠️  Missing classes (0 samples): {missing}")
+        print("   These will need synthetic data or alternative mapping.")
 
 if __name__ == "__main__":
-    # TODO: Update these paths to where you have extracted the datasets on your machine
-    RAVDESS_DIR = "./data/raw/RAVDESS"
-    IEMOCAP_DIR = "./data/raw/IEMOCAP"
+    RAVDESS_DIR = "./data/Audio_Speech_Actors_01-24"
+    CREMAD_DIR = "./data/archive/AudioWAV"
+    IEMOCAP_DIR = "./data/raw/IEMOCAP"  # Optional, may not exist
     
-    generate_combined_dataset(RAVDESS_DIR, IEMOCAP_DIR)
+    generate_combined_dataset(RAVDESS_DIR, CREMAD_DIR, IEMOCAP_DIR)

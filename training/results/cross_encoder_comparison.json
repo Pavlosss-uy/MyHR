@@ -1,0 +1,21 @@
+{
+  "timestamp": "2026-04-07T12:22:21.894387",
+  "results": {
+    "Cross-Encoder (fine-tuned)": {
+      "spearman_rho": "0.18415745033332803",
+      "spearman_p": "0.06948803069423116",
+      "mse": "0.8205363234790853",
+      "n_samples": "98"
+    },
+    "Cross-Encoder (base)": {
+      "spearman_rho": "-0.1527899023688418",
+      "spearman_p": "0.13310492427675763",
+      "mse": "41.7772989802051",
+      "n_samples": "98"
+    },
+    "LLM-as-Judge (Groq)": {
+      "spearman_rho": "N/A (no API key)",
+      "mse": "N/A"
+    }
+  }
+}
