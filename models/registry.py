@@ -34,9 +34,9 @@ class ModelRegistry:
         self.versions = {
             "scorer": "scorer_v2.pt",           # v2: trained with SentenceTransformer embeddings
             "emotion": "emotion_finetuned_v1.pt",
-            "skill_matcher": "skill_matcher_v2.pt",  # v2: trained on SO 2018 survey data
+            "skill_matcher": "skill_matcher_v1.pt",  # v1: available checkpoint
             "evaluator": "evaluator_v1.pt",
-            "difficulty": "difficulty_engine_v2.pt",  # v2: 6-D state
+            "difficulty": "difficulty_engine_v1.pt",  # v1: 3-D state (avg_score, trend, diff)
             "difficulty_ppo": "difficulty_ppo_v1.zip",
             "ranker": "candidate_ranker_v1.pt",
             "predictor": "performance_predictor_v1.pt"
@@ -81,8 +81,8 @@ class ModelRegistry:
             return self.load_difficulty_ppo()
 
         if "difficulty" not in self.loaded_models:
-            print("Loading Difficulty Engine (REINFORCE 6-D)...")
-            model = AdaptiveDifficultyEngine(state_dim=6).to(self.device)
+            print("Loading Difficulty Engine (REINFORCE 3-D)...")
+            model = AdaptiveDifficultyEngine(state_dim=3).to(self.device)
             model.load_state_dict(
                 torch.load(self._get_path("difficulty"), map_location=self.device)
             )
