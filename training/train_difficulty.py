@@ -2,74 +2,56 @@ import torch
 import torch.optim as optim
 from torch.distributions import Categorical
 import os
-import random
 
 from models.difficulty_engine import AdaptiveDifficultyEngine
 from training.metrics import rl_metrics, make_writer
-
-
-def simulate_candidate_answer(difficulty, candidate_skill):
-    """
-    Simulates candidate score based on the gap between their skill and the difficulty.
-    skill == difficulty → score ~65
-    skill > difficulty  → score higher
-    skill < difficulty  → score lower
-    """
-    diff_gap   = candidate_skill - difficulty
-    base_score = 65 + (diff_gap * 15)
-    actual     = base_score + random.uniform(-10, 10)
-    return max(0.0, min(100.0, actual))
+from training.interview_env import InterviewEnv
 
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Starting Reinforcement Learning training on {device}...")
+    print("State space: 6-D (full InterviewEnv observation)")
 
-    model     = AdaptiveDifficultyEngine().to(device)
+    # Use 6-D state to match InterviewEnv.observation_space
+    model     = AdaptiveDifficultyEngine(state_dim=6).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     writer    = make_writer("difficulty_engine")
+    env       = InterviewEnv(max_questions=5)
 
-    epochs       = 2000
-    target_score = 65.0
+    epochs = 2000
 
     # Accumulate episode data for batch logging every 400 epochs
     batch_rewards = []
     batch_scores  = []
 
     for epoch in range(epochs):
+        obs, _ = env.reset()
         score_history = []
         log_probs     = []
         rewards       = []
         entropies     = []
-        current_difficulty = 3
-        candidate_skill    = random.choice([1, 2, 3, 4, 5])
 
-        for step in range(5):
-            avg_score = (sum(score_history) / len(score_history)
-                         if score_history else target_score)
-            avg_score_norm   = avg_score / 100.0
-            trend            = ((score_history[-1] - score_history[-2]) / 100.0
-                                if len(score_history) >= 2 else 0.0)
-            current_diff_norm = (current_difficulty - 1) / 4.0
-
-            state  = torch.tensor(
-                [[avg_score_norm, trend, current_diff_norm]], dtype=torch.float32
-            ).to(device)
+        for step in range(env.max_questions):
+            # Use full 6-D observation from InterviewEnv directly
+            state = torch.tensor([obs], dtype=torch.float32).to(device)
 
             logits = model(state)
             probs  = torch.softmax(logits, dim=-1)
             m      = Categorical(probs)
             action = m.sample()
-            current_difficulty = action.item() + 1
 
             log_probs.append(m.log_prob(action))
             entropies.append(m.entropy())
 
-            actual_score = simulate_candidate_answer(current_difficulty, candidate_skill)
+            # Use the environment's multi-objective reward directly
+            obs, reward, terminated, _, info = env.step(action.item())
+            actual_score = info["score"]
             score_history.append(actual_score)
-
-            reward = -abs(actual_score - target_score)
             rewards.append(reward)
+
+            if terminated:
+                break
 
         # Policy gradient update
         optimizer.zero_grad()
@@ -110,18 +92,22 @@ def main():
 
     writer.close()
     os.makedirs("models/checkpoints", exist_ok=True)
-    torch.save(model.state_dict(), "models/checkpoints/difficulty_engine_v1.pt")
-    print("\nRL Checkpoint saved: models/checkpoints/difficulty_engine_v1.pt")
+    torch.save(model.state_dict(), "models/checkpoints/difficulty_engine_v2.pt")
+    print("\nRL Checkpoint saved: models/checkpoints/difficulty_engine_v2.pt")
 
     # Quick inference test
-    print("\n--- Quick Inference Test ---")
+    print("\n--- Quick Inference Test (6-D state) ---")
     test_history_smart = [95, 92]
-    next_diff_smart, _ = model.decide_next_difficulty(test_history_smart, 2)
-    print(f"Candidate acing questions (95, 92) → Next Difficulty: {next_diff_smart}")
+    next_diff_smart, _ = model.decide_next_difficulty(
+        test_history_smart, 2, engagement=0.9, topic_diversity=0.4,
+        questions_remaining_norm=0.4)
+    print(f"Candidate acing questions (95, 92) -> Next Difficulty: {next_diff_smart}")
 
     test_history_struggling = [30, 25]
-    next_diff_struggling, _ = model.decide_next_difficulty(test_history_struggling, 4)
-    print(f"Candidate struggling (30, 25) → Next Difficulty: {next_diff_struggling}")
+    next_diff_struggling, _ = model.decide_next_difficulty(
+        test_history_struggling, 4, engagement=0.5, topic_diversity=0.2,
+        questions_remaining_norm=0.6)
+    print(f"Candidate struggling (30, 25) -> Next Difficulty: {next_diff_struggling}")
 
 
 if __name__ == "__main__":

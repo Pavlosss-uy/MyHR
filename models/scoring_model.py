@@ -27,7 +27,7 @@ class CandidateScoringMLP(nn.Module):
 # --- 2. PURE EMBEDDING EXTRACTOR ---
 class EmbeddingExtractor:
     def __init__(self):
-        print("🧠 Loading Semantic Embedding Model for DL Scorer...")
+        print("[AI] Loading Semantic Embedding Model for DL Scorer...")
         self.embedder = SentenceTransformer("all-mpnet-base-v2")
 
     def extract(self, question: str, answer: str, tone_data: dict) -> torch.Tensor:
@@ -64,9 +64,9 @@ class ScoringPipeline:
         checkpoint_path = os.path.join(os.path.dirname(__file__), 'checkpoints', 'scorer_v2.pt')
         if os.path.exists(checkpoint_path):
             self.model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
-            print("✅ True Deep Learning Scoring Model (v2) Loaded Successfully!")
+            print("[OK] True Deep Learning Scoring Model (v2) Loaded Successfully!")
         else:
-            print("⚠️ Warning: No trained v2 model found. Using random weights.")
+            print("[WARN] No trained v2 model found. Using random weights.")
             
         self.model.eval()
 

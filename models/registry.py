@@ -16,7 +16,6 @@ from models.skill_matcher import SkillMatchSiameseNet
 from models.multi_head_evaluator import MultiHeadEvaluator
 from models.difficulty_engine import AdaptiveDifficultyEngine
 from models.performance_predictor import PerformancePredictor
-from models.cross_encoder_scorer import InterviewCrossEncoderScorer
 
 # Import from the recommender folder
 try:
@@ -33,14 +32,14 @@ class ModelRegistry:
         
         # Centralized version control
         self.versions = {
-            "scorer": "scorer_v1.pt", # Or v2 depending on your latest
-            "emotion": "emotion_finetuned_v2.pt",
-            "skill_matcher": "skill_matcher_v1.pt",
-            "evaluator": "evaluator_v1.pt", # Evaluator shares the scorer backbone (MOD-4)
-            "difficulty": "difficulty_engine_v1.pt",
+            "scorer": "scorer_v2.pt",           # v2: trained with SentenceTransformer embeddings
+            "emotion": "emotion_finetuned_v1.pt",
+            "skill_matcher": "skill_matcher_v2.pt",  # v2: trained on SO 2018 survey data
+            "evaluator": "evaluator_v1.pt",
+            "difficulty": "difficulty_engine_v2.pt",  # v2: 6-D state
+            "difficulty_ppo": "difficulty_ppo_v1.zip",
             "ranker": "candidate_ranker_v1.pt",
-            "predictor": "performance_predictor_v1.pt",
-            "cross_encoder": "cross_encoder_scorer_v1"
+            "predictor": "performance_predictor_v1.pt"
         }
         
         # Cache to keep models loaded in memory so we don't reload them on every request
@@ -70,14 +69,52 @@ class ModelRegistry:
             self.loaded_models["skill_matcher"] = model
         return self.loaded_models["skill_matcher"]
 
-    def load_difficulty_engine(self):
+    def load_difficulty_engine(self, use_ppo: bool = False):
+        """Load difficulty engine.
+
+        Args:
+            use_ppo: If True, load the PPO model (78.6% in-zone).
+                     If False, load REINFORCE v2 6-D (70.8% in-zone).
+                     Defaults to False for compatibility; set True in production.
+        """
+        if use_ppo:
+            return self.load_difficulty_ppo()
+
         if "difficulty" not in self.loaded_models:
-            print("Loading Difficulty Engine...")
-            model = AdaptiveDifficultyEngine().to(self.device)
-            model.load_state_dict(torch.load(self._get_path("difficulty"), map_location=self.device))
+            print("Loading Difficulty Engine (REINFORCE 6-D)...")
+            model = AdaptiveDifficultyEngine(state_dim=6).to(self.device)
+            model.load_state_dict(
+                torch.load(self._get_path("difficulty"), map_location=self.device)
+            )
             model.eval()
             self.loaded_models["difficulty"] = model
         return self.loaded_models["difficulty"]
+
+    def load_difficulty_ppo(self):
+        """Load the PPO difficulty engine (best performer: 78.6% in-zone)."""
+        if "difficulty_ppo" not in self.loaded_models:
+            print("Loading PPO Difficulty Engine...")
+            try:
+                from stable_baselines3 import PPO
+                ppo_path = os.path.join(self.base_path, self.versions["difficulty_ppo"])
+                model = PPO.load(ppo_path, device=self.device)
+                self.loaded_models["difficulty_ppo"] = model
+            except Exception as e:
+                print(f"Could not load PPO model ({e}), falling back to REINFORCE.")
+                return self.load_difficulty_engine(use_ppo=False)
+        return self.loaded_models["difficulty_ppo"]
+
+    def load_scorer(self):
+        """Load CandidateScoringMLP (scorer_v2: SentenceTransformer-based)."""
+        if "scorer" not in self.loaded_models:
+            print("Loading Candidate Scorer (v2)...")
+            model = CandidateScoringMLP().to(self.device)
+            model.load_state_dict(
+                torch.load(self._get_path("scorer"), map_location=self.device)
+            )
+            model.eval()
+            self.loaded_models["scorer"] = model
+        return self.loaded_models["scorer"]
 
     def load_candidate_ranker(self):
         if "ranker" not in self.loaded_models:
@@ -92,14 +129,15 @@ class ModelRegistry:
         if "evaluator" not in self.loaded_models:
             print("Loading Multi-Head Evaluator...")
             # Initialize the Multi-Head Evaluator (MOD-4)
+            # input_dim=768: evaluator trained on SentenceTransformer (all-MiniLM-L6-v2) embeddings
             model = MultiHeadEvaluator(input_dim=768).to(self.device)
-            
-            # If you saved a specific checkpoint for it, load it. 
+
+            # If you saved a specific checkpoint for it, load it.
             # Otherwise, it will safely initialize with default weights.
             try:
                 model.load_state_dict(torch.load(self._get_path("evaluator"), map_location=self.device))
             except Exception as e:
-                print("No weights found for evaluator, using base initialized weights.")
+                print(f"No weights found for evaluator ({e}), using base initialized weights.")
                 
             model.eval()
             self.loaded_models["evaluator"] = model
@@ -113,19 +151,6 @@ class ModelRegistry:
             model.eval()
             self.loaded_models["predictor"] = model
         return self.loaded_models["predictor"]
-
-    def load_cross_encoder(self):
-        if "cross_encoder" not in self.loaded_models:
-            print("Loading Cross-Encoder Scorer...")
-            model_path = self._get_path("cross_encoder")
-            try:
-                # The InterviewCrossEncoderScorer handles loading the directory
-                model = InterviewCrossEncoderScorer(model_name_or_path=model_path)
-            except Exception as e:
-                print(f"Failed to load cross-encoder from path {model_path}, falling back to base. Error: {e}")
-                model = InterviewCrossEncoderScorer()
-            self.loaded_models["cross_encoder"] = model
-        return self.loaded_models["cross_encoder"]
 
 # Create a global singleton instance to be imported across the app
 registry = ModelRegistry()

@@ -60,13 +60,17 @@ def train():
     y_train, y_val = y[:split], y[split:]
 
     optimizer = optim.Adam(model.parameters(), lr=0.005)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=10, factor=0.5)
     criterion = nn.MSELoss()
     writer    = make_writer("scorer")
 
-    epochs    = 200
-    best_loss = float("inf")
+    epochs           = 200
+    best_loss        = float("inf")
+    patience         = 20
+    patience_counter = 0
 
     for epoch in range(epochs):
+        # Training step
         model.train()
         optimizer.zero_grad()
         predictions = model(X_train) / 100.0
@@ -74,37 +78,44 @@ def train():
         loss.backward()
         optimizer.step()
 
-        # Validation every 10 epochs
-        if (epoch + 1) % 10 == 0:
-            model.eval()
-            with torch.no_grad():
-                val_preds_raw = model(X_val) / 100.0
-                val_loss      = criterion(val_preds_raw, y_val).item()
-                metrics = regression_metrics(
-                    y_val.squeeze().tolist(),
-                    val_preds_raw.squeeze().tolist()
-                )
+        # Validation every epoch
+        model.eval()
+        with torch.no_grad():
+            val_preds_raw = model(X_val) / 100.0
+            val_loss      = criterion(val_preds_raw, y_val).item()
+            metrics = regression_metrics(
+                y_val.squeeze().tolist(),
+                val_preds_raw.squeeze().tolist()
+            )
 
-            writer.add_scalar("Loss/train",      loss.item(),           epoch)
-            writer.add_scalar("Loss/val",         val_loss,              epoch)
-            writer.add_scalar("Metric/mae",       metrics["mae"],        epoch)
-            writer.add_scalar("Metric/rmse",      metrics["rmse"],       epoch)
-            writer.add_scalar("Metric/spearman",  metrics["spearman_rho"], epoch)
+        scheduler.step(val_loss)
 
-            if (epoch + 1) % 40 == 0:
-                print(
-                    f"Epoch [{epoch+1}/{epochs}] "
-                    f"train_loss={loss.item():.4f}  val_loss={val_loss:.4f} | "
-                    f"MAE={metrics['mae']:.4f}  Spearman={metrics['spearman_rho']:.4f}"
-                )
+        writer.add_scalar("Loss/train",      loss.item(),             epoch)
+        writer.add_scalar("Loss/val",         val_loss,                epoch)
+        writer.add_scalar("Metric/mae",       metrics["mae"],          epoch)
+        writer.add_scalar("Metric/rmse",      metrics["rmse"],         epoch)
+        writer.add_scalar("Metric/spearman",  metrics["spearman_rho"], epoch)
 
-            if val_loss < best_loss:
-                best_loss = val_loss
-                save_path = os.path.join(
-                    os.path.dirname(__file__), "..", "models", "checkpoints", "scorer_v2.pt"
-                )
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                torch.save(model.state_dict(), save_path)
+        if (epoch + 1) % 40 == 0:
+            print(
+                f"Epoch [{epoch+1}/{epochs}] "
+                f"train_loss={loss.item():.4f}  val_loss={val_loss:.4f} | "
+                f"MAE={metrics['mae']:.4f}  Spearman={metrics['spearman_rho']:.4f}"
+            )
+
+        if val_loss < best_loss:
+            best_loss        = val_loss
+            patience_counter = 0
+            save_path = os.path.join(
+                os.path.dirname(__file__), "..", "models", "checkpoints", "scorer_v2.pt"
+            )
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            torch.save(model.state_dict(), save_path)
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch+1} (best val loss: {best_loss:.4f})")
+                break
 
     writer.close()
     print(f"\nTraining complete. Best val loss: {best_loss:.4f}")
