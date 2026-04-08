@@ -29,3 +29,4 @@ models/checkpoints/
 
 # Test output logs
 divergence_output.txt
+node_modules
