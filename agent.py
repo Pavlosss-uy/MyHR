@@ -98,16 +98,36 @@ def grade_context_node(state: AgentState):
 def generate_question_node(state: AgentState):
     """Generates the question using Adaptive Difficulty + CoT/Drill Down."""
     
-    # --- MOD-7: Adaptive Difficulty Integration ---
-    diff_engine = registry.load_difficulty_engine()
-    
-    # Extract score history (just the 'overall' numbers)
+    # --- MOD-7: Adaptive Difficulty Integration (PPO default) ---
+    diff_engine = registry.load_difficulty_ppo()
+
+    # Extract score history
     score_history = [e['score'] for e in state.get("evaluations", [])]
-    current_diff = state.get("current_difficulty", 3)
-    
-    # Get the next optimal difficulty level (1-5)
-    diff_result = diff_engine.decide_next_difficulty(score_history, current_diff)
-    next_diff = diff_result[0] if isinstance(diff_result, tuple) else diff_result
+    current_diff  = state.get("current_difficulty", 3)
+    n_questions   = len(score_history)
+
+    # Build 6-D observation for PPO (mirrors InterviewEnv._get_obs())
+    import numpy as np
+    avg_score_norm = (sum(score_history) / len(score_history) / 100.0) if score_history else 0.5
+    if len(score_history) >= 2:
+        trend = float(np.clip(((score_history[-1] - score_history[-2]) / 100.0 + 1.0) / 2.0, 0.0, 1.0))
+    else:
+        trend = 0.5
+    current_diff_norm        = current_diff / 5.0
+    engagement               = 0.8  # default; not tracked in agent state
+    topic_diversity          = min(1.0, n_questions / 5.0)
+    questions_remaining_norm = max(0.0, 1.0 - n_questions / 5.0)
+    obs = np.array([avg_score_norm, trend, current_diff_norm, engagement,
+                    topic_diversity, questions_remaining_norm], dtype=np.float32)
+
+    # PPO returns (action, _state); REINFORCE fallback uses decide_next_difficulty
+    try:
+        action, _ = diff_engine.predict(obs, deterministic=True)
+        next_diff = int(action) + 1  # 0-4 → 1-5
+    except AttributeError:
+        # Fallback: REINFORCE AdaptiveDifficultyEngine
+        diff_result = diff_engine.decide_next_difficulty(score_history, current_diff)
+        next_diff = diff_result[0] if isinstance(diff_result, tuple) else diff_result
 
     # Inject difficulty into guidance
     difficulty_guidance = f" Set question difficulty to Level {next_diff}/5."

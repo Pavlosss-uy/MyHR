@@ -156,10 +156,13 @@ def main():
     model     = SkillMatchSiameseNet().to(device)
     criterion = ContrastiveLoss(margin=2.0)
     optimizer = optim.AdamW(model.shared_mlp.parameters(), lr=1e-3)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=2, factor=0.5)
     writer    = make_writer("skill_matcher")
 
-    epochs    = 10
-    best_loss = float("inf")
+    epochs           = 10
+    best_loss        = float("inf")
+    patience         = 4
+    patience_counter = 0
 
     for epoch in range(epochs):
         model.train()
@@ -177,6 +180,8 @@ def main():
         avg_loss     = total_loss / len(train_loader)
         pairwise_acc = compute_pairwise_accuracy(model, val_loader, device)
 
+        scheduler.step(avg_loss)
+
         writer.add_scalar("Loss/train",              avg_loss,     epoch)
         writer.add_scalar("Metric/pairwise_accuracy", pairwise_acc, epoch)
 
@@ -187,13 +192,19 @@ def main():
         )
 
         if avg_loss < best_loss:
-            best_loss = avg_loss
+            best_loss        = avg_loss
+            patience_counter = 0
             os.makedirs("models/checkpoints", exist_ok=True)
             torch.save(
                 model.state_dict(),
                 f"models/checkpoints/{checkpoint_name}"
             )
             print(f"  --> Checkpoint saved: {checkpoint_name}")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch+1} (best loss: {best_loss:.4f})")
+                break
 
     writer.close()
     print("\nTraining Complete!")

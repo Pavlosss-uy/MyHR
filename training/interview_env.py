@@ -45,6 +45,7 @@ class InterviewEnv(gym.Env):
         self.fatigue            = 0.0
         self.scores             = []
         self.difficulties_used  = set()
+        self.last_difficulty    = 3      # tracks the most recent action
         self.step_count         = 0
 
     # ------------------------------------------------------------------
@@ -60,6 +61,7 @@ class InterviewEnv(gym.Env):
         self.fatigue           = 0.0
         self.scores            = []
         self.difficulties_used = set()
+        self.last_difficulty   = 3
         self.step_count        = 0
 
         return self._get_obs(), {}
@@ -88,6 +90,7 @@ class InterviewEnv(gym.Env):
 
         self.scores.append(score)
         self.difficulties_used.add(difficulty)
+        self.last_difficulty = difficulty
         self.step_count += 1
 
         # Multi-objective reward
@@ -132,11 +135,8 @@ class InterviewEnv(gym.Env):
         else:
             trend = 0.5
 
-        # current difficulty norm (based on last action taken)
-        if self.difficulties_used:
-            current_diff_norm = float(max(self.difficulties_used)) / 5.0
-        else:
-            current_diff_norm = 0.5
+        # current difficulty norm — tracks the most recent action, not the historical max
+        current_diff_norm = float(self.last_difficulty) / 5.0
 
         topic_diversity         = len(self.difficulties_used) / 5.0
         questions_remaining_norm = 1.0 - (self.step_count / self.max_questions)

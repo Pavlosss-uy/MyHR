@@ -35,9 +35,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from models.multi_head_evaluator import MultiHeadEvaluator
+from training.metrics import make_writer
 
 
-# ─── Configuration ───────────────────────────────────────────────────────────
+# ??? Configuration ???????????????????????????????????????????????????????????
 
 DATA_FILE = os.path.join(PROJECT_ROOT, "data", "eval_training_data.json")
 CHECKPOINT_PATH = os.path.join(PROJECT_ROOT, "models", "checkpoints", "evaluator_v1.pt")
@@ -62,7 +63,7 @@ LOSS_WEIGHTS = {
 SEED = 42
 
 
-# ─── Data Loading ────────────────────────────────────────────────────────────
+# ??? Data Loading ????????????????????????????????????????????????????????????
 
 def load_data(data_path: str) -> tuple:
     """
@@ -70,9 +71,9 @@ def load_data(data_path: str) -> tuple:
     
     Returns:
         features: np.array (N, 768)
-        labels: dict of np.arrays, each (N,) — 'relevance', 'clarity', 'depth'
+        labels: dict of np.arrays, each (N,) ? 'relevance', 'clarity', 'depth'
     """
-    print(f"📂 Loading data from {data_path}...")
+    print(f"? Loading data from {data_path}...")
 
     with open(data_path, "r") as f:
         dataset = json.load(f)
@@ -110,7 +111,7 @@ def prepare_dataloaders(features, labels, val_split=VAL_SPLIT, seed=SEED):
     val_idx = indices[:val_size]
     train_idx = indices[val_size:]
 
-    print(f"\n📊 Train/Val split: {len(train_idx)}/{len(val_idx)}")
+    print(f"\n? Train/Val split: {len(train_idx)}/{len(val_idx)}")
 
     def make_loader(idx, shuffle=False):
         X = torch.tensor(features[idx])
@@ -126,14 +127,22 @@ def prepare_dataloaders(features, labels, val_split=VAL_SPLIT, seed=SEED):
     return train_loader, val_loader, train_idx, val_idx
 
 
-# ─── Training ────────────────────────────────────────────────────────────────
+# ??? Training ????????????????????????????????????????????????????????????????
 
-def compute_loss(preds: dict, y_rel, y_cla, y_dep) -> torch.Tensor:
+def _unpack_preds(preds):
+    """Model returns either a dict or a (rel, cla, dep) tuple."""
+    if isinstance(preds, dict):
+        return preds["relevance"], preds["clarity"], preds["depth"]
+    return preds[0], preds[1], preds[2]
+
+
+def compute_loss(preds, y_rel, y_cla, y_dep) -> torch.Tensor:
     """Multi-task weighted loss."""
+    rel, cla, dep = _unpack_preds(preds)
     loss = (
-        LOSS_WEIGHTS["relevance"] * F.mse_loss(preds["relevance"].squeeze(), y_rel)
-        + LOSS_WEIGHTS["clarity"] * F.mse_loss(preds["clarity"].squeeze(), y_cla)
-        + LOSS_WEIGHTS["depth"] * F.mse_loss(preds["depth"].squeeze(), y_dep)
+        LOSS_WEIGHTS["relevance"] * F.mse_loss(rel.squeeze(), y_rel)
+        + LOSS_WEIGHTS["clarity"] * F.mse_loss(cla.squeeze(), y_cla)
+        + LOSS_WEIGHTS["depth"] * F.mse_loss(dep.squeeze(), y_dep)
     )
     return loss
 
@@ -158,8 +167,13 @@ def evaluate(model, data_loader) -> dict:
             total_loss += loss.item()
             n_batches += 1
 
-            for key, y in zip(["relevance", "clarity", "depth"], [y_rel, y_cla, y_dep]):
-                all_preds[key].extend(preds[key].squeeze().tolist())
+            rel, cla, dep = _unpack_preds(preds)
+            for key, pred_t, y in zip(
+                ["relevance", "clarity", "depth"],
+                [rel, cla, dep],
+                [y_rel, y_cla, y_dep]
+            ):
+                all_preds[key].extend(pred_t.squeeze().tolist())
                 all_labels[key].extend(y.tolist())
 
     results = {"loss": total_loss / max(n_batches, 1)}
@@ -186,20 +200,21 @@ def train(model, train_loader, val_loader):
     """Full training loop with early stopping."""
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = CosineAnnealingLR(optimizer, T_max=T_MAX)
+    writer = make_writer("multi_head_evaluator")
 
     best_val_loss = float("inf")
     best_epoch = 0
     patience_counter = 0
     best_state = None
 
-    print(f"\n🚀 Training Multi-Head Evaluator")
+    print(f"\n? Training Multi-Head Evaluator")
     print(f"   Epochs: {EPOCHS} | Batch: {BATCH_SIZE} | LR: {LEARNING_RATE}")
     print(f"   Loss weights: {LOSS_WEIGHTS}")
     print(f"   Early stopping patience: {EARLY_STOP_PATIENCE}")
     print("=" * 80)
 
     for epoch in range(1, EPOCHS + 1):
-        # ── Train ──
+        # ?? Train ??
         model.train()
         train_loss = 0.0
         n_batches = 0
@@ -216,11 +231,19 @@ def train(model, train_loader, val_loader):
         train_loss /= max(n_batches, 1)
         scheduler.step()
 
-        # ── Validate ──
+        # ?? Validate ??
         val_results = evaluate(model, val_loader)
         val_loss = val_results["loss"]
 
-        # ── Logging ──
+        # ?? TensorBoard ??
+        writer.add_scalar("Loss/train", train_loss, epoch)
+        writer.add_scalar("Loss/val", val_loss, epoch)
+        writer.add_scalar("LR", optimizer.param_groups[0]["lr"], epoch)
+        for key in ["relevance", "clarity", "depth"]:
+            writer.add_scalar(f"Metric/{key}_spearman", val_results[f"{key}_spearman"], epoch)
+            writer.add_scalar(f"Metric/{key}_mse",      val_results[f"{key}_mse"],      epoch)
+
+        # ?? Logging ??
         if epoch % 5 == 0 or epoch == 1:
             spearman_str = " | ".join(
                 f"{k[:3]}={val_results[f'{k}_spearman']:.3f}"
@@ -233,7 +256,7 @@ def train(model, train_loader, val_loader):
                 f"Spearman: {spearman_str}"
             )
 
-        # ── Early Stopping ──
+        # ?? Early Stopping ??
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
@@ -242,27 +265,28 @@ def train(model, train_loader, val_loader):
         else:
             patience_counter += 1
             if patience_counter >= EARLY_STOP_PATIENCE:
-                print(f"\n  ⏹️  Early stopping at epoch {epoch} (best: {best_epoch})")
+                print(f"\n  ??  Early stopping at epoch {epoch} (best: {best_epoch})")
                 break
 
-    # Restore best model
+    # Restore best model and close writer
     if best_state is not None:
         model.load_state_dict(best_state)
+    writer.close()
 
-    print(f"\n  ✅ Best model from epoch {best_epoch} (val_loss={best_val_loss:.4f})")
+    print(f"\n  ? Best model from epoch {best_epoch} (val_loss={best_val_loss:.4f})")
     return model, best_epoch
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
+# ??? Main ????????????????????????????????????????????????????????????????????
 
 def main():
     print("=" * 60)
-    print("  🧠 Multi-Head Evaluator Training")
+    print("  ? Multi-Head Evaluator Training")
     print("=" * 60)
 
     # Check for training data
     if not Path(DATA_FILE).exists():
-        print(f"\n❌ Training data not found at {DATA_FILE}")
+        print(f"\n? Training data not found at {DATA_FILE}")
         print("   Run this first: python training/generate_eval_data.py")
         sys.exit(1)
 
@@ -292,14 +316,14 @@ def main():
 
     # Final evaluation
     print("\n" + "=" * 60)
-    print("  📊 Final Evaluation on Validation Set")
+    print("  ? Final Evaluation on Validation Set")
     print("=" * 60)
 
     val_results = evaluate(model, val_loader)
 
     print(f"\n  Validation Loss: {val_results['loss']:.4f}")
     print(f"\n  Per-Head Metrics:")
-    print(f"  {'Head':<15} {'MSE':>8} {'Spearman ρ':>12} {'p-value':>10} {'Target':>8}")
+    print(f"  {'Head':<15} {'MSE':>8} {'Spearman ?':>12} {'p-value':>10} {'Target':>8}")
     print(f"  {'-'*55}")
 
     target_met = True
@@ -307,32 +331,30 @@ def main():
         mse = val_results[f"{key}_mse"]
         rho = val_results[f"{key}_spearman"]
         p = val_results[f"{key}_spearman_p"]
-        status = "✅" if rho > 0.65 else "⚠️"
+        status = "?" if rho > 0.65 else "??"
         if rho <= 0.65:
             target_met = False
         print(f"  {key:<15} {mse:>8.2f} {rho:>12.4f} {p:>10.4f} {status} > 0.65")
 
     if target_met:
-        print(f"\n  🎯 All heads exceed Spearman target of 0.65!")
+        print(f"\n  ? All heads exceed Spearman target of 0.65!")
     else:
-        print(f"\n  ⚠️  Some heads below Spearman target. Consider more data or longer training.")
+        print(f"\n  ??  Some heads below Spearman target. Consider more data or longer training.")
 
-    # MC Dropout uncertainty test
-    print("\n  📐 MC Dropout Uncertainty Test (10 forward passes):")
-    model_for_mc = MultiHeadEvaluator(input_dim=input_dim)
-    model_for_mc.load_state_dict(model.state_dict())
-
-    test_features = torch.tensor(features[:5], dtype=torch.float32)
-    means, stds = model_for_mc.predict_with_uncertainty(test_features, n_forward=10)
-    for key in ["relevance", "clarity", "depth"]:
-        print(f"    {key}: mean={means[key][:3].tolist()}, std={stds[key][:3].tolist()}")
+    # MC Dropout uncertainty test (only if model supports it)
+    if hasattr(model, "predict_with_uncertainty"):
+        print("\n  MC Dropout Uncertainty Test (10 forward passes):")
+        test_features = torch.tensor(features[:5], dtype=torch.float32)
+        means, stds = model.predict_with_uncertainty(test_features, n_forward=10)
+        for key in ["relevance", "clarity", "depth"]:
+            print(f"    {key}: mean={means[key][:3].tolist()}, std={stds[key][:3].tolist()}")
 
     # Save checkpoint
     os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
     torch.save(model.state_dict(), CHECKPOINT_PATH)
-    print(f"\n  💾 Model saved to {CHECKPOINT_PATH}")
+    print(f"\n  ? Model saved to {CHECKPOINT_PATH}")
 
-    print(f"\n✅ Training complete! Next step:")
+    print(f"\n? Training complete! Next step:")
     print(f"   python training/train_cross_encoder.py")
 
 

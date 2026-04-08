@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -n \"uncertainty\\\\|MC.*Dropout\\\\|mc_dropout\" /d/GP/MyHR/models/*.py)"
+      "Bash(grep -n \"uncertainty\\\\|MC.*Dropout\\\\|mc_dropout\" /d/GP/MyHR/models/*.py)",
+      "Bash(python -m training.generate_skill_data)",
+      "Bash(python -m training.train_skill_matcher)",
+      "Bash(python -m training.generate_eval_data)",
+      "Bash(python -m training.train_evaluator)",
+      "Bash(python -c ':*)",
+      "Bash(python -m training.train_difficulty_ppo --timesteps 50000 --simulations 500)",
+      "Bash(python -)"
     ]
   }
 }

@@ -6,7 +6,7 @@ using Groq LLM as a judge.
 
 Pipeline:
 1. Generate diverse (question, answer) pairs across 4 quality tiers
-2. Label each with LLM judge → (relevance, clarity, depth, overall_quality)
+2. Label each with LLM judge -> (relevance, clarity, depth, overall_quality)
 3. Extract 768-dim sentence embeddings as feature vectors
 4. Save everything to data/eval_training_data.json
 
@@ -30,11 +30,14 @@ from datetime import datetime
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
+from dotenv import load_dotenv
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+
 from langchain_openai import ChatOpenAI
 from sentence_transformers import SentenceTransformer
 
 
-# ─── Configuration ───────────────────────────────────────────────────────────
+# --- Configuration -----------------------------------------------------------
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 OUTPUT_FILE = os.path.join(DATA_DIR, "eval_training_data.json")
@@ -54,26 +57,31 @@ MAX_RETRIES = 5
 BASE_DELAY = 2.0  # seconds
 
 
-# ─── LLM Setup ──────────────────────────────────────────────────────────────
+# --- LLM Setup --------------------------------------------------------------
 
 def get_llm():
-    """Initialize Groq LLM client."""
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise EnvironmentError(
-            "GROQ_API_KEY not set. Set it as an environment variable:\n"
-            "  Windows: set GROQ_API_KEY=your_key_here\n"
-            "  Linux:   export GROQ_API_KEY=your_key_here"
+    """Initialize LLM client. Prefers Groq; falls back to OpenAI."""
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        return ChatOpenAI(
+            model="llama-3.3-70b-versatile",
+            openai_api_key=groq_key,
+            openai_api_base="https://api.groq.com/openai/v1",
+            temperature=0.7,
         )
-    return ChatOpenAI(
-        model="llama-3.3-70b-versatile",
-        openai_api_key=api_key,
-        openai_api_base="https://api.groq.com/openai/v1",
-        temperature=0.7,
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        return ChatOpenAI(
+            model="gpt-4o-mini",
+            openai_api_key=openai_key,
+            temperature=0.7,
+        )
+    raise EnvironmentError(
+        "Neither GROQ_API_KEY nor OPENAI_API_KEY is set."
     )
 
 
-# ─── Question/Answer Templates ──────────────────────────────────────────────
+# --- Question/Answer Templates ----------------------------------------------
 
 INTERVIEW_TOPICS = [
     "data structures and algorithms",
@@ -151,7 +159,7 @@ Return ONLY a JSON object:
 {{"relevance": int, "clarity": int, "technical_depth": int, "overall_quality": int}}"""
 
 
-# ─── Helper Functions ────────────────────────────────────────────────────────
+# --- Helper Functions --------------------------------------------------------
 
 def call_llm_with_retry(llm, prompt: str, max_retries: int = MAX_RETRIES) -> str:
     """Call LLM with exponential backoff retry logic."""
@@ -161,10 +169,10 @@ def call_llm_with_retry(llm, prompt: str, max_retries: int = MAX_RETRIES) -> str
             return response.content.strip()
         except Exception as e:
             if attempt == max_retries - 1:
-                print(f"  ❌ Failed after {max_retries} attempts: {e}")
+                print(f"  [X] Failed after {max_retries} attempts: {e}")
                 raise
             delay = BASE_DELAY * (2 ** attempt) + random.uniform(0, 1)
-            print(f"  ⚠️  Attempt {attempt + 1} failed ({e}). Retrying in {delay:.1f}s...")
+            print(f"  [WARN]  Attempt {attempt + 1} failed ({e}). Retrying in {delay:.1f}s...")
             time.sleep(delay)
 
 
@@ -186,7 +194,7 @@ def load_checkpoint() -> dict:
     if Path(CHECKPOINT_FILE).exists():
         with open(CHECKPOINT_FILE, "r") as f:
             data = json.load(f)
-            print(f"📂 Resuming from checkpoint: {len(data.get('samples', []))} samples completed")
+            print(f"? Resuming from checkpoint: {len(data.get('samples', []))} samples completed")
             return data
     return {"samples": [], "completed_hashes": set()}
 
@@ -208,7 +216,7 @@ def make_sample_hash(tier: str, topic: str, index: int) -> str:
     return hashlib.md5(f"{tier}:{topic}:{index}".encode()).hexdigest()[:12]
 
 
-# ─── Main Pipeline ───────────────────────────────────────────────────────────
+# --- Main Pipeline -----------------------------------------------------------
 
 def generate_qa_pairs(llm, num_per_tier: dict) -> list:
     """
@@ -219,10 +227,10 @@ def generate_qa_pairs(llm, num_per_tier: dict) -> list:
     completed = set(checkpoint.get("completed_hashes", []))
 
     total_needed = sum(num_per_tier.values())
-    print(f"\n🔄 Generating {total_needed} Q&A pairs ({len(samples)} already done)...\n")
+    print(f"\n? Generating {total_needed} Q&A pairs ({len(samples)} already done)...\n")
 
     for tier, count in num_per_tier.items():
-        print(f"  📝 Tier: {tier.upper()} ({count} samples)")
+        print(f"  ? Tier: {tier.upper()} ({count} samples)")
 
         for i in range(count):
             topic = random.choice(INTERVIEW_TOPICS)
@@ -239,7 +247,7 @@ def generate_qa_pairs(llm, num_per_tier: dict) -> list:
                 qa = parse_json_response(response)
 
                 if "question" not in qa or "answer" not in qa:
-                    print(f"    ⚠️  Malformed response, skipping")
+                    print(f"    [WARN]  Malformed response, skipping")
                     continue
 
                 samples.append({
@@ -254,17 +262,17 @@ def generate_qa_pairs(llm, num_per_tier: dict) -> list:
                 # Checkpoint every 10 samples
                 if len(samples) % 10 == 0:
                     save_checkpoint({"samples": samples, "completed_hashes": completed})
-                    print(f"    💾 Checkpoint: {len(samples)}/{total_needed} samples")
+                    print(f"    [SAVE] Checkpoint: {len(samples)}/{total_needed} samples")
 
                 # Rate limit protection
                 time.sleep(1.5)
 
             except Exception as e:
-                print(f"    ❌ Failed to generate ({tier}/{topic}/{i}): {e}")
+                print(f"    [X] Failed to generate ({tier}/{topic}/{i}): {e}")
                 continue
 
     save_checkpoint({"samples": samples, "completed_hashes": completed})
-    print(f"\n✅ Generated {len(samples)} Q&A pairs total\n")
+    print(f"\n[OK] Generated {len(samples)} Q&A pairs total\n")
     return samples
 
 
@@ -272,7 +280,7 @@ def label_samples(llm, samples: list) -> list:
     """
     Step 2: Label each (question, answer) pair with LLM judge scores.
     """
-    print(f"🏷️  Labeling {len(samples)} samples with LLM judge...\n")
+    print(f"??  Labeling {len(samples)} samples with LLM judge...\n")
 
     labeled = 0
     for i, sample in enumerate(samples):
@@ -298,12 +306,12 @@ def label_samples(llm, samples: list) -> list:
 
             if labeled % 10 == 0:
                 save_checkpoint({"samples": samples, "completed_hashes": set()})
-                print(f"  💾 Labeled: {labeled}/{len(samples)}")
+                print(f"  [SAVE] Labeled: {labeled}/{len(samples)}")
 
             time.sleep(1.5)
 
         except Exception as e:
-            print(f"  ❌ Failed to label sample {i}: {e}")
+            print(f"  [X] Failed to label sample {i}: {e}")
             # Assign default scores based on tier
             tier_defaults = {
                 "excellent": {"relevance": 90, "clarity": 90, "technical_depth": 85, "overall_quality": 88},
@@ -315,16 +323,16 @@ def label_samples(llm, samples: list) -> list:
             sample.update(defaults)
             labeled += 1
 
-    print(f"\n✅ Labeled {labeled} samples\n")
+    print(f"\n[OK] Labeled {labeled} samples\n")
     return samples
 
 
 def extract_embeddings(samples: list) -> list:
     """
     Step 3: Extract 768-dim sentence embeddings as feature vectors.
-    Uses all-MiniLM-L6-v2 (384-dim) — concatenates Q and A embeddings → 768-dim.
+    Uses all-MiniLM-L6-v2 (384-dim) -- concatenates Q and A embeddings -> 768-dim.
     """
-    print("🧠 Extracting sentence embeddings...\n")
+    print("? Extracting sentence embeddings...\n")
 
     model = SentenceTransformer("all-MiniLM-L6-v2")
     embedding_dim = model.get_sentence_embedding_dimension()
@@ -338,12 +346,12 @@ def extract_embeddings(samples: list) -> list:
     q_embeddings = model.encode(questions, show_progress_bar=True, batch_size=32)
     a_embeddings = model.encode(answers, show_progress_bar=True, batch_size=32)
 
-    # Concatenate Q and A embeddings → 768-dim feature vectors
+    # Concatenate Q and A embeddings -> 768-dim feature vectors
     for i, sample in enumerate(samples):
         combined = np.concatenate([q_embeddings[i], a_embeddings[i]])
         sample["features"] = combined.tolist()
 
-    print(f"\n✅ Extracted {len(samples)} feature vectors ({embedding_dim * 2}-dim each)\n")
+    print(f"\n[OK] Extracted {len(samples)} feature vectors ({embedding_dim * 2}-dim each)\n")
     return samples
 
 
@@ -366,7 +374,7 @@ def save_dataset(samples: list, output_path: str = None):
             "samples": samples,
         }, f, indent=2)
 
-    print(f"💾 Dataset saved to {path}")
+    print(f"[SAVE] Dataset saved to {path}")
     print(f"   Total samples: {len(samples)}")
     print(f"   Feature dim: {len(samples[0].get('features', [])) if samples else 0}")
 
@@ -376,11 +384,11 @@ def save_dataset(samples: list, output_path: str = None):
         print("   Cleaned up checkpoint file")
 
 
-# ─── Entry Point ─────────────────────────────────────────────────────────────
+# --- Entry Point -------------------------------------------------------------
 
 def main():
     print("=" * 60)
-    print("  📊 Evaluation Data Generator (LLM-as-Labeler)")
+    print("  [CHART] Evaluation Data Generator (LLM-as-Labeler)")
     print("=" * 60)
 
     # Check if data already exists
@@ -388,7 +396,7 @@ def main():
         with open(OUTPUT_FILE) as f:
             existing = json.load(f)
         n = existing["metadata"]["total_samples"]
-        print(f"\n⚠️  Existing dataset found with {n} samples.")
+        print(f"\n[WARN]  Existing dataset found with {n} samples.")
         response = input("   Regenerate? (y/N): ").strip().lower()
         if response != "y":
             print("   Using existing data. Exiting.")
@@ -409,7 +417,7 @@ def main():
     save_dataset(samples)
 
     # Summary statistics
-    print("\n📈 Score Distribution by Tier:")
+    print("\n? Score Distribution by Tier:")
     print("-" * 50)
     for tier in QUALITY_TIERS:
         tier_samples = [s for s in samples if s.get("quality_tier") == tier]
@@ -419,7 +427,7 @@ def main():
             avg_dep = np.mean([s["technical_depth"] for s in tier_samples])
             print(f"  {tier:10s}: relevance={avg_rel:.1f} clarity={avg_cla:.1f} depth={avg_dep:.1f}")
 
-    print("\n✅ Data generation complete! Next step:")
+    print("\n[OK] Data generation complete! Next step:")
     print("   python training/train_evaluator.py")
     print("   python training/train_cross_encoder.py")
 

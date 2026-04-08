@@ -1,0 +1,37 @@
+{
+  "skill_matcher": {
+    "pairwise_accuracy": 0.56,
+    "match_mean": 0.9328,
+    "mismatch_mean": 0.2784,
+    "n_test": 100
+  },
+  "evaluator": {
+    "spearman_relevance": 0.924,
+    "spearman_clarity": 0.9163,
+    "spearman_depth": 0.9233,
+    "n_test": 34
+  },
+  "ranker": {
+    "ndcg_at_2": 1.0,
+    "pairwise_accuracy": 1.0,
+    "n_test": 502,
+    "ndcg_curve": {
+      "1": 1.0,
+      "2": 1.0,
+      "3": 1.0,
+      "5": 1.0
+    }
+  },
+  "predictor": {
+    "mae": 1.8907,
+    "rmse": 2.2643,
+    "spearman": 0.4963,
+    "pearson": 0.4978,
+    "n_test": 5000
+  },
+  "difficulty": {
+    "heuristic": 69.6,
+    "reinforce": 65.0,
+    "ppo": 77.6
+  }
+}

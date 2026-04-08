@@ -1,3 +1,4 @@
+import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -9,11 +10,29 @@ from models.performance_predictor import PerformancePredictor
 from training.metrics import regression_metrics, make_writer
 
 
+class RealPerformanceDataset(Dataset):
+    """
+    Loads real developer performance data from the SO 2018 survey.
+    Features: 8-D developer profile vector.
+    Label: salary percentile within DevType, scaled to [1.0, 10.0].
+    """
+    def __init__(self, json_path: str):
+        with open(json_path, encoding="utf-8") as f:
+            data = json.load(f)
+        self.samples = data["samples"]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        s = self.samples[idx]
+        features = torch.tensor(s["features"], dtype=torch.float32)
+        label    = torch.tensor([s["label"]],  dtype=torch.float32)
+        return features, label
+
+
 class DummyPerformanceDataset(Dataset):
-    """
-    Simulates historical HR data where we have the candidate's original
-    interview features AND their actual 1-10 performance review score after 1 year.
-    """
+    """Fallback when real data file is missing."""
     def __init__(self, num_samples=500):
         self.num_samples = num_samples
 
@@ -34,7 +53,13 @@ def main():
     print(f"Starting Performance Predictor training on {device}...")
 
     # 1. Setup Data — 80/20 split
-    dataset    = DummyPerformanceDataset(num_samples=1000)
+    real_data_path = "data/performance_data.json"
+    if os.path.exists(real_data_path):
+        dataset = RealPerformanceDataset(real_data_path)
+        print(f"Loaded {len(dataset)} real SO survey samples from {real_data_path}")
+    else:
+        print("WARNING: Real data not found, falling back to DummyPerformanceDataset")
+        dataset = DummyPerformanceDataset(num_samples=1000)
     train_size = int(0.8 * len(dataset))
     val_size   = len(dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(
@@ -86,8 +111,8 @@ def main():
                 predictions  = model(features)
                 loss = criterion(predictions, target_score)
                 val_loss_total += loss.item()
-                val_preds.extend(predictions.squeeze().cpu().tolist())
-                val_true.extend(target_score.squeeze().cpu().tolist())
+                val_preds.extend(predictions.squeeze(-1).cpu().tolist())
+                val_true.extend(target_score.squeeze(-1).cpu().tolist())
 
         avg_val_loss = val_loss_total / len(val_loader)
         metrics = regression_metrics(val_true, val_preds)
@@ -130,7 +155,7 @@ def main():
     writer.close()
     print(
         f"\nCheckpoint saved: models/checkpoints/performance_predictor_v1.pt"
-        f"\nBest val loss: {best_loss:.4f}  |  Best Spearman ρ: {best_spearman:.4f}"
+        f"\nBest val loss: {best_loss:.4f}  |  Best Spearman r: {best_spearman:.4f}"
     )
 
     # 4. Quick inference test

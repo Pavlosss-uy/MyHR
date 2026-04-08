@@ -1,0 +1,23 @@
+{
+  "heuristic": {
+    "score_variance": 179.24662736801184,
+    "pct_in_target_zone": 69.56,
+    "mean_score": 60.65249816512328,
+    "n_episodes": 500,
+    "n_steps": 2500
+  },
+  "reinforce": {
+    "score_variance": 221.00916993157082,
+    "pct_in_target_zone": 65.03999999999999,
+    "mean_score": 62.683722497650244,
+    "n_episodes": 500,
+    "n_steps": 2500
+  },
+  "ppo": {
+    "score_variance": 149.54120343517113,
+    "pct_in_target_zone": 77.64,
+    "mean_score": 64.8176465187844,
+    "n_episodes": 500,
+    "n_steps": 2500
+  }
+}
