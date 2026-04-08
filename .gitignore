@@ -23,7 +23,7 @@ data/
 data/raw/
 data/*.csv
 data/*.txt
-
+data(phase3)/
 # Model checkpoints (trained weights)
 models/checkpoints/
 *.pt
