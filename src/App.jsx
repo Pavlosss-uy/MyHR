@@ -50,7 +50,8 @@ const App = () => (
                 <BrowserRouter>
                     <Routes>
                         {/* ── Public ─────────────────────────────────────── */}
-                        <Route path="/"             element={<ChoiceScreen />} />
+                        <Route path="/"             element={<Landing />} />
+                        <Route path="/choose"       element={<ChoiceScreen />} />
                         <Route path="/landing"      element={<Landing />} />
                         <Route path="/auth"         element={<Auth />} />
                         <Route path="/verify-email" element={<VerifyEmail />} />

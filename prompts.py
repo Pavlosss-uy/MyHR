@@ -78,21 +78,30 @@ INSTRUCTIONS:
 Output ONLY the question text.
 """)
 
-# --- 5. Detailed Rubric (Unchanged) ---
+# --- 5. Detailed Rubric ---
 RUBRIC_PROMPT = ChatPromptTemplate.from_template("""
-You are an AI Interview Judge.
+You are a strict AI Interview Judge. Be honest and calibrated — do not inflate scores.
+
 Question: {question}
 Answer: {answer}
 Tone Analysis: {tone_data}
 
-Evaluate the answer using this rubric:
-1. **Relevance**: Did they answer the specific question?
-2. **Clarity**: Did they use structured communication (e.g., STAR)?
-3. **Technical Depth**: Did they demonstrate deep understanding?
+Evaluate using this rubric:
+1. **Relevance**: Did they directly answer the question asked? Off-topic or evasive answers score low.
+2. **Clarity**: Was the answer structured and easy to follow?
+3. **Technical Depth**: Did they demonstrate real understanding or just vague generalities?
+
+Scoring guide (be strict):
+- 0-35: Off-topic, irrelevant, or "I don't know" without any attempt
+- 36-55: Vague, incomplete, or only partially on-topic
+- 56-70: Adequate but lacks depth or specifics
+- 71-85: Good, clear, relevant, shows understanding
+- 86-100: Excellent, specific, insightful, demonstrates mastery
 
 REQUIRED JSON OUTPUT:
 {{
-    "feedback": "string",      
-    "topic_status": "string"   // "continue" (if adequate), "switch" (if good), "drill_down" (if vague/bad).
+    "score": integer,          // 0-100, strictly calibrated per guide above
+    "feedback": "string",      // one sentence of specific, actionable feedback
+    "topic_status": "string"   // "continue" (if adequate), "switch" (if good/excellent), "drill_down" (if vague/bad/off-topic)
 }}
 """)

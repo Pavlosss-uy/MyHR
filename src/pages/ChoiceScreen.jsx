@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Brain, Building2, GraduationCap, ArrowRight } from "lucide-react";
+import { Brain, Building2, GraduationCap, ArrowRight, ArrowLeft } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 const ROLE_KEY = "myhr_role";
@@ -77,7 +77,7 @@ const ChoiceScreen = () => {
                         <Brain className="w-6 h-6 text-primary-foreground" />
                     </div>
                     <span className="text-2xl font-bold text-foreground tracking-tight">
-                        Interv<span className="text-cobalt-light">AI</span>
+                        My<span className="text-cobalt-light">HR</span>
                     </span>
                 </div>
                 <h1 className="text-3xl sm:text-4xl font-bold text-foreground leading-tight">
@@ -126,21 +126,28 @@ const ChoiceScreen = () => {
                 })}
             </motion.div>
 
-            {/* Already have account */}
-            <motion.p
+            {/* Footer links */}
+            <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.6 }}
-                className="relative mt-8 text-xs text-muted-foreground"
+                className="relative mt-8 flex items-center gap-5 text-xs text-muted-foreground"
             >
-                Already have an account?{" "}
+                <Link
+                    to="/"
+                    className="flex items-center gap-1 hover:text-foreground transition-colors"
+                >
+                    <ArrowLeft className="w-3 h-3" />
+                    Back to home
+                </Link>
+                <span className="text-border">|</span>
                 <button
                     onClick={() => navigate("/auth")}
                     className="text-cobalt-light hover:text-cobalt font-medium transition-colors"
                 >
-                    Sign in
+                    Already have an account? Sign in
                 </button>
-            </motion.p>
+            </motion.div>
         </div>
     );
 };
