@@ -92,7 +92,8 @@ class ModelRegistry:
         if "evaluator" not in self.loaded_models:
             print("Loading Multi-Head Evaluator...")
             # Initialize the Multi-Head Evaluator (MOD-4)
-            model = MultiHeadEvaluator(input_dim=768).to(self.device)
+            # input_dim=8 matches the 8-feature tensor from AnswerFeatureExtractor
+            model = MultiHeadEvaluator(input_dim=8).to(self.device)
             
             # If you saved a specific checkpoint for it, load it. 
             # Otherwise, it will safely initialize with default weights.

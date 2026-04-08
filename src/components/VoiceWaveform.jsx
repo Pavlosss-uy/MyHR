@@ -78,20 +78,10 @@ const VoiceWaveform = ({ isActive = true, audioStream = null }) => {
         };
     }, [audioStream, isActive]);
 
-    // Fallback random animation when no stream is available
+    // Reset to flat bars when inactive or no stream
     useEffect(() => {
-        if (audioStream && isActive) return; // real analysis is active
-
-        if (!isActive) {
-            setBars(Array(BAR_COUNT).fill(0.08));
-            return;
-        }
-
-        const interval = setInterval(() => {
-            setBars((prev) => prev.map(() => 0.15 + Math.random() * 0.85));
-        }, 120);
-
-        return () => clearInterval(interval);
+        if (audioStream && isActive) return;
+        setBars(Array(BAR_COUNT).fill(0.08));
     }, [isActive, audioStream]);
 
     return (

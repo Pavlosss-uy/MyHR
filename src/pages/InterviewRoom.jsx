@@ -114,12 +114,21 @@ const InterviewRoom = () => {
     };
 
     // ── Record / Stop ──────────────────────────────────────────────────────────
-    const handleToggleRecording = useCallback(() => {
+    const handleToggleRecording = useCallback(async () => {
         if (isSubmitting) return;
         if (isRecording) return; // use Submit button to stop + submit
         setSubmitError("");
         hasRecordedRef.current = true;
-        startRecording();
+        try {
+            await startRecording();
+        } catch (err) {
+            const msg =
+                err.name === "NotAllowedError"
+                    ? "Microphone permission denied. Please allow access and try again."
+                    : `Could not start recording: ${err.message}`;
+            setSubmitError(msg);
+            toast.error("Microphone required", { description: msg });
+        }
     }, [isRecording, isSubmitting, startRecording]);
 
     // ── Submit ─────────────────────────────────────────────────────────────────
