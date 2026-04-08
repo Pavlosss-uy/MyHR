@@ -13,34 +13,45 @@ export function useAudioRecorder(stream) {
     const resolveRef = useRef(null);
 
     const startRecording = useCallback(() => {
-        if (!stream) return;
+        if (!stream) {
+            console.error("AudioRecorder: No stream available");
+            return;
+        }
 
         chunksRef.current = [];
 
-        // Prefer webm if available, fall back to wav
-        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-            ? "audio/webm;codecs=opus"
-            : "audio/wav";
-
-        const recorder = new MediaRecorder(stream, { mimeType });
-
-        recorder.ondataavailable = (e) => {
-            if (e.data.size > 0) {
-                chunksRef.current.push(e.data);
+        try {
+            let options = {};
+            if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+                options.mimeType = "audio/webm;codecs=opus";
+            } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+                options.mimeType = "audio/mp4";
             }
-        };
+            // If neither is supported, leave options empty to let the browser pick its default.
 
-        recorder.onstop = () => {
-            const blob = new Blob(chunksRef.current, { type: "audio/wav" });
-            if (resolveRef.current) {
-                resolveRef.current(blob);
-                resolveRef.current = null;
-            }
-        };
+            const recorder = new MediaRecorder(stream, options);
 
-        mediaRecorderRef.current = recorder;
-        recorder.start(250); // collect data every 250ms
-        setIsRecording(true);
+            recorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    chunksRef.current.push(e.data);
+                }
+            };
+
+            recorder.onstop = () => {
+                const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+                if (resolveRef.current) {
+                    resolveRef.current(blob);
+                    resolveRef.current = null;
+                }
+            };
+
+            mediaRecorderRef.current = recorder;
+            recorder.start(250); // collect data every 250ms
+            setIsRecording(true);
+        } catch (err) {
+            console.error("Failed to start MediaRecorder:", err);
+            // We use standard error throwing here, the caller can catch or we just rely on console
+        }
     }, [stream]);
 
     const stopRecording = useCallback(() => {

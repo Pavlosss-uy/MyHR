@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { toast } from "sonner";
 
 /**
  * Custom hook for managing camera and microphone access via getUserMedia.
@@ -50,13 +51,19 @@ export function useMediaDevices() {
             } catch (err) {
                 if (cancelled) return;
                 setPermissionState("denied");
-                setError(
-                    err.name === "NotAllowedError"
-                        ? "Camera/microphone permission denied. Please allow access in your browser settings."
-                        : err.name === "NotFoundError"
-                            ? "No camera or microphone found on this device."
-                            : `Media error: ${err.message}`
-                );
+                
+                let errorMessage = "";
+                if (err.name === "NotAllowedError") {
+                    errorMessage = "Camera/microphone permission denied. Please click the lock icon in your URL bar to allow access.";
+                    toast.error("Permissions Denied", { description: errorMessage });
+                } else if (err.name === "NotFoundError") {
+                    errorMessage = "No camera or microphone found on this device.";
+                    toast.error("Device Not Found", { description: errorMessage });
+                } else {
+                    errorMessage = `Media error: ${err.message}`;
+                    toast.error("Media Error", { description: errorMessage });
+                }
+                setError(errorMessage);
             }
         }
 
