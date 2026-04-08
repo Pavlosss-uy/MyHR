@@ -23,7 +23,7 @@ from prompts import (
 
 # --- State Definitions (Unchanged) ---
 class EvaluationResult(BaseModel):
-    # We removed 'score: int' from here!
+    score: int = Field(description="Score 0-100 reflecting overall answer quality. Be strict: off-topic or irrelevant answers should score below 40, mediocre answers 40-65, good answers 65-80, excellent answers 80-100.", ge=0, le=100)
     feedback: str = Field(description="One sentence feedback")
     topic_status: Literal["continue", "switch", "drill_down"] = Field(description="Next move")
 
@@ -249,10 +249,17 @@ def evaluate_answer_node(state: AgentState):
         "tone_data": str(tone_data)
     })
 
+    # Blend LLM score (primary quality signal) with neural score (structural features)
+    llm_score = float(res.score)
+    neural_score = float(neural_results["overall"])
+    blended_score = round(0.6 * llm_score + 0.4 * neural_score, 1)
+
     report_entry = {
         "question": state["last_question"],
         "answer": state["last_answer"],
-        "score": neural_results["overall"],
+        "score": blended_score,
+        "llm_score": llm_score,
+        "neural_score": neural_score,
         "detailed_scores": neural_results,
         "predicted_job_performance": job_prediction,
         "feedback": res.feedback,
@@ -266,7 +273,7 @@ def evaluate_answer_node(state: AgentState):
         "shap_expected_value": float(np.ravel(expected_value)[0]) if expected_value is not None else None
     }
 
-    print(f"📊 Multi-Head Neural Score: {neural_results['overall']}/100")
+    print(f"📊 LLM Score: {llm_score}/100 | Neural Score: {neural_score}/100 | Blended: {blended_score}/100")
     print(f"🔮 Predicted Job Performance: {job_prediction}/10.0")
     print(f"\n📊 DYNAMIC FEATURES EXTRACTED for {state['last_answer'][:20]}...")
     print(features)

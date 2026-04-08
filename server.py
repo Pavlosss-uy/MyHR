@@ -104,13 +104,21 @@ async def start_interview(
     db.commit()
     
     # 8. TTS & Return
-    question_text = result["last_question"]
-    audio_path = generate_audio(question_text)
+    candidate_name = initial_state["initial_job_context"]["candidate_name"]
+    job_title = initial_state["initial_job_context"]["job_title"]
+    first_question = result["last_question"]
+    greeting = (
+        f"Hello {candidate_name}! Welcome to your AI interview for the {job_title} position. "
+        f"I'm your interviewer today. We'll go through a series of questions — just speak naturally and take your time. "
+        f"Let's get started!\n\n{first_question}"
+    )
+
+    audio_path = generate_audio(greeting)
     audio_url = f"http://localhost:8000/static/audio/{os.path.basename(audio_path)}" if audio_path else None
 
     return {
         "session_id": session_id,
-        "question": question_text,
+        "question": greeting,
         "audio_url": audio_url
     }
 

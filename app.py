@@ -16,6 +16,10 @@ if "last_audio_url" not in st.session_state:
     st.session_state.last_audio_url = None
 if "processed_audio_hash" not in st.session_state:
     st.session_state.processed_audio_hash = None
+if "interview_completed" not in st.session_state:
+    st.session_state.interview_completed = False
+if "final_report" not in st.session_state:
+    st.session_state.final_report = None
 
 st.title("🎙️ MyHR: AI Interviewer")
 
@@ -45,6 +49,15 @@ if not st.session_state.session_id:
 
 # --- STEP 2: INTERVIEW LOOP ---
 else:
+    # Show final report if interview is done
+    if st.session_state.get("interview_completed") and st.session_state.get("final_report"):
+        st.success("Interview Complete! Report generated.")
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+        display_final_report(st.session_state.final_report)
+        st.stop()
+
     # 1. Display Chat History
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -78,25 +91,22 @@ else:
                     if res.status_code == 200:
                         resp = res.json()
                         
-                        # Add User's Transcription to Chat
-                        st.session_state.messages.append({"role": "user", "content": resp["transcription"]})
-                        
                         if resp.get("status") == "completed":
-                            # Make sure it grabs the transcription from the final turn!
+                            # Append transcription once only
                             st.session_state.messages.append({"role": "user", "content": resp.get("transcription", "")})
-                            st.success("Interview Finished! Report generated.")
-
-                            final_state = {
+                            st.session_state.interview_completed = True
+                            st.session_state.final_report = {
                                 "predicted_performance": resp["report"][-1].get("predicted_job_performance", 5.0) if resp.get("report") else 5.0,
                                 "evaluations": resp.get("report", []),
                                 "current_difficulty": 3
                             }
-                            display_final_report(final_state)
                         else:
+                            # Add User's Transcription to Chat
+                            st.session_state.messages.append({"role": "user", "content": resp["transcription"]})
                             # Add AI Response
                             st.session_state.messages.append({"role": "ai", "content": resp["next_question"]})
                             st.session_state.last_audio_url = resp.get("audio_url")
-                            
+
                         st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
