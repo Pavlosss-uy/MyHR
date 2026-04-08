@@ -1,0 +1,387 @@
+{
+  "generated_at": "2026-04-08T17:31:48.914450+00:00",
+  "report_path": "D:\\College\\GP\\MyHR\\training\\results\\fairness_report.json",
+  "overall_status": "fail",
+  "summary": {
+    "passed": [
+      "counterfactual_fairness",
+      "disparate_impact"
+    ],
+    "failed": [
+      "skill_matcher_terminology_bias"
+    ],
+    "skipped": [
+      "emotion_model_group_bias"
+    ],
+    "total_tests": 4
+  },
+  "tests": {
+    "emotion_model_group_bias": {
+      "status": "skipped",
+      "reason": "tone.analyze_voice_tone unavailable",
+      "dataset_root": "D:\\College\\GP\\MyHR\\data\\ravdess"
+    },
+    "skill_matcher_terminology_bias": {
+      "status": "fail",
+      "jd_text": "Senior Python backend engineer with experience in Django, REST APIs, SQL, cloud deployment, testing, and production web applications.",
+      "variants": {
+        "direct_professional": "Python, Django, REST APIs, SQL, cloud deployment, testing, production backend web apps.",
+        "self_taught_equivalent": "Completed Python bootcamp, built web apps, created APIs, worked with backend databases, deployed projects to the cloud.",
+        "academic_phrasing": "Academic projects in Python covering web development, API design, relational databases, and software testing.",
+        "portfolio_phrasing": "Self-taught developer who built portfolio projects with Python web frameworks, API endpoints, SQL storage, and deployment workflows."
+      },
+      "scores": {
+        "direct_professional": {
+          "score": 0.75,
+          "method": "lexical_fallback"
+        },
+        "self_taught_equivalent": {
+          "score": 0.32142857142857145,
+          "method": "lexical_fallback"
+        },
+        "academic_phrasing": {
+          "score": 0.21428571428571427,
+          "method": "lexical_fallback"
+        },
+        "portfolio_phrasing": {
+          "score": 0.35714285714285715,
+          "method": "lexical_fallback"
+        }
+      },
+      "pairwise_differences": {
+        "direct_vs_self_taught": 0.42857142857142855,
+        "academic_vs_portfolio": 0.14285714285714288,
+        "direct_vs_academic": 0.5357142857142857
+      },
+      "max_difference": 0.5357142857142857,
+      "threshold": 0.05,
+      "rule": "Equivalent phrasing should not shift score by more than 5 percentage points."
+    },
+    "counterfactual_fairness": {
+      "status": "pass",
+      "rule": "Swapping only the candidate name should not change score by more than 5%.",
+      "threshold": 0.05,
+      "max_relative_difference": 0.0,
+      "mean_relative_difference": 0.0,
+      "pairs_tested": 10,
+      "pair_results": [
+        {
+          "original_name": "John Smith",
+          "swapped_name": "Aisha Mohammed",
+          "original_score": 0.5714285714285714,
+          "swapped_score": 0.5714285714285714,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.5714285714285714,
+              "job_prediction": 5.7142857142857135,
+              "overall": 57.14285714285714,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.5714285714285714,
+              "job_prediction": 5.7142857142857135,
+              "overall": 57.14285714285714,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        },
+        {
+          "original_name": "Michael Brown",
+          "swapped_name": "Sara Ahmed",
+          "original_score": 0.42500000000000004,
+          "swapped_score": 0.42500000000000004,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.42500000000000004,
+              "job_prediction": 4.25,
+              "overall": 42.50000000000001,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.42500000000000004,
+              "job_prediction": 4.25,
+              "overall": 42.50000000000001,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        },
+        {
+          "original_name": "David Wilson",
+          "swapped_name": "Maya Johnson",
+          "original_score": 0.37857142857142856,
+          "swapped_score": 0.37857142857142856,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.37857142857142856,
+              "job_prediction": 3.7857142857142856,
+              "overall": 37.857142857142854,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.37857142857142856,
+              "job_prediction": 3.7857142857142856,
+              "overall": 37.857142857142854,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        },
+        {
+          "original_name": "Omar Hassan",
+          "swapped_name": "Fatima Noor",
+          "original_score": 0.2392857142857143,
+          "swapped_score": 0.2392857142857143,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.2392857142857143,
+              "job_prediction": 2.392857142857143,
+              "overall": 23.92857142857143,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.2392857142857143,
+              "job_prediction": 2.392857142857143,
+              "overall": 23.92857142857143,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        },
+        {
+          "original_name": "Daniel Lee",
+          "swapped_name": "Emily Davis",
+          "original_score": 0.4017857142857143,
+          "swapped_score": 0.4017857142857143,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.4017857142857143,
+              "job_prediction": 4.017857142857143,
+              "overall": 40.17857142857143,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.4017857142857143,
+              "job_prediction": 4.017857142857143,
+              "overall": 40.17857142857143,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        },
+        {
+          "original_name": "John Smith",
+          "swapped_name": "Aisha Mohammed",
+          "original_score": 0.2625,
+          "swapped_score": 0.2625,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.2625,
+              "job_prediction": 2.625,
+              "overall": 26.25,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.2625,
+              "job_prediction": 2.625,
+              "overall": 26.25,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        },
+        {
+          "original_name": "Michael Brown",
+          "swapped_name": "Sara Ahmed",
+          "original_score": 0.4017857142857143,
+          "swapped_score": 0.4017857142857143,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.4017857142857143,
+              "job_prediction": 4.017857142857143,
+              "overall": 40.17857142857143,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.4017857142857143,
+              "job_prediction": 4.017857142857143,
+              "overall": 40.17857142857143,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        },
+        {
+          "original_name": "David Wilson",
+          "swapped_name": "Maya Johnson",
+          "original_score": 0.4017857142857143,
+          "swapped_score": 0.4017857142857143,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.4017857142857143,
+              "job_prediction": 4.017857142857143,
+              "overall": 40.17857142857143,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.4017857142857143,
+              "job_prediction": 4.017857142857143,
+              "overall": 40.17857142857143,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        },
+        {
+          "original_name": "Omar Hassan",
+          "swapped_name": "Fatima Noor",
+          "original_score": 0.3321428571428572,
+          "swapped_score": 0.3321428571428572,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.3321428571428572,
+              "job_prediction": 3.321428571428572,
+              "overall": 33.214285714285715,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.3321428571428572,
+              "job_prediction": 3.321428571428572,
+              "overall": 33.214285714285715,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        },
+        {
+          "original_name": "Daniel Lee",
+          "swapped_name": "Emily Davis",
+          "original_score": 0.2392857142857143,
+          "swapped_score": 0.2392857142857143,
+          "relative_difference": 0.0,
+          "flagged": false,
+          "score_details": {
+            "original": {
+              "score": 0.2392857142857143,
+              "job_prediction": 2.392857142857143,
+              "overall": 23.92857142857143,
+              "feature_source": "fallback_lexical"
+            },
+            "swapped": {
+              "score": 0.2392857142857143,
+              "job_prediction": 2.392857142857143,
+              "overall": 23.92857142857143,
+              "feature_source": "fallback_lexical"
+            }
+          }
+        }
+      ]
+    },
+    "disparate_impact": {
+      "status": "pass",
+      "rule": "pass_rate_minority / pass_rate_majority >= 0.8",
+      "threshold": 0.8,
+      "passing_score_threshold": 0.6,
+      "majority_pass_rate": 0.0,
+      "minority_pass_rate": 0.0,
+      "disparate_impact_ratio": 1.0,
+      "majority_scores": [
+        0.5714285714285714,
+        0.42500000000000004,
+        0.37857142857142856,
+        0.2392857142857143,
+        0.4017857142857143,
+        0.2625,
+        0.4017857142857143,
+        0.4017857142857143,
+        0.3321428571428572,
+        0.2392857142857143
+      ],
+      "minority_scores": [
+        0.5714285714285714,
+        0.42500000000000004,
+        0.37857142857142856,
+        0.2392857142857143,
+        0.4017857142857143,
+        0.2625,
+        0.4017857142857143,
+        0.4017857142857143,
+        0.3321428571428572,
+        0.2392857142857143
+      ],
+      "note": "Both groups have zero pass rate; treated as parity but indicates the model/threshold may be too strict.",
+      "examples": [
+        {
+          "majority_name": "John Smith",
+          "minority_name": "Aisha Mohammed",
+          "majority_score": 0.5714285714285714,
+          "minority_score": 0.5714285714285714
+        },
+        {
+          "majority_name": "Michael Brown",
+          "minority_name": "Sara Ahmed",
+          "majority_score": 0.42500000000000004,
+          "minority_score": 0.42500000000000004
+        },
+        {
+          "majority_name": "David Wilson",
+          "minority_name": "Maya Johnson",
+          "majority_score": 0.37857142857142856,
+          "minority_score": 0.37857142857142856
+        },
+        {
+          "majority_name": "Omar Hassan",
+          "minority_name": "Fatima Noor",
+          "majority_score": 0.2392857142857143,
+          "minority_score": 0.2392857142857143
+        },
+        {
+          "majority_name": "Daniel Lee",
+          "minority_name": "Emily Davis",
+          "majority_score": 0.4017857142857143,
+          "minority_score": 0.4017857142857143
+        },
+        {
+          "majority_name": "John Smith",
+          "minority_name": "Aisha Mohammed",
+          "majority_score": 0.2625,
+          "minority_score": 0.2625
+        },
+        {
+          "majority_name": "Michael Brown",
+          "minority_name": "Sara Ahmed",
+          "majority_score": 0.4017857142857143,
+          "minority_score": 0.4017857142857143
+        },
+        {
+          "majority_name": "David Wilson",
+          "minority_name": "Maya Johnson",
+          "majority_score": 0.4017857142857143,
+          "minority_score": 0.4017857142857143
+        },
+        {
+          "majority_name": "Omar Hassan",
+          "minority_name": "Fatima Noor",
+          "majority_score": 0.3321428571428572,
+          "minority_score": 0.3321428571428572
+        },
+        {
+          "majority_name": "Daniel Lee",
+          "minority_name": "Emily Davis",
+          "majority_score": 0.2392857142857143,
+          "minority_score": 0.2392857142857143
+        }
+      ]
+    }
+  }
+}

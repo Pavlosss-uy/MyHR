@@ -8,6 +8,8 @@ import torch
 from models.scoring_model import scorer
 from models.registry import registry
 from models.feature_extractor import extractor
+from models.explainer import ModelExplainer
+import numpy as np
 
 # Import your custom modules
 from retriever import retrieve_context
@@ -185,15 +187,59 @@ def evaluate_answer_node(state: AgentState):
         precomputed_skill_match=state.get("skill_match_score"),
     )
 
-    # 3. 🧠 Neural Evaluation (MOD-4)
-    # Returns: {'relevance': x, 'clarity': y, 'technical_depth': z, 'overall': total}
+    # Make sure features are a torch tensor with shape [1, 8]
+    if not isinstance(features, torch.Tensor):
+        features = torch.tensor(features, dtype=torch.float32)
+    if features.ndim == 1:
+        features = features.unsqueeze(0)
+
+    # 3. Neural Evaluation (MOD-4)
     neural_results = evaluator.evaluate_answer(features)
-    
-    # 4. 📈 Performance Prediction (MOD-6)
-    # Returns a 1.0 - 10.0 forecast
+
+    # 4. Performance Prediction (MOD-6)
     job_prediction = predictor.predict_performance(features)
 
-    # 5. LLM generates feedback text
+    # 5. Explainability (SHAP)
+    feature_names = [
+        "skill_match", "relevance", "clarity", "depth",
+        "confidence", "consistency", "gaps_inverted", "experience"
+    ]
+
+    shap_values_list = []
+    feature_values_list = features.detach().cpu().numpy().tolist()
+    shap_summary = {}
+    expected_value = None
+
+    try:
+        explainer = ModelExplainer(predictor, feature_names)
+
+        # Better than a totally random background:
+        # small perturbations around the candidate's actual feature vector
+        center = features.detach().cpu().numpy()[0]
+        noise = np.random.normal(loc=0.0, scale=0.05, size=(20, len(feature_names)))
+        background_data = np.clip(center + noise, 0.0, 1.0).astype(np.float32)
+
+        shap_values, expected_value = explainer.explain_prediction(features, background_data)
+
+        shap_values_np = np.asarray(shap_values, dtype=np.float32)
+        if shap_values_np.ndim == 1:
+            shap_values_np = shap_values_np.reshape(1, -1)
+
+        shap_values_list = shap_values_np.tolist()
+        shap_summary = dict(zip(feature_names, shap_values_np[0].tolist()))
+
+        os.makedirs("reports", exist_ok=True)
+        explainer.plot_waterfall(
+            shap_values=shap_values_np,
+            features=features,
+            expected_value=expected_value,
+            save_path=f"reports/shap_{state['session_id']}.png"
+        )
+
+    except Exception as e:
+        print(f"⚠️ SHAP Error: {e}")
+
+    # 6. LLM generates feedback text
     structured_llm = llm.with_structured_output(EvaluationResult, method="json_mode")
     chain = RUBRIC_PROMPT | structured_llm
 
@@ -206,22 +252,29 @@ def evaluate_answer_node(state: AgentState):
     report_entry = {
         "question": state["last_question"],
         "answer": state["last_answer"],
-        "score": neural_results["overall"], 
+        "score": neural_results["overall"],
         "detailed_scores": neural_results,
         "predicted_job_performance": job_prediction,
-        "feedback": res.feedback
+        "feedback": res.feedback,
+
+        # Step 5.2 fields
+        "feature_values": feature_values_list,
+        "shap_values": shap_values_list,
+
+        # optional extras
+        "feature_importance": shap_summary,
+        "shap_expected_value": float(np.ravel(expected_value)[0]) if expected_value is not None else None
     }
 
     print(f"📊 Multi-Head Neural Score: {neural_results['overall']}/100")
     print(f"🔮 Predicted Job Performance: {job_prediction}/10.0")
-
     print(f"\n📊 DYNAMIC FEATURES EXTRACTED for {state['last_answer'][:20]}...")
     print(features)
 
     return {
         "evaluations": state.get("evaluations", []) + [report_entry],
         "next_action": res.topic_status,
-        "predicted_performance": job_prediction # Store for final report
+        "predicted_performance": job_prediction
     }
 
 # --- Graph Wiring ---

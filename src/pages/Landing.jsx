@@ -159,7 +159,7 @@ const Landing = () => {
                             <div className="relative rounded-2xl overflow-hidden shadow-cobalt-lg animate-float">
                                 <img
                                     src={heroImage}
-                                    alt="IntervAI Platform - AI-powered interview simulation"
+                                    alt="MyHR Platform - AI-powered interview simulation"
                                     className="w-full h-auto rounded-2xl"
                                 />
                                 <div className="absolute inset-0 bg-gradient-to-t from-cobalt-950/30 to-transparent" />
@@ -183,7 +183,7 @@ const Landing = () => {
                             <span className="text-gradient-cobalt">smarter hiring</span>
                         </h2>
                         <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                            From AI-generated questions to real-time analytics, IntervAI covers every step of the interview process.
+                            From AI-generated questions to real-time analytics, MyHR covers every step of the interview process.
                         </p>
                     </motion.div>
 
@@ -221,7 +221,7 @@ const Landing = () => {
                             Ready to transform your hiring?
                         </h2>
                         <p className="text-cobalt-lighter text-lg mb-8 max-w-xl mx-auto">
-                            Join thousands of companies using IntervAI to find the best talent faster and more fairly.
+                            Join thousands of companies using MyHR to find the best talent faster and more fairly.
                         </p>
                         <div className="flex flex-col sm:flex-row gap-4 justify-center">
                             <Button
@@ -254,10 +254,10 @@ const Landing = () => {
                         <div className="w-8 h-8 rounded-lg gradient-cobalt flex items-center justify-center">
                             <Brain className="w-4 h-4 text-primary-foreground" />
                         </div>
-                        <span className="font-semibold text-foreground">IntervAI</span>
+                        <span className="font-semibold text-foreground">MyHR</span>
                     </div>
                     <p className="text-sm text-muted-foreground">
-                        © 2026 IntervAI. All rights reserved.
+                        © 2026 MyHR. All rights reserved.
                     </p>
                 </div>
             </footer>

@@ -85,7 +85,13 @@ else:
                             # Make sure it grabs the transcription from the final turn!
                             st.session_state.messages.append({"role": "user", "content": resp.get("transcription", "")})
                             st.success("Interview Finished! Report generated.")
-                            st.json(resp["report"])
+
+                            final_state = {
+                                "predicted_performance": resp["report"][-1].get("predicted_job_performance", 5.0) if resp.get("report") else 5.0,
+                                "evaluations": resp.get("report", []),
+                                "current_difficulty": 3
+                            }
+                            display_final_report(final_state)
                         else:
                             # Add AI Response
                             st.session_state.messages.append({"role": "ai", "content": resp["next_question"]})
@@ -121,33 +127,93 @@ def render_radar_chart(detailed_scores):
     )
     return fig
 
+def create_shap_waterfall(shap_values, features, feature_names=None):
+    """Creates a Plotly horizontal waterfall-style bar chart for SHAP values."""
+    if feature_names is None:
+        feature_names = [
+            "skill_match", "relevance", "clarity", "depth",
+            "confidence", "consistency", "gaps_inverted", "experience"
+        ]
+
+    # Support nested lists like [[...]]
+    if isinstance(shap_values, list) and len(shap_values) > 0 and isinstance(shap_values[0], list):
+        shap_values = shap_values[0]
+
+    if isinstance(features, list) and len(features) > 0 and isinstance(features[0], list):
+        features = features[0]
+
+    labels = [
+        f"{name} ({round(value, 3)})"
+        for name, value in zip(feature_names, features)
+    ]
+
+    colors = ["green" if v >= 0 else "red" for v in shap_values]
+
+    fig = go.Figure(
+        go.Bar(
+            x=shap_values,
+            y=labels,
+            orientation="h",
+            marker_color=colors,
+            text=[f"{v:+.3f}" for v in shap_values],
+            textposition="outside",
+            hovertemplate="Feature: %{y}<br>SHAP: %{x:.4f}<extra></extra>"
+        )
+    )
+
+    fig.update_layout(
+        title="Feature Contribution to Predicted Score",
+        xaxis_title="SHAP Contribution",
+        yaxis_title="Features",
+        height=420,
+        margin=dict(l=20, r=20, t=50, b=20)
+    )
+
+    return fig
+
 # --- Inside your Main Report Logic ---
 def display_final_report(state):
     st.header("📋 Final Interview Analytics")
-    
-    # 1. Performance Prediction Metric
-    # We grab the last prediction stored in the state
+
     pred_score = state.get("predicted_performance", 5.0)
-    
+
     col1, col2 = st.columns([1, 2])
-    
+
     with col1:
         st.metric(
-            label="Predicted Job Performance", 
+            label="Predicted Job Performance",
             value=f"{pred_score} / 10",
             delta="High Potential" if pred_score > 7 else "Needs Training",
             delta_color="normal" if pred_score > 7 else "inverse"
         )
         st.caption("Forecast based on technical depth, consistency, and communication clarity.")
 
-    # 2. Radar Chart for the most recent answer
     with col2:
         if state.get("evaluations"):
-            latest_eval = state["evaluations"][-1].get("detailed_scores", {})
+            latest_eval = state["evaluations"][-1]
+            latest_scores = latest_eval.get("detailed_scores", {})
             st.subheader("Latest Competency Map")
-            st.plotly_chart(render_radar_chart(latest_eval), use_container_width=True)
+            st.plotly_chart(render_radar_chart(latest_scores), use_container_width=True)
 
-    # 3. Difficulty Trend
+            # After radar chart
+            shap_values = latest_eval.get("shap_values")
+            feature_values = latest_eval.get("feature_values")
+
+            if shap_values and feature_values:
+                st.subheader("Score Explanation")
+                fig = create_shap_waterfall(shap_values, feature_values)
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption("Green bars pushed the score UP. Red bars pushed it DOWN.")
+            else:
+                st.info("SHAP explanation not available for this evaluation.")
+
     st.subheader("Interview Adaptive Difficulty")
     diff = state.get("current_difficulty", 3)
     st.progress(diff / 5, text=f"Current Difficulty: Level {diff}")
+
+    if state.get("evaluations"):
+        st.subheader("Latest Answer Feedback")
+        latest_eval = state["evaluations"][-1]
+        st.write(f"**Question:** {latest_eval.get('question', '')}")
+        st.write(f"**Answer:** {latest_eval.get('answer', '')}")
+        st.write(f"**Feedback:** {latest_eval.get('feedback', '')}")

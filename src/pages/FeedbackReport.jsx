@@ -1,68 +1,113 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import Navbar from "@/components/Navbar";
 import CircularProgress from "@/components/CircularProgress";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, AlertCircle, ArrowLeft, Download, Lightbulb, ThumbsUp, ThumbsDown, BarChart3, Loader2 } from "lucide-react";
+import {
+    CheckCircle2,
+    AlertCircle,
+    ArrowLeft,
+    Lightbulb,
+    ThumbsUp,
+    ThumbsDown,
+    BarChart3,
+    Loader2,
+    Download,
+} from "lucide-react";
 import { getReport } from "@/lib/interviewApi";
 
+// Persist report to localStorage for the session history list in CandidateHome
+const persistReport = (sessionId, report) => {
+    try {
+        localStorage.setItem(
+            `myhr_report_${sessionId}`,
+            JSON.stringify({ report, session_id: sessionId, timestamp: Date.now() })
+        );
+    } catch { /* storage full — non-fatal */ }
+};
+
 const FeedbackReport = () => {
-    const location = useLocation();
+    const location  = useLocation();
+    const navigate  = useNavigate();
     const routeState = location.state;
 
-    const [report, setReport] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState("");
+    const [report,   setReport]   = useState(null);
+    const [loading,  setLoading]  = useState(true);
+    const [error,    setError]    = useState("");
 
     useEffect(() => {
-        async function loadReport() {
-            // If report was passed directly via route state (from completed interview)
+        (async () => {
+            // ① Report passed directly from InterviewRoom (completed interview)
             if (routeState?.report) {
-                setReport({
-                    evaluations: routeState.report,
-                    average_score: Math.round(
-                        routeState.report.reduce((sum, e) => sum + (e.score || 0), 0) /
-                        routeState.report.length
-                    ),
-                    total_questions: routeState.report.length,
-                    job_title: "Interview",
+                const evaluations = routeState.report;
+                const built = {
+                    evaluations,
+                    average_score: evaluations.length
+                        ? Math.round(evaluations.reduce((s, e) => s + (e.score || 0), 0) / evaluations.length)
+                        : 0,
+                    total_questions: evaluations.length,
+                    job_title: "Mock Interview",
                     candidate_name: "Candidate",
-                });
+                };
+                if (routeState.session_id) persistReport(routeState.session_id, evaluations);
+                setReport(built);
                 setLoading(false);
                 return;
             }
 
-            // Fetch from backend if we have a session_id
+            // ② Try to load from localStorage cache (e.g. navigated directly)
             if (routeState?.session_id) {
                 try {
+                    const cached = localStorage.getItem(`myhr_report_${routeState.session_id}`);
+                    if (cached) {
+                        const parsed = JSON.parse(cached);
+                        const evaluations = parsed.report || [];
+                        setReport({
+                            evaluations,
+                            average_score: evaluations.length
+                                ? Math.round(evaluations.reduce((s, e) => s + (e.score || 0), 0) / evaluations.length)
+                                : 0,
+                            total_questions: evaluations.length,
+                            job_title: "Mock Interview",
+                            candidate_name: "Candidate",
+                        });
+                        setLoading(false);
+                        return;
+                    }
+                } catch { /* ignore */ }
+
+                // ③ Fetch from backend as fallback
+                try {
                     const data = await getReport(routeState.session_id);
+                    if (data.evaluations) persistReport(routeState.session_id, data.evaluations);
                     setReport(data);
                 } catch (err) {
-                    setError(err.message);
+                    setError(err.message || "Failed to load report.");
                 }
                 setLoading(false);
                 return;
             }
 
-            // No data - show empty state
+            // No data at all
             setLoading(false);
-        }
-
-        loadReport();
+        })();
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+    // ── Loading ───────────────────────────────────────────────────────────────
     if (loading) {
         return (
             <div className="min-h-screen bg-background">
                 <Navbar />
-                <div className="pt-32 flex items-center justify-center">
+                <div className="pt-32 flex flex-col items-center justify-center gap-3">
                     <Loader2 className="w-8 h-8 animate-spin text-cobalt" />
+                    <p className="text-sm text-muted-foreground">Loading your report…</p>
                 </div>
             </div>
         );
     }
 
+    // ── Error / empty ─────────────────────────────────────────────────────────
     if (error || !report) {
         return (
             <div className="min-h-screen bg-background">
@@ -81,20 +126,23 @@ const FeedbackReport = () => {
     }
 
     const evaluations = report.evaluations || [];
-    const avgScore = report.average_score || 0;
-
-    // Categorize evaluations
-    const strengths = evaluations.filter((e) => e.score >= 70);
+    const avgScore    = report.average_score || 0;
+    const strengths   = evaluations.filter((e) => e.score >= 70);
     const improvements = evaluations.filter((e) => e.score < 70);
+
+    const scoreColor = avgScore >= 80 ? "mint" : avgScore >= 60 ? "cobalt" : "warning";
+    const scoreLabel = avgScore >= 80 ? "Excellent" : avgScore >= 60 ? "Good" : "Needs Work";
 
     return (
         <div className="min-h-screen bg-background">
             <Navbar />
             <main className="pt-24 pb-12 max-w-5xl mx-auto px-6">
+
+                {/* Page header */}
                 <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="mb-8 flex items-center justify-between"
+                    className="mb-8 flex items-center justify-between flex-wrap gap-4"
                 >
                     <div>
                         <Button variant="ghost" size="sm" className="mb-2 -ml-2" asChild>
@@ -105,12 +153,12 @@ const FeedbackReport = () => {
                         </Button>
                         <h1 className="text-2xl font-bold text-foreground">AI Feedback Report</h1>
                         <p className="text-muted-foreground mt-1">
-                            {report.job_title || "Interview"} — {report.total_questions} questions answered
+                            {report.job_title} — {report.total_questions} question{report.total_questions !== 1 ? "s" : ""} answered
                         </p>
                     </div>
                 </motion.div>
 
-                {/* Score Overview */}
+                {/* Score overview */}
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -123,8 +171,8 @@ const FeedbackReport = () => {
                             size={140}
                             strokeWidth={10}
                             label="Overall Score"
-                            sublabel={avgScore >= 80 ? "Excellent" : avgScore >= 60 ? "Good" : "Needs Work"}
-                            color={avgScore >= 80 ? "mint" : avgScore >= 60 ? "cobalt" : "warning"}
+                            sublabel={scoreLabel}
+                            color={scoreColor}
                         />
                         <div className="flex-1 w-full">
                             <h3 className="font-semibold text-foreground mb-4">Question Scores</h3>
@@ -136,13 +184,14 @@ const FeedbackReport = () => {
                                             <motion.div
                                                 initial={{ width: 0 }}
                                                 animate={{ width: `${e.score}%` }}
-                                                transition={{ delay: 0.2 + idx * 0.1, duration: 0.5 }}
-                                                className={`h-full rounded-full ${e.score >= 80
-                                                    ? "bg-mint"
-                                                    : e.score >= 60
+                                                transition={{ delay: 0.2 + idx * 0.08, duration: 0.5 }}
+                                                className={`h-full rounded-full ${
+                                                    e.score >= 80
+                                                        ? "bg-mint"
+                                                        : e.score >= 60
                                                         ? "gradient-cobalt"
                                                         : "bg-warning"
-                                                    }`}
+                                                }`}
                                             />
                                         </div>
                                         <span className="text-sm font-semibold text-foreground w-10 text-right">
@@ -155,7 +204,7 @@ const FeedbackReport = () => {
                     </div>
                 </motion.div>
 
-                {/* Detailed Q&A */}
+                {/* Detailed Q&A breakdown */}
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -172,7 +221,7 @@ const FeedbackReport = () => {
                                 key={idx}
                                 initial={{ opacity: 0, x: -10 }}
                                 animate={{ opacity: 1, x: 0 }}
-                                transition={{ delay: 0.3 + idx * 0.06 }}
+                                transition={{ delay: 0.3 + idx * 0.05 }}
                                 className="p-5"
                             >
                                 <div className="flex items-start justify-between gap-4 mb-3">
@@ -181,29 +230,35 @@ const FeedbackReport = () => {
                                             Q{idx + 1}: {e.question}
                                         </p>
                                         <p className="text-sm text-muted-foreground leading-relaxed">
-                                            <span className="font-medium text-foreground/70">Answer:</span> {e.answer}
+                                            <span className="font-medium text-foreground/70">Answer: </span>
+                                            {e.answer || <em className="text-muted-foreground/50">No answer recorded</em>}
                                         </p>
                                     </div>
-                                    <div className={`px-3 py-1.5 rounded-lg text-sm font-bold shrink-0 ${e.score >= 80
-                                        ? "bg-mint/10 text-mint"
-                                        : e.score >= 60
-                                            ? "bg-cobalt/10 text-cobalt-lighter"
-                                            : "bg-warning/10 text-warning"
-                                        }`}>
+                                    <div
+                                        className={`px-3 py-1.5 rounded-lg text-sm font-bold shrink-0 ${
+                                            e.score >= 80
+                                                ? "bg-mint/10 text-mint"
+                                                : e.score >= 60
+                                                ? "bg-cobalt/10 text-cobalt-lighter"
+                                                : "bg-warning/10 text-warning"
+                                        }`}
+                                    >
                                         {e.score}%
                                     </div>
                                 </div>
-                                <div className="flex items-start gap-2 mt-2 pl-2 border-l-2 border-cobalt/20">
-                                    <Lightbulb className="w-3.5 h-3.5 text-cobalt-lighter mt-0.5 shrink-0" />
-                                    <p className="text-xs text-muted-foreground leading-relaxed">{e.feedback}</p>
-                                </div>
+                                {e.feedback && (
+                                    <div className="flex items-start gap-2 mt-2 pl-2 border-l-2 border-cobalt/20">
+                                        <Lightbulb className="w-3.5 h-3.5 text-cobalt-lighter mt-0.5 shrink-0" />
+                                        <p className="text-xs text-muted-foreground leading-relaxed">{e.feedback}</p>
+                                    </div>
+                                )}
                             </motion.div>
                         ))}
                     </div>
                 </motion.div>
 
-                {/* Strengths & Improvements */}
-                <div className="grid md:grid-cols-2 gap-6 mb-6">
+                {/* Strengths & improvements */}
+                <div className="grid md:grid-cols-2 gap-6 mb-8">
                     {strengths.length > 0 && (
                         <motion.div
                             initial={{ opacity: 0, y: 20 }}
@@ -238,7 +293,7 @@ const FeedbackReport = () => {
                         >
                             <div className="p-5 border-b border-border flex items-center gap-2">
                                 <AlertCircle className="w-5 h-5 text-warning" />
-                                <h3 className="font-semibold text-foreground">Areas for Improvement</h3>
+                                <h3 className="font-semibold text-foreground">Areas to Improve</h3>
                             </div>
                             <div className="p-5 space-y-3">
                                 {improvements.map((w, i) => (
@@ -260,12 +315,10 @@ const FeedbackReport = () => {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.45 }}
-                    className="text-center"
+                    className="flex justify-center gap-4"
                 >
                     <Button variant="hero" size="lg" asChild>
-                        <Link to="/candidate">
-                            Practice Again
-                        </Link>
+                        <Link to="/candidate">Practice Again</Link>
                     </Button>
                 </motion.div>
             </main>
