@@ -1,24 +1,33 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# Environment variables (Crucial for keeping API keys secure)
+.env
 
+# Python compilation files
+__pycache__/
+*.pyc
+
+# Candidate uploads (CVs and recorded audio answers)
+uploads/
+
+# LlamaIndex / Vector DB storage (Indexes, graphs, docstores)
+storage/
+
+# Generated TTS audio files
+static/audio/
+
+# Generated markdown interview reports
+reports/
+interview_report.md
+
+# Raw data and dummy data
+data/
+data/raw/
+data/*.csv
+data/*.txt
+
+# Model checkpoints (trained weights)
+models/checkpoints/
+*.pt
+
+# Test output logs
+divergence_output.txt
 node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
