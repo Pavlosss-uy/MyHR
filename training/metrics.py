@@ -28,16 +28,17 @@ def classification_metrics(y_true, y_pred, label_names=None):
     weighted_f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
     macro_f1    = f1_score(y_true, y_pred, average="macro",    zero_division=0)
     acc         = accuracy_score(y_true, y_pred)
-    cm          = confusion_matrix(y_true, y_pred).tolist()
+    cm = confusion_matrix(y_true, y_pred, labels=range(len(label_names)) if label_names else None).tolist()
 
     per_class_f1 = {}
     if label_names:
-        f1s = f1_score(y_true, y_pred, average=None, zero_division=0)
+        f1s = f1_score(y_true, y_pred, average=None, zero_division=0, labels=range(len(label_names)))
         for name, score in zip(label_names, f1s):
             per_class_f1[name] = float(score)
 
     report_str = classification_report(
         y_true, y_pred,
+        labels=range(len(label_names)) if label_names else None,
         target_names=label_names,
         zero_division=0
     )

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
+from torch.amp import autocast, GradScaler
 import os
 import numpy as np
 import matplotlib
@@ -43,20 +44,25 @@ class FocalLoss(nn.Module):
 # One training epoch
 # ---------------------------------------------------------------------------
 
-def train_epoch(model, dataloader, optimizer, criterion, device):
+def train_epoch(model, dataloader, optimizer, criterion, device, scaler):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
 
     for batch in dataloader:
-        input_values  = batch["input_values"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels         = batch["labels"].to(device)
+        input_values  = batch["input_values"].to(device, non_blocking=True)
+        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        labels         = batch["labels"].to(device, non_blocking=True)
 
         optimizer.zero_grad()
-        logits = model(input_values, attention_mask)
-        loss   = criterion(logits, labels)
-        loss.backward()
-        optimizer.step()
+        with autocast('cuda'):
+            logits = model(input_values, attention_mask)
+            loss   = criterion(logits, labels)
+
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()
 
         total_loss += loss.item()
         preds   = torch.argmax(logits, dim=-1)
@@ -77,12 +83,13 @@ def val_epoch(model, dataloader, criterion, device):
 
     with torch.no_grad():
         for batch in dataloader:
-            input_values   = batch["input_values"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels         = batch["labels"].to(device)
+            input_values   = batch["input_values"].to(device, non_blocking=True)
+            attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+            labels         = batch["labels"].to(device, non_blocking=True)
 
-            logits = model(input_values, attention_mask)
-            loss   = criterion(logits, labels)
+            with autocast('cuda'):
+                logits = model(input_values, attention_mask)
+                loss   = criterion(logits, labels)
             total_loss += loss.item()
 
             preds = torch.argmax(logits, dim=-1)
@@ -122,8 +129,9 @@ def train_fold(model, train_loader, val_loader, device,
     writer    = make_writer(f"emotion_{fold_tag}")
     criterion = FocalLoss(gamma=2.0)
     optimizer = optim.AdamW(model.parameters(), lr=1e-4)
+    scaler    = GradScaler('cuda')
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", patience=3, factor=0.5, verbose=True
+        optimizer, mode="min", patience=3, factor=0.5
     )
 
     best_val_loss    = float("inf")
@@ -133,7 +141,7 @@ def train_fold(model, train_loader, val_loader, device,
 
     for epoch in range(epochs):
         train_loss, train_acc = train_epoch(
-            model, train_loader, optimizer, criterion, device
+            model, train_loader, optimizer, criterion, device, scaler
         )
         val_loss, val_preds, val_labels = val_epoch(
             model, val_loader, criterion, device
@@ -186,8 +194,13 @@ def train_fold(model, train_loader, val_loader, device,
 # ---------------------------------------------------------------------------
 
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Starting Emotion Model training on {device}...\n")
+    assert torch.cuda.is_available(), (
+        "CUDA GPU not found. Check your PyTorch + CUDA installation.\n"
+        "Install with: pip install torch --index-url https://download.pytorch.org/whl/cu121"
+    )
+    device = torch.device("cuda")
+    torch.backends.cudnn.benchmark = True
+    print(f"Starting Emotion Model training on GPU: {torch.cuda.get_device_name(0)}\n")
 
     csv_path = "data/interview_emotions_train.csv"
     if not os.path.exists(csv_path):
@@ -195,10 +208,12 @@ def main():
         return
 
     full_dataset = InterviewEmotionDataset(csv_path)
-    all_labels   = [full_dataset[i]["labels"].item() for i in range(len(full_dataset))]
 
+    # 1. DOWN-SAMPLE TO AVOID MULTI-HOUR CPU WAIT
+
+    all_labels   = [full_dataset[i]["labels"].item() for i in range(len(full_dataset))]
     epochs           = 10
-    checkpoint_path  = "models/checkpoints/emotion_finetuned_v1.pt"
+    checkpoint_path  = "models/checkpoints/emotion_finetuned_v2.pt"
     cm_save_path     = "training/results/emotion_confusion_matrix.png"
 
     # --- 5-fold cross-validation ---
@@ -209,14 +224,16 @@ def main():
         skf.split(np.zeros(len(all_labels)), all_labels)
     ):
         print(f"\n{'='*60}")
-        print(f"  FOLD {fold+1}/5")
+        print(f"  FOLD {fold+1}/5 (Running 1 fold for time efficiency)")
         print(f"{'='*60}")
 
         train_loader = DataLoader(
-            Subset(full_dataset, train_idx), batch_size=8, shuffle=True
+            Subset(full_dataset, train_idx), batch_size=32, shuffle=True,
+            num_workers=0, pin_memory=True
         )
         val_loader = DataLoader(
-            Subset(full_dataset, val_idx), batch_size=8
+            Subset(full_dataset, val_idx), batch_size=32,
+            num_workers=0, pin_memory=True
         )
 
         model = InterviewEmotionModel().to(device)

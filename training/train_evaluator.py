@@ -159,8 +159,10 @@ def evaluate(model, data_loader) -> dict:
             n_batches += 1
 
             for key, y in zip(["relevance", "clarity", "depth"], [y_rel, y_cla, y_dep]):
-                all_preds[key].extend(preds[key].squeeze().tolist())
-                all_labels[key].extend(y.tolist())
+                pred_vals = preds[key].reshape(-1).tolist()
+                label_vals = y.reshape(-1).tolist()
+                all_preds[key].extend(pred_vals if isinstance(pred_vals, list) else [pred_vals])
+                all_labels[key].extend(label_vals if isinstance(label_vals, list) else [label_vals])
 
     results = {"loss": total_loss / max(n_batches, 1)}
 

@@ -33,7 +33,7 @@ class InterviewCrossEncoderScorer:
         "cross_encoder_scorer_v1",
     )
 
-    def __init__(self, model_path: str = None, base_model: str = None):
+    def __init__(self, model_name_or_path=None):
         """
         Initialize the cross-encoder scorer.
         
