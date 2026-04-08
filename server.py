@@ -130,8 +130,12 @@ async def submit_answer(
     # 2. Read audio bytes into memory immediately (Fixes the "closed file" crash)
     audio_bytes = await audio.read()
 
-    # 3. Save temporarily (Fixes Deepgram URL reachability and Librosa requirements)
-    temp_audio_path = os.path.join(UPLOAD_DIR, f"temp_{session_id}.wav")
+    # 3. Save temporarily with correct extension based on actual content type
+    content_type = audio.content_type or "audio/webm"
+    ext = {"audio/webm": ".webm", "audio/mp4": ".mp4", "audio/wav": ".wav",
+           "audio/mp3": ".mp3", "audio/ogg": ".ogg"}.get(
+               content_type.split(";")[0].strip(), ".webm")
+    temp_audio_path = os.path.join(UPLOAD_DIR, f"temp_{session_id}{ext}")
     with open(temp_audio_path, "wb") as f:
         f.write(audio_bytes)
 

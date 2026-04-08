@@ -9,16 +9,27 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 AUDIO_DIR = "static/audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-def transcribe_audio(audio_path: str) -> str:
+def transcribe_audio(audio_path: str, content_type: str = None) -> str:
     """STT: Converts Audio -> Text using Deepgram API (Raw HTTP)."""
     if not DEEPGRAM_API_KEY:
         print("❌ Deepgram API Key missing.")
         return ""
 
+    # Detect content type from file extension if not provided
+    if not content_type:
+        ext = os.path.splitext(audio_path)[1].lower()
+        content_type = {
+            ".webm": "audio/webm",
+            ".mp4":  "audio/mp4",
+            ".wav":  "audio/wav",
+            ".mp3":  "audio/mp3",
+            ".ogg":  "audio/ogg",
+        }.get(ext, "audio/webm")  # default to webm (browser MediaRecorder output)
+
     url = "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&language=en"
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
-        "Content-Type": "audio/wav" # Assumes WAV from Streamlit
+        "Content-Type": content_type,
     }
 
     try:
