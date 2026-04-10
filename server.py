@@ -1,17 +1,18 @@
 import uvicorn
 import shutil
 import os
+import re
 import uuid
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from langgraph.graph import END 
+from langgraph.graph import END
 from fastapi import Depends
 from sqlalchemy.orm import Session
 from database import get_db, SessionRecord
 import json
-from fastapi import BackgroundTasks # <-- Add this to your fastapi imports
-from s3_utils import upload_file_to_s3 # <-- Assuming you created s3_utils.py from the previous step
+from fastapi import BackgroundTasks
+from s3_utils import upload_file_to_s3
 from services import transcribe_audio_url, generate_audio
 from models.registry import registry
 import io
@@ -19,9 +20,58 @@ import PyPDF2
 from services import transcribe_audio, generate_audio
 from celery_worker import process_audio_tone_task
 
+
+def extract_candidate_name(cv_text: str, filename: str) -> str:
+    """
+    Extract a clean candidate name from CV text or filename.
+    Priority: CV text first-lines → 'Name:' label → cleaned filename → fallback.
+    """
+    # 1. Try the first ~600 chars of the CV — names always appear near the top
+    if cv_text:
+        first_block = cv_text[:600].strip()
+
+        # "Name: John Smith" or "Full Name: John Smith"
+        label_match = re.search(
+            r'(?i)(?:full\s+)?name\s*[:\-]\s*([A-Z][a-zA-Z\'\-]+(?:\s[A-Z][a-zA-Z\'\-]+){1,2})',
+            first_block,
+        )
+        if label_match:
+            return label_match.group(1).strip()
+
+        # Standalone 2–3 capitalised words on a line by themselves (e.g. "Pavlos Youssef")
+        standalone = re.search(
+            r'^([A-Z][a-zA-Z\'\-]+(?:\s[A-Z][a-zA-Z\'\-]+){1,2})\s*$',
+            first_block,
+            re.MULTILINE,
+        )
+        if standalone:
+            candidate = standalone.group(1).strip()
+            noise = {'curriculum', 'vitae', 'resume', 'profile', 'summary',
+                     'contact', 'address', 'objective', 'education', 'experience'}
+            if candidate.split()[0].lower() not in noise:
+                return candidate
+
+    # 2. Derive from filename — strip extension, separators and CV-related words
+    if filename:
+        name = re.sub(r'\.[^.]+$', '', filename)          # remove extension
+        name = re.sub(r'[_\-]+', ' ', name)               # _ and - → space
+        name = re.sub(
+            r'\b(?:cv|resume|curriculum|vitae|application|candidate|profile)\b',
+            '', name, flags=re.IGNORECASE,
+        )
+        name = ' '.join(name.split()).strip()
+        if len(name.split()) >= 2:
+            return name.title()
+
+    return "Candidate"
+
 # Import custom modules
 from ingest import create_session_index
-from agent import app_graph, rewrite_query_node, retrieve_node, generate_question_node, evaluate_answer_node, decide_next_step
+from agent import (
+    app_graph, rewrite_query_node, retrieve_node,
+    generate_question_node, evaluate_answer_node,
+    decide_next_step, MAX_QUESTIONS,
+)
 from services import transcribe_audio, generate_audio
 from tone import analyze_voice_tone
 
@@ -74,22 +124,28 @@ async def start_interview(
         skill_score = 0.5
 
     # 5. Initialize State
+    candidate_name = extract_candidate_name(cv_text, cv.filename)
     initial_state = {
         "session_id": session_id,
         "conversation_history": [],
         "current_topic": "Intro",
         "evaluations": [],
         "next_action": "continue",
-        "loop_count": 0,         
+        "loop_count": 0,
         "current_search_query": "",
         "initial_job_context": {
             "jd_text": jd,
             "job_title": jd.split('\n')[0] if jd else "Position",
-            "candidate_name": cv.filename.replace('.pdf', '').replace('_', ' ') if cv.filename else "Candidate",
-            "cv_url": s3_cv_url  # Store S3 URL instead of local path
+            "candidate_name": candidate_name,
+            "cv_url": s3_cv_url,
         },
         "multimodal_analysis": {},
-        "skill_match_score": skill_score
+        "skill_match_score": skill_score,
+        # — adaptive interview tracking —
+        "question_number": 1,
+        "asked_questions": [],
+        "failed_topics": [],
+        "consecutive_fails": 0,
     }
     
     # 6. Run LangGraph Agent
@@ -104,7 +160,6 @@ async def start_interview(
     db.commit()
     
     # 8. TTS & Return
-    candidate_name = initial_state["initial_job_context"]["candidate_name"]
     job_title = initial_state["initial_job_context"]["job_title"]
     first_question = result["last_question"]
     greeting = (
@@ -119,7 +174,8 @@ async def start_interview(
     return {
         "session_id": session_id,
         "question": greeting,
-        "audio_url": audio_url
+        "audio_url": audio_url,
+        "question_number": 1,
     }
 
 @app.post("/submit_answer")
@@ -192,13 +248,19 @@ async def submit_answer(
         }
 
     if current_state.get("next_action") == "drill_down":
-        current_state["drill_down_count"] = current_state.get("drill_down_count", 0) + 1
-        if current_state["drill_down_count"] >= 2:
+        current_state["consecutive_fails"] = current_state.get("consecutive_fails", 0) + 1
+        if current_state["consecutive_fails"] >= 2:
+            # Candidate failed twice in a row on this topic — force a genuine topic switch.
+            # Record the failed topic so it is never revisited.
+            failed_topic = current_state.get("current_topic", "unknown topic")
+            current_state["failed_topics"] = current_state.get("failed_topics", []) + [failed_topic]
             current_state["next_action"] = "switch"
+            current_state["consecutive_fails"] = 0
             next_step = "rewrite"
-            current_state["drill_down_count"] = 0
+        # else: stay on drill_down path — next_step already == "generate"
     else:
-        current_state["drill_down_count"] = 0
+        # Good or adequate answer — reset the fail counter
+        current_state["consecutive_fails"] = 0
         
     # C. Conditional Routing
     if next_step == "generate":
@@ -226,7 +288,9 @@ async def submit_answer(
         "transcription": transcription,
         "next_question": gen_out["last_question"],
         "audio_url": audio_url,
-        "feedback": eval_out["evaluations"][-1]
+        "feedback": eval_out["evaluations"][-1],
+        "question_number": current_state.get("question_number", 2),
+        "max_questions": MAX_QUESTIONS,
     }
 
 if __name__ == "__main__":
