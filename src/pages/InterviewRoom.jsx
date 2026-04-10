@@ -23,7 +23,9 @@ import {
     MessageSquare,
 } from "lucide-react";
 
-const TOTAL_QUESTIONS = 5;
+// Max is returned by the backend per-session (adaptive).
+// We keep a local fallback only for the progress bar initial render.
+const FALLBACK_MAX_QUESTIONS = 7;
 
 const InterviewRoom = () => {
     const navigate   = useNavigate();
@@ -52,6 +54,7 @@ const InterviewRoom = () => {
     const [messages,        setMessages]        = useState([]);
     const [lastFeedback,    setLastFeedback]    = useState(null);
     const [submitError,     setSubmitError]     = useState("");
+    const [maxQuestions,    setMaxQuestions]    = useState(FALLBACK_MAX_QUESTIONS);
 
     const [isBackendPlaying, setIsBackendPlaying] = useState(false);
     const [recordingElapsed, setRecordingElapsed] = useState(0);
@@ -185,7 +188,13 @@ const InterviewRoom = () => {
                 const nextQ = resp.next_question;
                 setCurrentQuestion(nextQ);
                 setAudioUrl(resp.audio_url ?? null);
-                setQuestionNumber((n) => n + 1);
+                // Use backend-reported number when available; fall back to local increment
+                if (resp.question_number != null) {
+                    setQuestionNumber(resp.question_number);
+                } else {
+                    setQuestionNumber((n) => n + 1);
+                }
+                if (resp.max_questions != null) setMaxQuestions(resp.max_questions);
                 setLastFeedback(resp.feedback ?? null);
                 setMessages((prev) => [...prev, { role: "ai", text: nextQ }]);
             }
@@ -225,7 +234,7 @@ const InterviewRoom = () => {
 
     if (!sessionData) return null;
 
-    const progressPct = ((questionNumber - 1) / TOTAL_QUESTIONS) * 100;
+    const progressPct = Math.min(((questionNumber - 1) / maxQuestions) * 100, 100);
 
     /* ─── Status label ───────────────────────────────────────────────────── */
     const statusLabel = isSubmitting
@@ -301,14 +310,14 @@ const InterviewRoom = () => {
                             </span>
                         </div>
 
-                        {/* Question counter */}
+                        {/* Question counter — adaptive, no fixed total shown */}
                         <div className="px-3 py-1.5 rounded-lg bg-room-surface border border-room-border">
                             <span className="text-xs text-muted-foreground">
                                 Q{" "}
                                 <span className="font-semibold text-primary-foreground">
                                     {questionNumber}
                                 </span>
-                                <span className="text-primary-foreground/40"> / {TOTAL_QUESTIONS}</span>
+                                <span className="text-primary-foreground/40 ml-1">adaptive</span>
                             </span>
                         </div>
                     </div>

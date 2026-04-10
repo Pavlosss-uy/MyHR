@@ -44,11 +44,20 @@ class AgentState(TypedDict):
     multimodal_analysis: dict
     evaluations: List[dict]
     next_action: str
+    # adaptive interview tracking
+    question_number: int
+    asked_questions: List[str]   # full text of every question asked so far
+    failed_topics: List[str]     # topics where candidate repeatedly failed
+    consecutive_fails: int       # consecutive drill-down / "I don't know" count
 
+
+# --- Interview bounds (shared with decide_next_step and generate_question_node) ---
+MIN_QUESTIONS = 3
+MAX_QUESTIONS = 8
 
 # --- LLM CONFIGURATION ---
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile", 
+    model="llama-3.3-70b-versatile",
     api_key=os.getenv("GROQ_API_KEY"),
     temperature=0.3
 )
@@ -117,8 +126,8 @@ def generate_question_node(state: AgentState):
         trend = 0.5
     current_diff_norm        = current_diff / 5.0
     engagement               = 0.8  # default; not tracked in agent state
-    topic_diversity          = min(1.0, n_questions / 5.0)
-    questions_remaining_norm = max(0.0, 1.0 - n_questions / 5.0)
+    topic_diversity          = min(1.0, n_questions / MAX_QUESTIONS)
+    questions_remaining_norm = max(0.0, 1.0 - n_questions / MAX_QUESTIONS)
     obs = np.array([avg_score_norm, trend, current_diff_norm, engagement,
                     topic_diversity, questions_remaining_norm], dtype=np.float32)
 
@@ -134,38 +143,63 @@ def generate_question_node(state: AgentState):
     # Inject difficulty into guidance
     difficulty_guidance = f" Set question difficulty to Level {next_diff}/5."
     
-    # CASE 1: DRILL DOWN (Humanized)
+    asked_questions = state.get("asked_questions", [])
+    failed_topics   = state.get("failed_topics", [])
+
+    # CASE 1: DRILL DOWN
     if state.get("next_action") == "drill_down":
         print(f"⚡ Mode: Generating Follow-Up (Diff: {next_diff})")
         chain = DRILL_DOWN_PROMPT | llm
         guidance = "The candidate's last answer was vague. Be supportive." + difficulty_guidance
-        
+
         response = chain.invoke({
             "history": state["conversation_history"],
-            "guidance": guidance
+            "guidance": guidance,
+            "asked_questions": "\n".join(f"- {q}" for q in asked_questions) or "None yet.",
         })
-        return {"last_question": response.content, "loop_count": 0, "current_difficulty": next_diff}
+        content = response.content.strip()
+        return {
+            "last_question": content,
+            "loop_count": 0,
+            "current_difficulty": next_diff,
+            "asked_questions": asked_questions + [content],
+            "question_number": state.get("question_number", 1) + 1,
+        }
 
-    # CASE 2: STANDARD QUESTION (Humanized CoT)
+    # CASE 2: STANDARD QUESTION (CoT)
     else:
         chain = COT_QUESTION_PROMPT | llm
         guidance = "Ask a natural interview question." + difficulty_guidance
         if state.get("next_action") == "switch":
-            guidance = "Transition to a new topic." + difficulty_guidance
-        
+            guidance = (
+                "Transition to a COMPLETELY different technical topic — "
+                "do NOT revisit any failed topics listed below." + difficulty_guidance
+            )
+
         job_context = state.get("initial_job_context", {})
-        global_context = f"Job Title: {job_context.get('job_title', 'N/A')}\nCandidate: {job_context.get('candidate_name', 'Candidate')}"
-        
+        global_context = (
+            f"Job Title: {job_context.get('job_title', 'N/A')}\n"
+            f"Candidate: {job_context.get('candidate_name', 'Candidate')}"
+        )
+
         response = chain.invoke({
             "global_context": global_context,
             "context": state["retrieved_context"],
             "history": state["conversation_history"],
             "topic": state["current_topic"],
-            "guidance": guidance
+            "guidance": guidance,
+            "asked_questions": "\n".join(f"- {q}" for q in asked_questions) or "None yet.",
+            "failed_topics": "\n".join(f"- {t}" for t in failed_topics) or "None.",
         })
-        
+
         content = response.content.split("</thinking>")[-1].strip()
-        return {"last_question": content, "loop_count": 0, "current_difficulty": next_diff}
+        return {
+            "last_question": content,
+            "loop_count": 0,
+            "current_difficulty": next_diff,
+            "asked_questions": asked_questions + [content],
+            "question_number": state.get("question_number", 1) + 1,
+        }
 
 def evaluate_answer_node(state: AgentState):
     """Evaluates answer using Multi-Head Evaluator (MOD-4) + Performance Predictor (MOD-6)."""
@@ -305,18 +339,43 @@ def check_grade(state):
 workflow.add_conditional_edges("grade", check_grade)
 workflow.add_node("process_answer", evaluate_answer_node)
 
-def decide_next_step(state):
-    if len(state.get("evaluations", [])) >= 5:
-        return END
-    
+def decide_next_step(state: AgentState):
     evaluations = state.get("evaluations", [])
-    if evaluations:
-        last_eval = evaluations[-1]
-        topic_status = state.get("next_action", "continue")
-        
-        if topic_status == "drill_down":
-            return "generate"
-    
+    n = len(evaluations)
+
+    # ── Hard ceiling ──────────────────────────────────────────────────────────
+    if n >= MAX_QUESTIONS:
+        print(f"🛑 Stopping: reached max questions ({MAX_QUESTIONS})")
+        return END
+
+    # ── Below minimum: never stop early ──────────────────────────────────────
+    if n >= MIN_QUESTIONS:
+        scores  = [e["score"] for e in evaluations]
+        recent  = scores[-3:]
+        avg_recent = sum(recent) / len(recent)
+
+        # Strong performer — enough signal, end with positive note
+        if avg_recent >= 80:
+            print(f"✅ Early stop: strong performance (avg recent={avg_recent:.1f})")
+            return END
+
+        # Clearly disengaged / trolling: 3 consecutive scores below 30
+        if len(recent) == 3 and all(s < 30 for s in recent):
+            print(f"⚠️ Early stop: consistently low scores (avg recent={avg_recent:.1f})")
+            return END
+
+        # Stable signal after 5+ questions: score range < 20 → we've learned enough
+        if n >= 5:
+            score_range = max(scores) - min(scores)
+            if score_range < 20:
+                print(f"📊 Early stop: stable signal after {n} questions (range={score_range:.1f})")
+                return END
+
+    # ── Normal routing ────────────────────────────────────────────────────────
+    topic_status = state.get("next_action", "continue")
+    if topic_status == "drill_down":
+        return "generate"
+
     return "rewrite"
 
 workflow.add_conditional_edges("process_answer", decide_next_step)
