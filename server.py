@@ -104,9 +104,12 @@ async def start_interview(
     await cv.seek(0) # Reset file pointer before upload
     s3_cv_url = upload_file_to_s3(cv, prefix=f"cvs/{session_id}")
         
-    # 4. Send the extracted text straight to Pinecone
+    # 4. Send the extracted text straight to Pinecone (with header injection)
+    candidate_name_early = extract_candidate_name(cv_text, cv.filename)
+    job_title_early = jd.split('\n')[0].strip() if jd else "Position"
     try:
-        create_session_index(session_id, cv_text, jd)
+        create_session_index(session_id, cv_text, jd,
+                             candidate_name=candidate_name_early, role=job_title_early)
     except Exception as e:
         print(f"Ingestion Warning: {e}")
     
@@ -140,6 +143,9 @@ async def start_interview(
             "cv_url": s3_cv_url,
         },
         "multimodal_analysis": {},
+        "facial_expression_data": {},
+        "cv_chunk": "",
+        "jd_chunk": "",
         "skill_match_score": skill_score,
         # — adaptive interview tracking —
         "question_number": 1,
@@ -211,15 +217,35 @@ async def submit_answer(
     transcription = transcribe_audio(temp_audio_path)
     if not transcription: transcription = "(No speech detected)"
     
-    # 6. Hand off Tone Analysis to Celery (Instantly returns!)
+    current_state["last_answer"] = transcription
+
+    # 6. Run tone analysis synchronously so LLM judge always receives real data.
+    #    Then also dispatch Celery for DB persistence and temp-file cleanup.
+    try:
+        dominant_tone, tone_report = analyze_voice_tone(temp_audio_path)
+        confidence = max(
+            (float(v.rstrip("%")) / 100 for v in tone_report.values()
+             if isinstance(v, str) and v.endswith("%")),
+            default=0.5,
+        )
+        current_state["multimodal_analysis"] = {
+            "primary_emotion": dominant_tone,
+            "full_analysis": tone_report,
+            "confidence": confidence,
+        }
+    except Exception as e:
+        print(f"⚠️ Sync tone analysis failed: {e}")
+        current_state["multimodal_analysis"] = {"primary_emotion": "neutral", "full_analysis": {}, "confidence": 0.5}
+
+    tone_dispatched = False
     try:
         process_audio_tone_task.delay(temp_audio_path, session_id)
+        tone_dispatched = True
     except Exception as e:
-        print(f"⚠️ Celery/Redis unavailable, skipping async tone analysis: {e}")
+        print(f"⚠️ Celery/Redis unavailable, skipping async tone persistence: {e}")
 
-    # Set a placeholder so the LangGraph agent doesn't crash right now
-    current_state["last_answer"] = transcription
-    current_state["multimodal_analysis"] = {"primary_emotion": "Processing...", "full_analysis": {}, "confidence": 0.5}
+    if not tone_dispatched and os.path.exists(temp_audio_path):
+        os.remove(temp_audio_path)
     
     # --- LOGIC FIX: Explicit Routing ---
     if "last_question" in current_state:

@@ -196,3 +196,39 @@ def retrieve_context(session_id: str, query: str):
         results.append(f"[Score: {score:.4f}] {node.text}")
 
     return "\n\n".join(results)
+
+
+def retrieve_context_split(session_id: str, query: str):
+    """
+    Same pipeline as retrieve_context but returns a (cv_chunk, jd_chunk) tuple
+    so callers can pass CV and JD context separately into prompts.
+    Nodes are split by their 'type' metadata field set during ingestion.
+    BM25-only nodes (no type metadata) are classified as CV by default.
+    """
+    hybrid_retriever = get_hybrid_retriever(session_id)
+    fused_nodes = hybrid_retriever.retrieve(query, top_k=20)
+
+    reranker = get_reranker()
+    reranked_nodes = reranker.postprocess_nodes(
+        fused_nodes,
+        query_bundle=QueryBundle(query)
+    )
+
+    if not reranked_nodes:
+        return "No CV context found.", "No JD context found."
+
+    cv_parts = []
+    jd_parts = []
+
+    for node in reranked_nodes:
+        score = node.score if node.score is not None else 0.0
+        text = f"[Score: {score:.4f}] {node.text}"
+        node_type = node.node.metadata.get("type", "cv")
+        if node_type == "jd":
+            jd_parts.append(text)
+        else:
+            cv_parts.append(text)
+
+    cv_chunk = "\n\n".join(cv_parts) if cv_parts else "No CV context found."
+    jd_chunk = "\n\n".join(jd_parts) if jd_parts else "No JD context found."
+    return cv_chunk, jd_chunk
