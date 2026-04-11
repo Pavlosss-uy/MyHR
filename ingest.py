@@ -43,7 +43,7 @@ def _chunk_documents(documents: list[Document]):
     operate on meaningful retrieval units instead of one giant CV / JD blob.
     """
     splitter = SentenceSplitter(
-        chunk_size=400,
+        chunk_size=512,
         chunk_overlap=50,
     )
     nodes = splitter.get_nodes_from_documents(documents)
@@ -85,10 +85,18 @@ def load_session_raw_texts(session_id: str) -> list[str]:
         return []
 
 
-def create_session_index(session_id: str, cv_text: str, jd_text: str):
+def create_session_index(
+    session_id: str,
+    cv_text: str,
+    jd_text: str,
+    candidate_name: str = "Candidate",
+    role: str = "",
+):
     """
     Creates chunked embeddings and pushes them to Pinecone with namespace=session_id.
     Also stores raw chunk texts locally for BM25 indexing.
+    Header injection: candidate name and role are prepended to every CV chunk so
+    the retriever always returns contextually grounded passages.
     """
     vector_store = PineconeVectorStore(
         pinecone_index=pinecone_index,
@@ -103,6 +111,16 @@ def create_session_index(session_id: str, cv_text: str, jd_text: str):
 
     # Chunk documents first
     nodes = _chunk_documents(documents)
+
+    # Header injection: prepend candidate metadata to every CV chunk
+    cv_header = f"Candidate: {candidate_name}"
+    if role:
+        cv_header += f" | Role: {role}"
+    cv_header += " | "
+
+    for node in nodes:
+        if node.metadata.get("type") == "cv":
+            node.text = cv_header + node.text
 
     # Save raw chunk texts for BM25
     raw_chunks = [node.text for node in nodes if node.text and node.text.strip()]

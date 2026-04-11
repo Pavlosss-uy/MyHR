@@ -12,7 +12,7 @@ from models.explainer import ModelExplainer
 import numpy as np
 
 # Import your custom modules
-from retriever import retrieve_context
+from retriever import retrieve_context_split
 from prompts import (
     COT_QUESTION_PROMPT, 
     RUBRIC_PROMPT, 
@@ -21,11 +21,20 @@ from prompts import (
     DRILL_DOWN_PROMPT  
 )
 
-# --- State Definitions (Unchanged) ---
+# --- State Definitions ---
+class CriteriaBreakdown(BaseModel):
+    relevance: int = Field(ge=0, le=100)
+    clarity: int = Field(ge=0, le=100)
+    technical_depth: int = Field(ge=0, le=100)
+    star_method: int = Field(ge=0, le=100)
+
 class EvaluationResult(BaseModel):
     score: int = Field(description="Score 0-100 reflecting overall answer quality. Be strict: off-topic or irrelevant answers should score below 40, mediocre answers 40-65, good answers 65-80, excellent answers 80-100.", ge=0, le=100)
     feedback: str = Field(description="One sentence feedback")
     topic_status: Literal["continue", "switch", "drill_down"] = Field(description="Next move")
+    suggested_improvement: str = Field(description="One concrete, actionable suggestion for the candidate to improve their answer")
+    criteria_breakdown: CriteriaBreakdown = Field(description="Per-criterion scores for relevance, clarity, technical_depth, and star_method")
+    overall_confidence: float = Field(description="Judge's confidence in this evaluation (0.0-1.0)", ge=0.0, le=1.0)
 
 class GradeResult(BaseModel):
     is_relevant: bool = Field(description="Is the context useful?")
@@ -37,11 +46,14 @@ class AgentState(TypedDict):
     initial_job_context: Dict
     current_search_query: str
     retrieved_context: str
+    cv_chunk: str           # CV-only context from last retrieval
+    jd_chunk: str           # JD-only context from last retrieval
     loop_count: int
     drill_down_count: int
     last_question: str
     last_answer: str
     multimodal_analysis: dict
+    facial_expression_data: dict  # placeholder for facial analysis integration
     evaluations: List[dict]
     next_action: str
     # adaptive interview tracking
@@ -76,17 +88,20 @@ def rewrite_query_node(state: AgentState):
     return {"current_search_query": response.content, "loop_count": state.get("loop_count", 0)}
 
 def retrieve_node(state: AgentState):
-    """Uses the Advanced Hybrid Retriever."""
+    """Uses the Advanced Hybrid Retriever. Populates both unified and split context."""
     session_id = state["session_id"]
     query = state.get("current_search_query", state["current_topic"])
-    
+
     try:
-        context = retrieve_context(session_id, query) 
+        cv_chunk, jd_chunk = retrieve_context_split(session_id, query)
+        context = f"{cv_chunk}\n\n{jd_chunk}".strip()
     except Exception as e:
         print(f"⚠️ Retrieval Error: {e}")
         context = "No specific context found."
-        
-    return {"retrieved_context": context}
+        cv_chunk = "No CV context found."
+        jd_chunk = "No JD context found."
+
+    return {"retrieved_context": context, "cv_chunk": cv_chunk, "jd_chunk": jd_chunk}
 
 def grade_context_node(state: AgentState):
     """Checks if the retrieved documents are relevant."""
@@ -182,11 +197,16 @@ def generate_question_node(state: AgentState):
             f"Candidate: {job_context.get('candidate_name', 'Candidate')}"
         )
 
+        # Derive current_topic dynamically from search query (first 4 words)
+        raw_query = state.get("current_search_query", "").strip()
+        derived_topic = " ".join(raw_query.split()[:4]).title() if raw_query else state.get("current_topic", "General")
+
         response = chain.invoke({
             "global_context": global_context,
-            "context": state["retrieved_context"],
+            "cv_chunk": state.get("cv_chunk", "No CV context found."),
+            "jd_chunk": state.get("jd_chunk", "No JD context found."),
             "history": state["conversation_history"],
-            "topic": state["current_topic"],
+            "topic": derived_topic,
             "guidance": guidance,
             "asked_questions": "\n".join(f"- {q}" for q in asked_questions) or "None yet.",
             "failed_topics": "\n".join(f"- {t}" for t in failed_topics) or "None.",
@@ -195,6 +215,7 @@ def generate_question_node(state: AgentState):
         content = response.content.split("</thinking>")[-1].strip()
         return {
             "last_question": content,
+            "current_topic": derived_topic,
             "loop_count": 0,
             "current_difficulty": next_diff,
             "asked_questions": asked_questions + [content],
@@ -274,13 +295,20 @@ def evaluate_answer_node(state: AgentState):
         print(f"⚠️ SHAP Error: {e}")
 
     # 6. LLM generates feedback text
+    # Ensure tone_data is real before calling judge — guard against "Processing..." placeholder
+    if not tone_data or tone_data.get("primary_emotion") == "Processing...":
+        tone_data = {"primary_emotion": "neutral", "full_analysis": {}, "confidence": 0.5}
+
+    facial_expression_data = state.get("facial_expression_data", {})
+
     structured_llm = llm.with_structured_output(EvaluationResult, method="json_mode")
     chain = RUBRIC_PROMPT | structured_llm
 
     res = chain.invoke({
         "question": state["last_question"],
         "answer": state["last_answer"],
-        "tone_data": str(tone_data)
+        "tone_data": str(tone_data),
+        "facial_expression_data": str(facial_expression_data) if facial_expression_data else "Not available",
     })
 
     # Blend LLM score (primary quality signal) with neural score (structural features)
@@ -297,6 +325,9 @@ def evaluate_answer_node(state: AgentState):
         "detailed_scores": neural_results,
         "predicted_job_performance": job_prediction,
         "feedback": res.feedback,
+        "suggested_improvement": res.suggested_improvement,
+        "criteria_breakdown": res.criteria_breakdown.model_dump(),
+        "overall_confidence": res.overall_confidence,
 
         # Step 5.2 fields
         "feature_values": feature_values_list,
