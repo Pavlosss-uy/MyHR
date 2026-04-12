@@ -3,8 +3,9 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import { Loader2 } from "lucide-react";
 
 // Public pages
 import ChoiceScreen from "./pages/ChoiceScreen";
@@ -12,6 +13,30 @@ import Auth from "./pages/Auth";
 import VerifyEmail from "./pages/VerifyEmail";
 import Landing from "./pages/Landing";
 import NotFound from "./pages/NotFound";
+
+/**
+ * Wraps the landing page so authenticated users are redirected to their
+ * dashboard immediately — they should never see the marketing page again
+ * after signing in.
+ */
+const SmartLanding = () => {
+    const { isAuthenticated, loading } = useAuth();
+
+    if (loading) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-background">
+                <Loader2 className="w-8 h-8 animate-spin text-cobalt" />
+            </div>
+        );
+    }
+
+    if (isAuthenticated) {
+        const role = sessionStorage.getItem("myhr_role") || "candidate";
+        return <Navigate to={role === "hr" ? "/hr/dashboard" : "/candidate"} replace />;
+    }
+
+    return <Landing />;
+};
 
 // Auth callbacks
 import GoogleAuthCallback from "./pages/GoogleAuthCallback";
@@ -50,9 +75,9 @@ const App = () => (
                 <BrowserRouter>
                     <Routes>
                         {/* ── Public ─────────────────────────────────────── */}
-                        <Route path="/"             element={<Landing />} />
+                        <Route path="/"             element={<SmartLanding />} />
                         <Route path="/choose"       element={<ChoiceScreen />} />
-                        <Route path="/landing"      element={<Landing />} />
+                        <Route path="/landing"      element={<SmartLanding />} />
                         <Route path="/auth"         element={<Auth />} />
                         <Route path="/verify-email" element={<VerifyEmail />} />
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Link, useLocation } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import Navbar from "@/components/Navbar";
 import CircularProgress from "@/components/CircularProgress";
 import { Button } from "@/components/ui/button";
@@ -14,26 +15,38 @@ import {
     BarChart3,
     Loader2,
     BookOpen,
-    Target,
     TrendingUp,
     Award,
-    HelpCircle,
     Mic,
 } from "lucide-react";
+import {
+    PieChart,
+    Pie,
+    Cell,
+    Tooltip,
+    Legend,
+    ResponsiveContainer,
+} from "recharts";
 import { getReport } from "@/lib/interviewApi";
+
+// Build a user-scoped localStorage key so each account's data is isolated.
+const reportKey = (uid, sessionId) =>
+    uid ? `myhr_report_${uid}_${sessionId}` : `myhr_report_${sessionId}`;
 
 // Persist report to localStorage for the session history list in CandidateHome.
 // Saves both raw evaluations AND the rich report so the dashboard can show full sections.
-const persistReport = (sessionId, report, richReport = null) => {
+const persistReport = (uid, sessionId, report, richReport = null) => {
     try {
-        const existing = localStorage.getItem(`myhr_report_${sessionId}`);
+        const key = reportKey(uid, sessionId);
+        const existing = localStorage.getItem(key);
         const prev = existing ? JSON.parse(existing) : {};
         localStorage.setItem(
-            `myhr_report_${sessionId}`,
+            key,
             JSON.stringify({
                 report,
                 rich_report: richReport ?? prev.rich_report ?? null,
                 session_id: sessionId,
+                uid,
                 timestamp: Date.now(),
             })
         );
@@ -91,73 +104,74 @@ const SectionHeader = ({ icon: Icon, label, color = "text-cobalt" }) => (
 
 // ── Communication & Tone helpers ────────────────────────────────────────────
 
-const TONE_COLORS = {
-    confident:    "#10b981",
-    hesitant:     "#f59e0b",
-    nervous:      "#ef4444",
-    engaged:      "#6366f1",
-    neutral:      "#6b7280",
-    frustrated:   "#f97316",
-    enthusiastic: "#8b5cf6",
-    uncertain:    "#3b82f6",
+// Professional analytics-grade palette — no emojis
+const TONE_PALETTE = [
+    "#6366f1", // indigo   — confident / engaged
+    "#10b981", // emerald  — calm / positive
+    "#f59e0b", // amber    — hesitant / uncertain
+    "#3b82f6", // blue     — neutral
+    "#8b5cf6", // violet   — enthusiastic
+    "#ef4444", // red      — nervous / frustrated
+    "#f97316", // orange   — surprised
+    "#06b6d4", // cyan     — curious
+];
+
+const getToneColor = (emotion, index) => {
+    const map = {
+        confident:    "#6366f1",
+        engaged:      "#6366f1",
+        calm:         "#10b981",
+        happy:        "#10b981",
+        joy:          "#10b981",
+        hesitant:     "#f59e0b",
+        uncertain:    "#f59e0b",
+        neutral:      "#3b82f6",
+        enthusiastic: "#8b5cf6",
+        nervous:      "#ef4444",
+        anxious:      "#ef4444",
+        frustrated:   "#f97316",
+        surprised:    "#06b6d4",
+    };
+    return map[emotion?.toLowerCase()] ?? TONE_PALETTE[index % TONE_PALETTE.length];
 };
 
-const TONE_EMOJIS = {
-    confident:    "💪",
-    hesitant:     "🤔",
-    nervous:      "😰",
-    engaged:      "⚡",
-    neutral:      "😐",
-    frustrated:   "😤",
-    enthusiastic: "🎯",
-    uncertain:    "🤷",
-};
-
-// Renders only the top N slices — remaining are collapsed into a neutral "other" slice
-const TonePieChart = ({ data, size = 120, topN = 3 }) => {
-    const top   = data.slice(0, topN);
-    const other = data.slice(topN).reduce((s, d) => s + d.value, 0);
-    const sliceData = other > 0.5 ? [...top, { emotion: "_other", value: other }] : top;
-
-    const total = sliceData.reduce((s, d) => s + d.value, 0);
-    if (total === 0) return null;
-
-    const cx = size / 2, cy = size / 2, r = size / 2 - 6;
-    let angle = -Math.PI / 2;
-
-    const slices = sliceData.map((d) => {
-        const sweep = (d.value / total) * 2 * Math.PI;
-        const x1 = cx + r * Math.cos(angle);
-        const y1 = cy + r * Math.sin(angle);
-        angle += sweep;
-        const x2 = cx + r * Math.cos(angle);
-        const y2 = cy + r * Math.sin(angle);
-        return {
-            path: `M ${cx} ${cy} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${sweep > Math.PI ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z`,
-            color: TONE_COLORS[d.emotion] || "#374151",
-        };
-    });
-
+// Custom tooltip for Recharts pie chart
+const ToneTooltip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null;
+    const { name, value } = payload[0];
     return (
-        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-            {slices.map((s, i) => (
-                <path key={i} d={s.path} fill={s.color} opacity={0.88} />
-            ))}
-            <circle cx={cx} cy={cy} r={r * 0.44} fill="var(--color-card, #1e1e2e)" />
-        </svg>
+        <div className="bg-card border border-border rounded-lg px-3 py-2 shadow-lg text-xs">
+            <p className="font-semibold text-foreground capitalize">{name}</p>
+            <p className="text-muted-foreground">{value.toFixed(1)}%</p>
+        </div>
     );
 };
 
+// Recharts legend rendered below the chart
+const ToneLegend = ({ payload }) => (
+    <div className="flex flex-wrap justify-center gap-x-4 gap-y-1.5 mt-3">
+        {(payload || []).map((entry, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+                <span
+                    className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+                    style={{ background: entry.color }}
+                />
+                <span className="text-xs text-muted-foreground capitalize">{entry.value}</span>
+            </div>
+        ))}
+    </div>
+);
+
 const ConfidenceBadge = ({ level }) => {
     const styles = {
-        high:   "bg-mint/15 text-mint border-mint/30",
+        high:   "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
         medium: "bg-cobalt/15 text-cobalt-lighter border-cobalt/30",
         low:    "bg-warning/15 text-warning border-warning/30",
     };
     const key = (level || "").toLowerCase();
     return (
         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${styles[key] || styles["medium"]}`}>
-            {level || "Medium"} confidence
+            {(level || "Medium").charAt(0).toUpperCase() + (level || "medium").slice(1)} confidence
         </span>
     );
 };
@@ -167,6 +181,8 @@ const ConfidenceBadge = ({ level }) => {
 const FeedbackReport = () => {
     const location   = useLocation();
     const routeState = location.state;
+    const { user }   = useAuth();
+    const uid        = user?.uid ?? null;
 
     const [report,          setReport]          = useState(null);
     const [richReport,      setRichReport]      = useState(null);
@@ -189,17 +205,17 @@ const FeedbackReport = () => {
                     candidate_name: routeState.candidate_name || "Candidate",
                 };
                 const rr = routeState.rich_report || null;
-                if (routeState.session_id) persistReport(routeState.session_id, evaluations, rr);
+                if (routeState.session_id) persistReport(uid, routeState.session_id, evaluations, rr);
                 setReport(built);
                 if (rr) setRichReport(rr);
                 setLoading(false);
                 return;
             }
 
-            // ② Try to load from localStorage cache
+            // ② Try to load from localStorage cache (user-scoped key)
             if (routeState?.session_id) {
                 try {
-                    const cached = localStorage.getItem(`myhr_report_${routeState.session_id}`);
+                    const cached = localStorage.getItem(reportKey(uid, routeState.session_id));
                     if (cached) {
                         const parsed = JSON.parse(cached);
                         const evaluations = parsed.report || [];
@@ -212,7 +228,6 @@ const FeedbackReport = () => {
                             job_title: parsed.job_title || "Interview",
                             candidate_name: parsed.candidate_name || "Candidate",
                         });
-                        // Restore rich report from cache — this is the fix for dashboard view
                         if (parsed.rich_report) setRichReport(parsed.rich_report);
                         setLoading(false);
                         return;
@@ -228,7 +243,7 @@ const FeedbackReport = () => {
                         return;
                     }
                     const rr = data.rich_report || null;
-                    if (data.evaluations) persistReport(routeState.session_id, data.evaluations, rr);
+                    if (data.evaluations) persistReport(uid, routeState.session_id, data.evaluations, rr);
                     setReport(data);
                     if (rr) setRichReport(rr);
                 } catch (err) {
@@ -659,153 +674,109 @@ const FeedbackReport = () => {
                         transition={{ delay: 0.6 }}
                         className="bg-card rounded-xl border border-border shadow-sm mb-8"
                     >
-                        <SectionHeader icon={Mic} label="Communication & Tone" color="text-purple-400" />
-                        <div className="p-5 space-y-5">
+                        <SectionHeader icon={Mic} label="Communication & Tone Analysis" color="text-indigo-400" />
+                        <div className="p-5 space-y-6">
 
-                            {/* ── At-a-glance row ── */}
-                            <div className="flex flex-wrap items-center gap-3">
+                            {/* ── KPI badges row ── */}
+                            <div className="flex flex-wrap gap-3">
                                 {dominantTone && (
-                                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20">
-                                        <span className="text-lg" role="img" aria-label={dominantTone}>
-                                            {TONE_EMOJIS[dominantTone] || "🗣️"}
-                                        </span>
-                                        <div>
-                                            <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Dominant tone</p>
-                                            <p className="text-sm font-semibold text-foreground capitalize">{dominantTone}</p>
-                                        </div>
+                                    <div className="flex flex-col gap-0.5 px-4 py-3 rounded-lg bg-indigo-500/10 border border-indigo-500/20 min-w-[110px]">
+                                        <span className="text-[10px] font-semibold text-indigo-400/70 uppercase tracking-wider">Dominant Tone</span>
+                                        <span className="text-sm font-bold text-foreground capitalize">{dominantTone}</span>
                                     </div>
                                 )}
-                                {confidenceLevel && <ConfidenceBadge level={confidenceLevel} />}
+                                {confidenceLevel && (
+                                    <div className="flex flex-col gap-0.5 px-4 py-3 rounded-lg bg-muted/50 border border-border min-w-[110px]">
+                                        <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Confidence</span>
+                                        <ConfidenceBadge level={confidenceLevel} />
+                                    </div>
+                                )}
+                                {clarityLevel && (
+                                    <div className="flex flex-col gap-0.5 px-4 py-3 rounded-lg bg-muted/50 border border-border min-w-[110px]">
+                                        <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Clarity</span>
+                                        <span className="text-sm font-semibold text-foreground capitalize">{clarityLevel}</span>
+                                    </div>
+                                )}
+                                {toneEffective && (
+                                    <div className="flex flex-col gap-0.5 px-4 py-3 rounded-lg bg-muted/50 border border-border min-w-[110px]">
+                                        <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Effectiveness</span>
+                                        <span className={`text-sm font-semibold capitalize ${toneEffective === "effective" ? "text-emerald-400" : "text-amber-400"}`}>
+                                            {toneEffective}
+                                        </span>
+                                    </div>
+                                )}
                             </div>
 
-                            {/* ── Chart (top 3) + top labels ── */}
-                            {toneData.length > 0 && (
-                                <div className="flex items-center gap-5">
-                                    <TonePieChart data={toneData} size={100} topN={3} />
-                                    <div className="space-y-1.5">
-                                        {toneData.slice(0, 3).map((d) => (
-                                            <div key={d.emotion} className="flex items-center gap-2">
-                                                <span
-                                                    className="inline-block w-2 h-2 rounded-full shrink-0"
-                                                    style={{ background: TONE_COLORS[d.emotion] || "#6b7280" }}
+                            {/* ── Recharts donut chart ── */}
+                            {toneData.length > 0 && (() => {
+                                const chartData = toneData.slice(0, 6).map((d, i) => ({
+                                    name: d.emotion.charAt(0).toUpperCase() + d.emotion.slice(1),
+                                    value: parseFloat(d.value.toFixed(1)),
+                                    color: getToneColor(d.emotion, i),
+                                }));
+                                return (
+                                    <div>
+                                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                                            Emotion Distribution
+                                        </p>
+                                        <ResponsiveContainer width="100%" height={220}>
+                                            <PieChart>
+                                                <Pie
+                                                    data={chartData}
+                                                    cx="50%"
+                                                    cy="45%"
+                                                    innerRadius={58}
+                                                    outerRadius={85}
+                                                    paddingAngle={3}
+                                                    dataKey="value"
+                                                    strokeWidth={0}
+                                                >
+                                                    {chartData.map((entry, i) => (
+                                                        <Cell key={i} fill={entry.color} opacity={0.9} />
+                                                    ))}
+                                                </Pie>
+                                                <Tooltip content={<ToneTooltip />} />
+                                                <Legend
+                                                    content={<ToneLegend />}
+                                                    payload={chartData.map((d) => ({
+                                                        value: d.name,
+                                                        color: d.color,
+                                                    }))}
                                                 />
-                                                <span className="text-xs text-muted-foreground capitalize w-20">{d.emotion}</span>
-                                                <span className="text-xs font-semibold text-foreground">{d.value.toFixed(0)}%</span>
-                                            </div>
-                                        ))}
+                                            </PieChart>
+                                        </ResponsiveContainer>
                                     </div>
+                                );
+                            })()}
+
+                            {/* ── Key insight ── */}
+                            {observations.length > 0 && (
+                                <div className="space-y-2">
+                                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Key Observations</p>
+                                    <ul className="space-y-2">
+                                        {observations.map((obs, i) => (
+                                            <li key={i} className="flex items-start gap-2.5 text-xs text-muted-foreground leading-relaxed">
+                                                <span className="shrink-0 mt-1 w-1.5 h-1.5 rounded-full bg-indigo-400" />
+                                                {obs}
+                                            </li>
+                                        ))}
+                                    </ul>
                                 </div>
                             )}
 
-                            {/* ── Key insight (first observation only) ── */}
-                            {observations.length > 0 && (
-                                <p className="text-xs text-muted-foreground leading-relaxed border-l-2 border-purple-500/30 pl-3">
-                                    {observations[0]}
-                                </p>
-                            )}
-
-                            {/* ── Issues (max 3) ── */}
-                            {observations.length > 1 && (
-                                <ul className="space-y-1">
-                                    {observations.slice(1, 4).map((obs, i) => (
-                                        <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
-                                            <span className="shrink-0 mt-0.5 text-warning">•</span>
-                                            {obs}
-                                        </li>
-                                    ))}
-                                </ul>
-                            )}
-
-                            {/* ── Tips (max 2) ── */}
+                            {/* ── Recommendations ── */}
                             {recommendations.length > 0 && (
-                                <ul className="space-y-1">
-                                    {recommendations.slice(0, 2).map((rec, i) => (
-                                        <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
-                                            <span className="shrink-0 mt-0.5 text-mint font-bold">→</span>
-                                            {rec}
-                                        </li>
-                                    ))}
-                                </ul>
-                            )}
-
-                            {/* ── Show Details toggle ── */}
-                            <button
-                                onClick={() => setShowToneDetails((v) => !v)}
-                                className="text-xs text-cobalt-lighter hover:text-foreground transition-colors underline underline-offset-2 decoration-dotted"
-                            >
-                                {showToneDetails ? "Hide details" : "Show details"}
-                            </button>
-
-                            {/* ── Full breakdown (hidden by default) ── */}
-                            {showToneDetails && (
-                                <motion.div
-                                    initial={{ opacity: 0, height: 0 }}
-                                    animate={{ opacity: 1, height: "auto" }}
-                                    exit={{ opacity: 0, height: 0 }}
-                                    className="pt-3 border-t border-border space-y-4"
-                                >
-                                    {/* All emotions */}
-                                    {toneData.length > 0 && (
-                                        <div>
-                                            <p className="text-[10px] font-semibold text-foreground/50 uppercase tracking-wider mb-2">Full emotion breakdown</p>
-                                            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                                                {toneData.map((d) => (
-                                                    <div key={d.emotion} className="flex items-center gap-1.5">
-                                                        <span
-                                                            className="inline-block w-2 h-2 rounded-full shrink-0"
-                                                            style={{ background: TONE_COLORS[d.emotion] || "#6b7280" }}
-                                                        />
-                                                        <span className="text-xs text-muted-foreground capitalize">{d.emotion}</span>
-                                                        <span className="text-xs font-semibold text-foreground">{d.value.toFixed(1)}%</span>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-                                    {/* All observations */}
-                                    {observations.length > 1 && (
-                                        <div>
-                                            <p className="text-[10px] font-semibold text-foreground/50 uppercase tracking-wider mb-2">All observations</p>
-                                            <ul className="space-y-1">
-                                                {observations.map((obs, i) => (
-                                                    <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
-                                                        <span className="shrink-0 mt-0.5 text-purple-400">•</span>
-                                                        {obs}
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        </div>
-                                    )}
-                                    {/* All tips */}
-                                    {recommendations.length > 2 && (
-                                        <div>
-                                            <p className="text-[10px] font-semibold text-foreground/50 uppercase tracking-wider mb-2">All tips</p>
-                                            <ul className="space-y-1">
-                                                {recommendations.map((rec, i) => (
-                                                    <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
-                                                        <span className="shrink-0 mt-0.5 text-mint font-bold">→</span>
-                                                        {rec}
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        </div>
-                                    )}
-                                    {/* Extra metadata badges */}
-                                    {(clarityLevel || toneEffective) && (
-                                        <div className="flex flex-wrap gap-2">
-                                            {clarityLevel && (
-                                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border bg-cobalt/10 text-cobalt-lighter border-cobalt/20">
-                                                    {clarityLevel} clarity
-                                                </span>
-                                            )}
-                                            {toneEffective && (
-                                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border bg-yellow-500/10 text-yellow-400 border-yellow-500/20">
-                                                    {toneEffective} effectiveness
-                                                </span>
-                                            )}
-                                        </div>
-                                    )}
-                                </motion.div>
+                                <div className="space-y-2">
+                                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Recommendations</p>
+                                    <ul className="space-y-2">
+                                        {recommendations.map((rec, i) => (
+                                            <li key={i} className="flex items-start gap-2.5 text-xs text-muted-foreground leading-relaxed">
+                                                <span className="shrink-0 mt-0.5 text-emerald-400 font-bold text-sm leading-none">↗</span>
+                                                {rec}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
                             )}
 
                         </div>

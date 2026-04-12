@@ -6,7 +6,6 @@ import CircularProgress from "@/components/CircularProgress";
 import { Button } from "@/components/ui/button";
 import {
     Mic,
-    Clock,
     TrendingUp,
     Trophy,
     ArrowRight,
@@ -17,20 +16,25 @@ import {
     X,
     Loader2,
     History,
+    Medal,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { startInterview } from "@/lib/interviewApi";
 
-// Read ALL completed interview sessions from localStorage (written by InterviewRoom after each completion).
-// Returns the full sorted list — callers slice for display as needed.
-const loadSessionHistory = () => {
+// Read ALL completed interview sessions from localStorage for the given user.
+// Keys are scoped as `myhr_report_{uid}_{sessionId}` to isolate per-account data.
+// Falls back to the legacy un-scoped key format for backward compatibility.
+const loadSessionHistory = (uid) => {
     try {
-        const keys = Object.keys(localStorage).filter((k) => k.startsWith("myhr_report_"));
+        const prefix = uid ? `myhr_report_${uid}_` : "myhr_report_";
+        const keys = Object.keys(localStorage).filter((k) => k.startsWith(prefix));
         return keys
             .map((k) => {
                 try { return JSON.parse(localStorage.getItem(k)); } catch { return null; }
             })
             .filter(Boolean)
+            // Only include sessions that belong to this user (guard against legacy keys)
+            .filter((s) => !uid || !s.uid || s.uid === uid)
             .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     } catch {
         return [];
@@ -42,15 +46,22 @@ const CandidateHome = () => {
     const navigate  = useNavigate();
     const firstName = user?.displayName?.split(" ")[0] || user?.email?.split("@")[0] || "there";
 
-    // allHistory = every session (for accurate counts and averages)
+    // allHistory = every session for THIS user (accurate counts and averages)
     // history    = last 4 only (for the display list)
-    const allHistory = useMemo(() => loadSessionHistory(), []);
+    const allHistory = useMemo(() => loadSessionHistory(user?.uid ?? null), [user?.uid]);
     const history    = useMemo(() => allHistory.slice(0, 4), [allHistory]);
 
     // Derived stats from the FULL history, not the truncated display list
     const totalInterviews = allHistory.length;
     const avgScore = totalInterviews > 0
         ? Math.round(allHistory.reduce((sum, s) => sum + (s.report?.reduce((a, e) => a + (e.score || 0), 0) / (s.report?.length || 1)), 0) / totalInterviews)
+        : 0;
+    const bestScore = totalInterviews > 0
+        ? Math.max(...allHistory.map((s) =>
+            s.report?.length
+                ? Math.round(s.report.reduce((a, e) => a + (e.score || 0), 0) / s.report.length)
+                : 0
+          ))
         : 0;
     const readiness = Math.min(100, avgScore > 0 ? avgScore : 0);
 
@@ -134,9 +145,9 @@ const CandidateHome = () => {
                         {/* Stats */}
                         <div className="grid sm:grid-cols-3 gap-4">
                             {[
-                                { label: "Total Interviews", value: totalInterviews || "—", icon: Mic,         color: "cobalt",   delay: 0.15 },
-                                { label: "Avg. Score",       value: avgScore ? `${avgScore}%` : "—", icon: TrendingUp, color: "mint",    delay: 0.2  },
-                                { label: "Sessions",         value: totalInterviews || "—", icon: Clock,        color: "warning",  delay: 0.25 },
+                                { label: "Total Interviews", value: totalInterviews || "—",        icon: Mic,       color: "cobalt",  delay: 0.15 },
+                                { label: "Avg. Score",       value: avgScore  ? `${avgScore}%`  : "—", icon: TrendingUp, color: "mint",    delay: 0.2  },
+                                { label: "Best Score",       value: bestScore ? `${bestScore}%` : "—", icon: Medal,      color: "warning", delay: 0.25 },
                             ].map(({ label, value, icon: Icon, color, delay }) => (
                                 <motion.div
                                     key={label}
