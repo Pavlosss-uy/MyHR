@@ -22,12 +22,20 @@ import {
 } from "lucide-react";
 import { getReport } from "@/lib/interviewApi";
 
-// Persist report to localStorage for the session history list in CandidateHome
-const persistReport = (sessionId, report) => {
+// Persist report to localStorage for the session history list in CandidateHome.
+// Saves both raw evaluations AND the rich report so the dashboard can show full sections.
+const persistReport = (sessionId, report, richReport = null) => {
     try {
+        const existing = localStorage.getItem(`myhr_report_${sessionId}`);
+        const prev = existing ? JSON.parse(existing) : {};
         localStorage.setItem(
             `myhr_report_${sessionId}`,
-            JSON.stringify({ report, session_id: sessionId, timestamp: Date.now() })
+            JSON.stringify({
+                report,
+                rich_report: richReport ?? prev.rich_report ?? null,
+                session_id: sessionId,
+                timestamp: Date.now(),
+            })
         );
     } catch { /* storage full — non-fatal */ }
 };
@@ -36,31 +44,40 @@ const persistReport = (sessionId, report) => {
 
 const PerformanceBadge = ({ level }) => {
     const styles = {
-        "Excellent":     "bg-mint/15 text-mint border-mint/30",
-        "Good":          "bg-cobalt/15 text-cobalt-lighter border-cobalt/30",
-        "Average":       "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
-        "Below Average": "bg-orange-500/15 text-orange-400 border-orange-500/30",
-        "Poor":          "bg-warning/15 text-warning border-warning/30",
+        "Excellent":         "bg-mint/15 text-mint border-mint/30",
+        "Good":              "bg-cobalt/15 text-cobalt-lighter border-cobalt/30",
+        "Needs Improvement": "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+        // Legacy aliases kept for backward compat with old cached reports
+        "Average":           "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+        "Below Average":     "bg-orange-500/15 text-orange-400 border-orange-500/30",
+        "Poor":              "bg-warning/15 text-warning border-warning/30",
     };
     return (
-        <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold border ${styles[level] || styles["Average"]}`}>
+        <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold border ${styles[level] || styles["Needs Improvement"]}`}>
             {level}
         </span>
     );
 };
 
 const HiringBadge = ({ signal }) => {
+    // Normalise legacy 5-level values to canonical 3-level display
+    const normalise = (s) => {
+        if (!s) return "Borderline";
+        if (s === "Strong Yes" || s === "Yes") return "Yes";
+        if (s === "Maybe" || s === "Borderline") return "Borderline";
+        if (s === "Strong No" || s === "No") return "No";
+        return s;
+    };
+    const display = normalise(signal);
     const styles = {
-        "Strong Yes": "bg-mint/15 text-mint border-mint/30",
-        "Yes":        "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
-        "Maybe":      "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
-        "No":         "bg-orange-500/15 text-orange-400 border-orange-500/30",
-        "Strong No":  "bg-warning/15 text-warning border-warning/30",
+        "Yes":        "bg-mint/15 text-mint border-mint/30",
+        "Borderline": "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+        "No":         "bg-warning/15 text-warning border-warning/30",
     };
     return (
-        <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold border ${styles[signal] || styles["Maybe"]}`}>
+        <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold border ${styles[display] || styles["Borderline"]}`}>
             <Award className="w-3.5 h-3.5" />
-            Hiring Signal: {signal}
+            Hiring Signal: {display}
         </span>
     );
 };
@@ -171,9 +188,10 @@ const FeedbackReport = () => {
                     job_title: routeState.job_title || "Interview",
                     candidate_name: routeState.candidate_name || "Candidate",
                 };
-                if (routeState.session_id) persistReport(routeState.session_id, evaluations);
+                const rr = routeState.rich_report || null;
+                if (routeState.session_id) persistReport(routeState.session_id, evaluations, rr);
                 setReport(built);
-                if (routeState.rich_report) setRichReport(routeState.rich_report);
+                if (rr) setRichReport(rr);
                 setLoading(false);
                 return;
             }
@@ -191,9 +209,11 @@ const FeedbackReport = () => {
                                 ? Math.round(evaluations.reduce((s, e) => s + (e.score || 0), 0) / evaluations.length)
                                 : 0,
                             total_questions: evaluations.length,
-                            job_title: "Mock Interview",
-                            candidate_name: "Candidate",
+                            job_title: parsed.job_title || "Interview",
+                            candidate_name: parsed.candidate_name || "Candidate",
                         });
+                        // Restore rich report from cache — this is the fix for dashboard view
+                        if (parsed.rich_report) setRichReport(parsed.rich_report);
                         setLoading(false);
                         return;
                     }
@@ -207,9 +227,10 @@ const FeedbackReport = () => {
                         setLoading(false);
                         return;
                     }
-                    if (data.evaluations) persistReport(routeState.session_id, data.evaluations);
+                    const rr = data.rich_report || null;
+                    if (data.evaluations) persistReport(routeState.session_id, data.evaluations, rr);
                     setReport(data);
-                    if (data.rich_report) setRichReport(data.rich_report);
+                    if (rr) setRichReport(rr);
                 } catch (err) {
                     setError(err.message || "Failed to load report.");
                 }
@@ -257,21 +278,23 @@ const FeedbackReport = () => {
     const scoreColor   = avgScore >= 80 ? "mint" : avgScore >= 60 ? "cobalt" : "warning";
     const scoreLabel   = avgScore >= 80 ? "Excellent" : avgScore >= 60 ? "Good" : "Needs Work";
 
-    // Rich report fields (may be null if synthesis failed)
+    // Rich report fields (may be null if synthesis failed).
+    // Support both new canonical keys and legacy key names for backward compat.
     const rr = richReport || {};
-    const strengths      = rr.strengths      || [];
-    const weaknesses     = rr.weaknesses     || [];
-    const improvements   = rr.improvements   || [];
-    const tips           = rr.tips           || [];
-    const recTopics      = rr.recommended_topics || [];
+    const strengths      = rr.strengths                               || [];
+    const weaknesses     = rr.areas_to_improve  || rr.weaknesses     || [];
+    const improvements   = rr.how_to_improve    || rr.improvements   || [];
+    const tips           = rr.tips                                    || [];
+    const recTopics      = rr.recommended_topics                      || [];
 
     // Fallback strength/weakness lists from raw scores if no rich report
     const fallbackStrengths    = evaluations.filter((e) => e.score >= 70);
     const fallbackImprovements = evaluations.filter((e) => e.score < 70);
 
     // ── Tone / communication data ─────────────────────────────────────────────
-    const ca   = rr.communication_analysis || {};
-    const comm = rr.communication          || {};
+    // tone_analysis is the new canonical key; communication_analysis is the legacy alias.
+    const ca   = rr.tone_analysis || rr.communication_analysis || {};
+    const comm = rr.communication || {};
 
     // Aggregate emotion percentages across all evaluations that have tone_data
     const emotionTotals = {};

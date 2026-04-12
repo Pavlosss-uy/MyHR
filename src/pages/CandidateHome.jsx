@@ -21,7 +21,8 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { startInterview } from "@/lib/interviewApi";
 
-// Read completed interview sessions from localStorage (written by InterviewRoom after each completion)
+// Read ALL completed interview sessions from localStorage (written by InterviewRoom after each completion).
+// Returns the full sorted list — callers slice for display as needed.
 const loadSessionHistory = () => {
     try {
         const keys = Object.keys(localStorage).filter((k) => k.startsWith("myhr_report_"));
@@ -30,8 +31,7 @@ const loadSessionHistory = () => {
                 try { return JSON.parse(localStorage.getItem(k)); } catch { return null; }
             })
             .filter(Boolean)
-            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-            .slice(0, 4); // show last 4
+            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     } catch {
         return [];
     }
@@ -42,12 +42,15 @@ const CandidateHome = () => {
     const navigate  = useNavigate();
     const firstName = user?.displayName?.split(" ")[0] || user?.email?.split("@")[0] || "there";
 
-    const history = useMemo(() => loadSessionHistory(), []);
+    // allHistory = every session (for accurate counts and averages)
+    // history    = last 4 only (for the display list)
+    const allHistory = useMemo(() => loadSessionHistory(), []);
+    const history    = useMemo(() => allHistory.slice(0, 4), [allHistory]);
 
-    // Derived stats from real data
-    const totalInterviews = history.length;
+    // Derived stats from the FULL history, not the truncated display list
+    const totalInterviews = allHistory.length;
     const avgScore = totalInterviews > 0
-        ? Math.round(history.reduce((sum, s) => sum + (s.report?.reduce((a, e) => a + (e.score || 0), 0) / (s.report?.length || 1)), 0) / totalInterviews)
+        ? Math.round(allHistory.reduce((sum, s) => sum + (s.report?.reduce((a, e) => a + (e.score || 0), 0) / (s.report?.length || 1)), 0) / totalInterviews)
         : 0;
     const readiness = Math.min(100, avgScore > 0 ? avgScore : 0);
 
@@ -120,7 +123,7 @@ const CandidateHome = () => {
                                         variant="ghost"
                                         size="lg"
                                         className="text-primary-foreground border border-primary-foreground/20 hover:bg-primary-foreground/10"
-                                        onClick={() => navigate("/feedback", { state: { session_id: history[0].session_id, report: history[0].report } })}
+                                        onClick={() => navigate("/feedback", { state: { session_id: history[0].session_id, report: history[0].report, rich_report: history[0].rich_report ?? null } })}
                                     >
                                         View Last Report
                                     </Button>
@@ -133,7 +136,7 @@ const CandidateHome = () => {
                             {[
                                 { label: "Total Interviews", value: totalInterviews || "—", icon: Mic,         color: "cobalt",   delay: 0.15 },
                                 { label: "Avg. Score",       value: avgScore ? `${avgScore}%` : "—", icon: TrendingUp, color: "mint",    delay: 0.2  },
-                                { label: "Sessions",         value: history.length || "—", icon: Clock,        color: "warning",  delay: 0.25 },
+                                { label: "Sessions",         value: totalInterviews || "—", icon: Clock,        color: "warning",  delay: 0.25 },
                             ].map(({ label, value, icon: Icon, color, delay }) => (
                                 <motion.div
                                     key={label}
@@ -212,7 +215,7 @@ const CandidateHome = () => {
                                                     <Button
                                                         variant="ghost"
                                                         size="sm"
-                                                        onClick={() => navigate("/feedback", { state: { session_id: session.session_id, report: session.report } })}
+                                                        onClick={() => navigate("/feedback", { state: { session_id: session.session_id, report: session.report, rich_report: session.rich_report ?? null } })}
                                                     >
                                                         <ArrowRight className="w-4 h-4" />
                                                     </Button>

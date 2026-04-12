@@ -185,7 +185,12 @@ const InterviewRoom = () => {
                 try {
                     localStorage.setItem(
                         `myhr_report_${sessionId}`,
-                        JSON.stringify({ report: resp.report, session_id: sessionId, timestamp: Date.now() })
+                        JSON.stringify({
+                            report: resp.report,
+                            rich_report: resp.rich_report ?? null,
+                            session_id: sessionId,
+                            timestamp: Date.now(),
+                        })
                     );
                 } catch { /* storage full — non-fatal */ }
 
