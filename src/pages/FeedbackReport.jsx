@@ -38,7 +38,7 @@ const FeedbackReport = () => {
 
     useEffect(() => {
         (async () => {
-            // ① Report passed directly from InterviewRoom (completed interview)
+            // ① Report passed directly from InterviewRoom (completed or early-ended)
             if (routeState?.report) {
                 const evaluations = routeState.report;
                 const built = {
@@ -47,8 +47,8 @@ const FeedbackReport = () => {
                         ? Math.round(evaluations.reduce((s, e) => s + (e.score || 0), 0) / evaluations.length)
                         : 0,
                     total_questions: evaluations.length,
-                    job_title: "Mock Interview",
-                    candidate_name: "Candidate",
+                    job_title: routeState.job_title || "Interview",
+                    candidate_name: routeState.candidate_name || "Candidate",
                 };
                 if (routeState.session_id) persistReport(routeState.session_id, evaluations);
                 setReport(built);

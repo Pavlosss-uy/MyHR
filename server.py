@@ -259,6 +259,10 @@ async def start_interview(
 
     result = app_graph.invoke(initial_state)
 
+    # The graph increments question_number once during generation of Q1.
+    # Reset it to 1 so the first submit correctly returns Q2, second Q3, etc.
+    result["question_number"] = 1
+
     # Do NOT append the first AI question to history here — _run_interview_turn does it
     # on the first submit so we avoid duplicating it.
     db_record = SessionRecord(session_id=session_id, state_data=result)
@@ -430,24 +434,40 @@ async def live_interview_websocket(
 
 @app.get("/end_interview/{session_id}")
 async def end_interview(session_id: str, db: Session = Depends(get_db)):
+    """
+    Called when the user clicks 'End Interview' early OR when the frontend needs
+    the report for an already-completed session.  Generates/persists the report
+    from whatever evaluations exist in state and returns the full report payload.
+    """
     record = db.query(SessionRecord).filter(SessionRecord.session_id == session_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    state = record.state_data
-    evaluations = state.get("evaluations", [])
+    current_state = record.state_data
+    evaluations = current_state.get("evaluations", [])
+    job_ctx = current_state.get("initial_job_context", {})
+    candidate_name = job_ctx.get("candidate_name", "Candidate")
+    job_title = job_ctx.get("job_title", "Interview")
 
-    # Compute average score
-    scores = [e["score"] for e in evaluations if isinstance(e, dict) and "score" in e]
-    avg_score = round(sum(scores) / len(scores)) if scores else 0
+    # Persist report to storage (idempotent — safe to call multiple times)
+    if evaluations:
+        try:
+            save_interview_report(session_id, candidate_name, evaluations)
+        except Exception as e:
+            print(f"⚠️ Report save warning: {e}")
+
+    avg_score = (
+        round(sum(e["score"] for e in evaluations) / len(evaluations), 1)
+        if evaluations else 0
+    )
 
     return {
         "session_id": session_id,
         "evaluations": evaluations,
         "average_score": avg_score,
         "total_questions": len(evaluations),
-        "job_title": state.get("initial_job_context", {}).get("job_title", "Position"),
-        "candidate_name": state.get("initial_job_context", {}).get("candidate_name", "Candidate"),
+        "job_title": job_title,
+        "candidate_name": candidate_name,
     }
 
 
