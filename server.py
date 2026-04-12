@@ -21,6 +21,7 @@ from fastapi import (
 )
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from langgraph.graph import END
 
 from database import get_db, SessionRecord
@@ -172,12 +173,46 @@ def _attach_tone_analysis(current_state: Dict[str, Any], audio_path: str, sessio
         print(f"⚠️ Celery/Redis unavailable, skipping async tone persistence: {e}")
 
 
+def _build_closing_message(current_state: Dict[str, Any]) -> str:
+    """Generate a warm, contextual closing sentence spoken aloud at interview end."""
+    evaluations = current_state.get("evaluations", [])
+    name = current_state.get("initial_job_context", {}).get("candidate_name", "")
+    first_name = name.split()[0] if name else "there"
+
+    avg = (
+        sum(e["score"] for e in evaluations) / len(evaluations)
+        if evaluations else 0
+    )
+
+    if avg >= 75:
+        return (
+            f"That was a great session, {first_name}. "
+            "You demonstrated strong technical knowledge across the topics we covered. "
+            "We will review your responses and be in touch very soon. "
+            "Thank you so much for your time today — best of luck!"
+        )
+    elif avg >= 50:
+        return (
+            f"Thanks for your time today, {first_name}. "
+            "You showed solid understanding in several areas, and we have a good picture of your background now. "
+            "We will be reviewing everything carefully and will reach out with next steps. "
+            "Take care!"
+        )
+    else:
+        return (
+            f"Thank you for coming in today, {first_name}. "
+            "We appreciate your honesty and effort throughout the session. "
+            "We will be in touch after reviewing all candidates. "
+            "All the best!"
+        )
+
+
 def _run_interview_turn(
     current_state: Dict[str, Any], transcription: str
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     current_state["last_answer"] = transcription
 
-    # Append history without duplicating the AI question (it was already stored in state)
+    # Append history — AI question first, then candidate answer
     if current_state.get("last_question"):
         current_state["conversation_history"].append(f"AI: {current_state['last_question']}")
     current_state["conversation_history"].append(f"Candidate: {transcription}")
@@ -187,7 +222,8 @@ def _run_interview_turn(
 
     next_step = decide_next_step(current_state)
     if next_step == END:
-        return current_state, {"status": "completed"}
+        closing = _build_closing_message(current_state)
+        return current_state, {"status": "completed", "closing_message": closing}
 
     if current_state.get("next_action") == "drill_down":
         current_state["consecutive_fails"] = current_state.get("consecutive_fails", 0) + 1
@@ -390,15 +426,26 @@ async def live_interview_websocket(
                 current_state, outcome = _run_interview_turn(current_state, transcription)
 
                 record.state_data = current_state
+                flag_modified(record, "state_data")
                 db.commit()
 
                 if outcome["status"] == "completed":
+                    closing = outcome.get("closing_message", "Thank you for your time today. Goodbye!")
                     candidate_name = current_state.get("initial_job_context", {}).get("candidate_name", "Unknown Candidate")
                     save_interview_report(session_id, candidate_name, current_state["evaluations"])
+
+                    await websocket.send_json({"type": "ai_response_text", "text": closing})
+                    await websocket.send_json(
+                        {"type": "audio_stream_start", "format": "linear16", "sample_rate": 16000, "channels": 1}
+                    )
+                    async for audio_chunk in generate_audio_stream(closing):
+                        await websocket.send_bytes(audio_chunk)
+                    await websocket.send_json({"type": "audio_stream_complete"})
+
                     await websocket.send_json(
                         {
                             "type": "end_interview",
-                            "message": "Interview completed.",
+                            "message": closing,
                             "report": current_state["evaluations"],
                             "transcription": transcription,
                         }
@@ -432,12 +479,15 @@ async def live_interview_websocket(
         print(f"Client {session_id} disconnected.")
 
 
+MIN_REPORT_QUESTIONS = 2  # need at least this many answered questions for a valid report
+
+
 @app.get("/end_interview/{session_id}")
 async def end_interview(session_id: str, db: Session = Depends(get_db)):
     """
     Called when the user clicks 'End Interview' early OR when the frontend needs
-    the report for an already-completed session.  Generates/persists the report
-    from whatever evaluations exist in state and returns the full report payload.
+    the report for an already-completed session.
+    Returns status='incomplete' when fewer than MIN_REPORT_QUESTIONS were answered.
     """
     record = db.query(SessionRecord).filter(SessionRecord.session_id == session_id).first()
     if not record:
@@ -449,20 +499,33 @@ async def end_interview(session_id: str, db: Session = Depends(get_db)):
     candidate_name = job_ctx.get("candidate_name", "Candidate")
     job_title = job_ctx.get("job_title", "Interview")
 
-    # Persist report to storage (idempotent — safe to call multiple times)
-    if evaluations:
-        try:
-            save_interview_report(session_id, candidate_name, evaluations)
-        except Exception as e:
-            print(f"⚠️ Report save warning: {e}")
+    # Guard: refuse to generate a report for an effectively empty session
+    if len(evaluations) < MIN_REPORT_QUESTIONS:
+        return {
+            "session_id": session_id,
+            "status": "incomplete",
+            "message": (
+                f"The interview ended too early. "
+                f"Answer at least {MIN_REPORT_QUESTIONS} questions to generate a full report."
+            ),
+            "evaluations": [],
+            "average_score": 0,
+            "total_questions": len(evaluations),
+            "job_title": job_title,
+            "candidate_name": candidate_name,
+        }
 
-    avg_score = (
-        round(sum(e["score"] for e in evaluations) / len(evaluations), 1)
-        if evaluations else 0
-    )
+    # Persist report to storage (idempotent — safe to call multiple times)
+    try:
+        save_interview_report(session_id, candidate_name, evaluations)
+    except Exception as e:
+        print(f"⚠️ Report save warning: {e}")
+
+    avg_score = round(sum(e["score"] for e in evaluations) / len(evaluations), 1)
 
     return {
         "session_id": session_id,
+        "status": "complete",
         "evaluations": evaluations,
         "average_score": avg_score,
         "total_questions": len(evaluations),
@@ -516,13 +579,23 @@ async def submit_answer(
         current_state, outcome = _run_interview_turn(current_state, transcription)
 
         record.state_data = current_state
+        flag_modified(record, "state_data")   # force SQLAlchemy to detect JSON changes
         db.commit()
 
         if outcome["status"] == "completed":
+            closing = outcome.get("closing_message", "Thank you for your time today. Goodbye!")
             candidate_name = current_state.get("initial_job_context", {}).get("candidate_name", "Unknown Candidate")
             save_interview_report(session_id, candidate_name, current_state["evaluations"])
+
+            closing_audio_path = generate_audio(closing)
+            closing_audio_url = (
+                f"http://localhost:8000/static/audio/{os.path.basename(closing_audio_path)}"
+                if closing_audio_path else None
+            )
             return {
                 "status": "completed",
+                "closing_message": closing,
+                "closing_audio_url": closing_audio_url,
                 "report": current_state["evaluations"],
                 "transcription": transcription,
             }
