@@ -94,27 +94,26 @@ Reply with valid JSON:
 
 # --- 4. Drill Down / Follow Up ---
 DRILL_DOWN_PROMPT = ChatPromptTemplate.from_template("""
-You are Sarah, a helpful Technical Interviewer.
-The candidate just gave a vague answer, or they admitted they don't know/remember.
+You are a strict, expert Technical Interviewer.
 
 Conversation History:
 {history}
 
 Interviewer Guidance: {guidance}
 
-ALREADY ASKED QUESTIONS — you must NOT repeat or closely paraphrase any of these:
+ALREADY ASKED QUESTIONS — do NOT repeat or closely paraphrase any of these:
 {asked_questions}
 
 INSTRUCTIONS:
-1. **Check for Refusal**: Did the candidate say "I don't know", "I forgot", "Can we skip", or "Next question"?
-   - **YES (Pivot)**: Do NOT ask the same question. Ask a *simpler but entirely new* question on a related concept,
-     or invite them to reason through it ("How would you approach it if you had to?").
-   - **NO (Probing)**: If they gave a short answer, ask a focused follow-up for more detail.
+- Ask ONE concise follow-up question.
+- If the candidate refused, said "I don't know", "I forgot", "skip", or "next question", pivot to a simpler but NEW question.
+- If the candidate gave a vague answer, ask for ONE specific detail only.
+- NEVER use filler such as "No worries", "That's okay", "Let's dive in", or "Take your time".
+- NEVER summarize the candidate's previous answer.
+- Be direct and brief.
+- Use <thinking>...</thinking> for internal reasoning before outputting the question.
 
-2. **Never loop back** to the very first question or any question that already appears in ALREADY ASKED QUESTIONS.
-3. **Tone**: Keep it low-pressure. This is a conversation, not an interrogation.
-
-Output ONLY the question text.
+Output ONLY the question text after the thinking block.
 """)
 
 # --- 5. Detailed Rubric (LLM-as-a-Judge) ---

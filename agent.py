@@ -1,11 +1,9 @@
 import os
 from typing import TypedDict, List, Literal, Dict
 from langgraph.graph import StateGraph, END
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 import torch
-from models.scoring_model import scorer
 from models.registry import registry
 from models.feature_extractor import extractor
 from models.explainer import ModelExplainer
@@ -39,33 +37,41 @@ class EvaluationResult(BaseModel):
 class GradeResult(BaseModel):
     is_relevant: bool = Field(description="Is the context useful?")
 
-class AgentState(TypedDict):
+class AgentState(TypedDict, total=False):
     session_id: str
     conversation_history: List[str]
     current_topic: str
     initial_job_context: Dict
     current_search_query: str
     retrieved_context: str
-    cv_chunk: str           # CV-only context from last retrieval
-    jd_chunk: str           # JD-only context from last retrieval
+    cv_chunk: str
+    jd_chunk: str
     loop_count: int
     drill_down_count: int
     last_question: str
     last_answer: str
     multimodal_analysis: dict
-    facial_expression_data: dict  # placeholder for facial analysis integration
+    facial_expression_data: dict
     evaluations: List[dict]
     next_action: str
-    # adaptive interview tracking
     question_number: int
-    asked_questions: List[str]   # full text of every question asked so far
-    failed_topics: List[str]     # topics where candidate repeatedly failed
-    consecutive_fails: int       # consecutive drill-down / "I don't know" count
+    asked_questions: List[str]
+    failed_topics: List[str]
+    consecutive_fails: int
+    current_difficulty: int
+    skill_match_score: float
+    predicted_performance: float
 
 
 # --- Interview bounds (shared with decide_next_step and generate_question_node) ---
 MIN_QUESTIONS = 3
 MAX_QUESTIONS = 8
+
+def _strip_thinking(content: str) -> str:
+    if not content:
+        return ""
+    return content.split("</thinking>")[-1].strip()
+
 
 # --- LLM CONFIGURATION ---
 llm = ChatGroq(
@@ -85,7 +91,7 @@ def rewrite_query_node(state: AgentState):
     response = chain.invoke({"history": str(history[-3:]), "last_answer": last_answer})
     
     print(f"🔄 Rewrote Query: {response.content}")
-    return {"current_search_query": response.content, "loop_count": state.get("loop_count", 0)}
+    return {"current_search_query": response.content.strip(), "loop_count": state.get("loop_count", 0)}
 
 def retrieve_node(state: AgentState):
     """Uses the Advanced Hybrid Retriever. Populates both unified and split context."""
@@ -133,7 +139,6 @@ def generate_question_node(state: AgentState):
     n_questions   = len(score_history)
 
     # Build 6-D observation for PPO (mirrors InterviewEnv._get_obs())
-    import numpy as np
     avg_score_norm = (sum(score_history) / len(score_history) / 100.0) if score_history else 0.5
     if len(score_history) >= 2:
         trend = float(np.clip(((score_history[-1] - score_history[-2]) / 100.0 + 1.0) / 2.0, 0.0, 1.0))
@@ -165,14 +170,14 @@ def generate_question_node(state: AgentState):
     if state.get("next_action") == "drill_down":
         print(f"⚡ Mode: Generating Follow-Up (Diff: {next_diff})")
         chain = DRILL_DOWN_PROMPT | llm
-        guidance = "The candidate's last answer was vague. Be supportive." + difficulty_guidance
+        guidance = "The candidate's last answer was vague. Probe for one concrete detail only." + difficulty_guidance
 
         response = chain.invoke({
-            "history": state["conversation_history"],
+            "history": state.get("conversation_history", []),
             "guidance": guidance,
             "asked_questions": "\n".join(f"- {q}" for q in asked_questions) or "None yet.",
         })
-        content = response.content.strip()
+        content = _strip_thinking(response.content)
         return {
             "last_question": content,
             "loop_count": 0,
@@ -205,14 +210,14 @@ def generate_question_node(state: AgentState):
             "global_context": global_context,
             "cv_chunk": state.get("cv_chunk", "No CV context found."),
             "jd_chunk": state.get("jd_chunk", "No JD context found."),
-            "history": state["conversation_history"],
+            "history": state.get("conversation_history", []),
             "topic": derived_topic,
             "guidance": guidance,
             "asked_questions": "\n".join(f"- {q}" for q in asked_questions) or "None yet.",
             "failed_topics": "\n".join(f"- {t}" for t in failed_topics) or "None.",
         })
 
-        content = response.content.split("</thinking>")[-1].strip()
+        content = _strip_thinking(response.content)
         return {
             "last_question": content,
             "current_topic": derived_topic,
