@@ -18,6 +18,7 @@ import {
     TrendingUp,
     Award,
     HelpCircle,
+    Mic,
 } from "lucide-react";
 import { getReport } from "@/lib/interviewApi";
 
@@ -71,16 +72,90 @@ const SectionHeader = ({ icon: Icon, label, color = "text-cobalt" }) => (
     </div>
 );
 
+// ── Communication & Tone helpers ────────────────────────────────────────────
+
+const TONE_COLORS = {
+    confident:    "#10b981",
+    hesitant:     "#f59e0b",
+    nervous:      "#ef4444",
+    engaged:      "#6366f1",
+    neutral:      "#6b7280",
+    frustrated:   "#f97316",
+    enthusiastic: "#8b5cf6",
+    uncertain:    "#3b82f6",
+};
+
+const TONE_EMOJIS = {
+    confident:    "💪",
+    hesitant:     "🤔",
+    nervous:      "😰",
+    engaged:      "⚡",
+    neutral:      "😐",
+    frustrated:   "😤",
+    enthusiastic: "🎯",
+    uncertain:    "🤷",
+};
+
+// Renders only the top N slices — remaining are collapsed into a neutral "other" slice
+const TonePieChart = ({ data, size = 120, topN = 3 }) => {
+    const top   = data.slice(0, topN);
+    const other = data.slice(topN).reduce((s, d) => s + d.value, 0);
+    const sliceData = other > 0.5 ? [...top, { emotion: "_other", value: other }] : top;
+
+    const total = sliceData.reduce((s, d) => s + d.value, 0);
+    if (total === 0) return null;
+
+    const cx = size / 2, cy = size / 2, r = size / 2 - 6;
+    let angle = -Math.PI / 2;
+
+    const slices = sliceData.map((d) => {
+        const sweep = (d.value / total) * 2 * Math.PI;
+        const x1 = cx + r * Math.cos(angle);
+        const y1 = cy + r * Math.sin(angle);
+        angle += sweep;
+        const x2 = cx + r * Math.cos(angle);
+        const y2 = cy + r * Math.sin(angle);
+        return {
+            path: `M ${cx} ${cy} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${sweep > Math.PI ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} Z`,
+            color: TONE_COLORS[d.emotion] || "#374151",
+        };
+    });
+
+    return (
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+            {slices.map((s, i) => (
+                <path key={i} d={s.path} fill={s.color} opacity={0.88} />
+            ))}
+            <circle cx={cx} cy={cy} r={r * 0.44} fill="var(--color-card, #1e1e2e)" />
+        </svg>
+    );
+};
+
+const ConfidenceBadge = ({ level }) => {
+    const styles = {
+        high:   "bg-mint/15 text-mint border-mint/30",
+        medium: "bg-cobalt/15 text-cobalt-lighter border-cobalt/30",
+        low:    "bg-warning/15 text-warning border-warning/30",
+    };
+    const key = (level || "").toLowerCase();
+    return (
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${styles[key] || styles["medium"]}`}>
+            {level || "Medium"} confidence
+        </span>
+    );
+};
+
 // ── Main Component ───────────────────────────────────────────────────────────
 
 const FeedbackReport = () => {
     const location   = useLocation();
     const routeState = location.state;
 
-    const [report,     setReport]     = useState(null);
-    const [richReport, setRichReport] = useState(null);
-    const [loading,    setLoading]    = useState(true);
-    const [error,      setError]      = useState("");
+    const [report,          setReport]          = useState(null);
+    const [richReport,      setRichReport]      = useState(null);
+    const [loading,         setLoading]         = useState(true);
+    const [error,           setError]           = useState("");
+    const [showToneDetails, setShowToneDetails] = useState(false);
 
     useEffect(() => {
         (async () => {
@@ -193,6 +268,36 @@ const FeedbackReport = () => {
     // Fallback strength/weakness lists from raw scores if no rich report
     const fallbackStrengths    = evaluations.filter((e) => e.score >= 70);
     const fallbackImprovements = evaluations.filter((e) => e.score < 70);
+
+    // ── Tone / communication data ─────────────────────────────────────────────
+    const ca   = rr.communication_analysis || {};
+    const comm = rr.communication          || {};
+
+    // Aggregate emotion percentages across all evaluations that have tone_data
+    const emotionTotals = {};
+    let toneEvalCount = 0;
+    evaluations.forEach((ev) => {
+        const fa = ev.tone_data?.full_analysis;
+        if (!fa) return;
+        toneEvalCount++;
+        Object.entries(fa).forEach(([emotion, pctStr]) => {
+            const val = parseFloat(pctStr) || 0;
+            emotionTotals[emotion] = (emotionTotals[emotion] || 0) + val;
+        });
+    });
+    const toneData = Object.entries(emotionTotals)
+        .map(([emotion, total]) => ({ emotion, value: toneEvalCount > 0 ? total / toneEvalCount : 0 }))
+        .sort((a, b) => b.value - a.value)
+        .filter((d) => d.value > 0.5);
+
+    const dominantTone   = ca.overall_tone     || comm.tone     || toneData[0]?.emotion || null;
+    const confidenceLevel = ca.confidence_level || comm.confidence || null;
+    const clarityLevel   = ca.clarity_of_speech || comm.clarity  || null;
+    const toneEffective  = ca.tone_effectiveness || null;
+    const observations   = ca.observations   || (comm.feedback ? [comm.feedback] : []);
+    const recommendations = ca.recommendations || [];
+
+    const hasToneSection = dominantTone || toneData.length > 0 || observations.length > 0;
 
     return (
         <div className="min-h-screen bg-background">
@@ -523,11 +628,172 @@ const FeedbackReport = () => {
                     </motion.div>
                 )}
 
+                {/* ── Communication & Tone ────────────────────────────────── */}
+                {hasToneSection && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.6 }}
+                        className="bg-card rounded-xl border border-border shadow-sm mb-8"
+                    >
+                        <SectionHeader icon={Mic} label="Communication & Tone" color="text-purple-400" />
+                        <div className="p-5 space-y-5">
+
+                            {/* ── At-a-glance row ── */}
+                            <div className="flex flex-wrap items-center gap-3">
+                                {dominantTone && (
+                                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                                        <span className="text-lg" role="img" aria-label={dominantTone}>
+                                            {TONE_EMOJIS[dominantTone] || "🗣️"}
+                                        </span>
+                                        <div>
+                                            <p className="text-[10px] text-muted-foreground leading-none mb-0.5">Dominant tone</p>
+                                            <p className="text-sm font-semibold text-foreground capitalize">{dominantTone}</p>
+                                        </div>
+                                    </div>
+                                )}
+                                {confidenceLevel && <ConfidenceBadge level={confidenceLevel} />}
+                            </div>
+
+                            {/* ── Chart (top 3) + top labels ── */}
+                            {toneData.length > 0 && (
+                                <div className="flex items-center gap-5">
+                                    <TonePieChart data={toneData} size={100} topN={3} />
+                                    <div className="space-y-1.5">
+                                        {toneData.slice(0, 3).map((d) => (
+                                            <div key={d.emotion} className="flex items-center gap-2">
+                                                <span
+                                                    className="inline-block w-2 h-2 rounded-full shrink-0"
+                                                    style={{ background: TONE_COLORS[d.emotion] || "#6b7280" }}
+                                                />
+                                                <span className="text-xs text-muted-foreground capitalize w-20">{d.emotion}</span>
+                                                <span className="text-xs font-semibold text-foreground">{d.value.toFixed(0)}%</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* ── Key insight (first observation only) ── */}
+                            {observations.length > 0 && (
+                                <p className="text-xs text-muted-foreground leading-relaxed border-l-2 border-purple-500/30 pl-3">
+                                    {observations[0]}
+                                </p>
+                            )}
+
+                            {/* ── Issues (max 3) ── */}
+                            {observations.length > 1 && (
+                                <ul className="space-y-1">
+                                    {observations.slice(1, 4).map((obs, i) => (
+                                        <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+                                            <span className="shrink-0 mt-0.5 text-warning">•</span>
+                                            {obs}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+
+                            {/* ── Tips (max 2) ── */}
+                            {recommendations.length > 0 && (
+                                <ul className="space-y-1">
+                                    {recommendations.slice(0, 2).map((rec, i) => (
+                                        <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+                                            <span className="shrink-0 mt-0.5 text-mint font-bold">→</span>
+                                            {rec}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+
+                            {/* ── Show Details toggle ── */}
+                            <button
+                                onClick={() => setShowToneDetails((v) => !v)}
+                                className="text-xs text-cobalt-lighter hover:text-foreground transition-colors underline underline-offset-2 decoration-dotted"
+                            >
+                                {showToneDetails ? "Hide details" : "Show details"}
+                            </button>
+
+                            {/* ── Full breakdown (hidden by default) ── */}
+                            {showToneDetails && (
+                                <motion.div
+                                    initial={{ opacity: 0, height: 0 }}
+                                    animate={{ opacity: 1, height: "auto" }}
+                                    exit={{ opacity: 0, height: 0 }}
+                                    className="pt-3 border-t border-border space-y-4"
+                                >
+                                    {/* All emotions */}
+                                    {toneData.length > 0 && (
+                                        <div>
+                                            <p className="text-[10px] font-semibold text-foreground/50 uppercase tracking-wider mb-2">Full emotion breakdown</p>
+                                            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                                                {toneData.map((d) => (
+                                                    <div key={d.emotion} className="flex items-center gap-1.5">
+                                                        <span
+                                                            className="inline-block w-2 h-2 rounded-full shrink-0"
+                                                            style={{ background: TONE_COLORS[d.emotion] || "#6b7280" }}
+                                                        />
+                                                        <span className="text-xs text-muted-foreground capitalize">{d.emotion}</span>
+                                                        <span className="text-xs font-semibold text-foreground">{d.value.toFixed(1)}%</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                    {/* All observations */}
+                                    {observations.length > 1 && (
+                                        <div>
+                                            <p className="text-[10px] font-semibold text-foreground/50 uppercase tracking-wider mb-2">All observations</p>
+                                            <ul className="space-y-1">
+                                                {observations.map((obs, i) => (
+                                                    <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+                                                        <span className="shrink-0 mt-0.5 text-purple-400">•</span>
+                                                        {obs}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
+                                    {/* All tips */}
+                                    {recommendations.length > 2 && (
+                                        <div>
+                                            <p className="text-[10px] font-semibold text-foreground/50 uppercase tracking-wider mb-2">All tips</p>
+                                            <ul className="space-y-1">
+                                                {recommendations.map((rec, i) => (
+                                                    <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+                                                        <span className="shrink-0 mt-0.5 text-mint font-bold">→</span>
+                                                        {rec}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )}
+                                    {/* Extra metadata badges */}
+                                    {(clarityLevel || toneEffective) && (
+                                        <div className="flex flex-wrap gap-2">
+                                            {clarityLevel && (
+                                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border bg-cobalt/10 text-cobalt-lighter border-cobalt/20">
+                                                    {clarityLevel} clarity
+                                                </span>
+                                            )}
+                                            {toneEffective && (
+                                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border bg-yellow-500/10 text-yellow-400 border-yellow-500/20">
+                                                    {toneEffective} effectiveness
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
+                                </motion.div>
+                            )}
+
+                        </div>
+                    </motion.div>
+                )}
+
                 {/* ── CTA ─────────────────────────────────────────────────── */}
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.6 }}
+                    transition={{ delay: 0.65 }}
                     className="flex justify-center gap-4"
                 >
                     <Button variant="hero" size="lg" asChild>

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 from transformers import Wav2Vec2Model, Wav2Vec2FeatureExtractor
 import librosa
 
@@ -43,46 +44,116 @@ class InterviewEmotionModel(nn.Module):
         logits = self.classifier(pooled_output)
         return logits
 
-    def predict_from_audio(self, audio_path):
-        self.eval()
-
-        # Convert to real 16 kHz mono WAV so PySoundFile never falls back to
-        # the deprecated audioread path (eliminates the UserWarning).
-        import subprocess, tempfile, os
-        wav_path = None
-        try:
-            wav_path = tempfile.mktemp(suffix=".wav")
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-i", audio_path,
-                    "-ar", "16000", "-ac", "1", "-f", "wav", wav_path,
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=True,
-            )
-            speech, _ = librosa.load(wav_path, sr=16000)
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            # ffmpeg not available — fall back to librosa directly
-            speech, _ = librosa.load(audio_path, sr=16000)
-        finally:
-            if wav_path and os.path.exists(wav_path):
-                try:
-                    os.remove(wav_path)
-                except OSError:
-                    pass
-        
-        inputs = self.feature_extractor(speech, sampling_rate=16000, return_tensors="pt", padding=True)
-        
-        with torch.no_grad():
-            logits = self.forward(inputs.input_values, inputs.attention_mask)
-            probabilities = torch.nn.functional.softmax(logits, dim=-1)
-            
-        pred_idx = torch.argmax(probabilities, dim=-1).item()
-        confidence = probabilities[0][pred_idx].item()
-        
+    @staticmethod
+    def _fallback_result():
+        """Guaranteed-valid fallback when inference cannot run."""
         return {
-            "dominant_tone": self.labels[pred_idx],
-            "confidence": confidence,
-            "tone_profile": probabilities[0].tolist() 
+            "dominant_tone": "neutral",
+            "confidence": 0.5,
+            "tone_profile": [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],  # neutral=1.0
         }
+
+    @staticmethod
+    def _load_audio(audio_path: str, target_sr: int = 16000):
+        """
+        Load any browser-recorded audio (webm, opus, wav, mp4, ogg…) as a
+        mono float32 numpy array resampled to target_sr.
+
+        Strategy (in order):
+        1. PyAV  — bundles its own codec libs; handles webm/opus natively
+                   without a system-level ffmpeg install.
+        2. librosa — fallback for wav/mp3/flac when PyAV is unavailable.
+        Returns (speech: np.ndarray, sample_rate: int).
+        Raises RuntimeError only when both strategies fail.
+        """
+        # ── Strategy 1: PyAV ────────────────────────────────────────────
+        try:
+            import av as _av
+
+            frames = []
+            with _av.open(audio_path) as container:
+                resampler = _av.audio.resampler.AudioResampler(
+                    format="fltp",       # float planar
+                    layout="mono",
+                    rate=target_sr,
+                )
+                for packet in container.demux(audio=0):
+                    for frame in packet.decode():
+                        frame.pts = None          # avoid pts discontinuity errors
+                        for out in resampler.resample(frame):
+                            frames.append(out.to_ndarray()[0])  # shape (N,)
+
+            if frames:
+                speech = np.concatenate(frames).astype(np.float32)
+                if len(speech) > 0:
+                    return speech, target_sr
+
+        except ImportError:
+            pass   # av not installed — fall through to librosa
+        except Exception as av_err:
+            print(f"[EMOTION] PyAV load failed ({type(av_err).__name__}): {av_err} — trying librosa")
+
+        # ── Strategy 2: librosa ─────────────────────────────────────────
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")   # suppress PySoundFile / audioread warnings
+            speech, _ = librosa.load(audio_path, sr=target_sr, mono=True)
+
+        return speech, target_sr
+
+    def predict_from_audio(self, audio_path):
+        import os, traceback as _tb
+
+        self.eval()
+        speech = None
+
+        # ── Stage 1: load audio ──────────────────────────────────────────
+        try:
+            speech, _ = self._load_audio(audio_path)
+        except Exception as load_err:
+            print(f"[EMOTION ERROR] Audio load failed: {type(load_err).__name__}: {load_err}")
+            _tb.print_exc()
+            return self._fallback_result()
+
+        if speech is None or len(speech) == 0:
+            print("[EMOTION ERROR] Loaded audio is empty — returning fallback.")
+            return self._fallback_result()
+
+        # ── Stage 2: feature extraction ──────────────────────────────────
+        try:
+            inputs = self.feature_extractor(
+                speech,
+                sampling_rate=16000,
+                return_tensors="pt",
+                padding=True,
+                return_attention_mask=True,   # always request mask explicitly
+            )
+        except Exception as feat_err:
+            print(f"[EMOTION ERROR] Feature extraction failed: {type(feat_err).__name__}: {feat_err}")
+            _tb.print_exc()
+            return self._fallback_result()
+
+        # ── Stage 3: model inference ─────────────────────────────────────
+        try:
+            # Access attention_mask safely — not all extractor versions return it
+            attention_mask = inputs.get("attention_mask", None)
+
+            with torch.no_grad():
+                logits = self.forward(inputs.input_values, attention_mask)
+                probabilities = torch.nn.functional.softmax(logits, dim=-1)
+
+            pred_idx = torch.argmax(probabilities, dim=-1).item()
+            confidence = float(probabilities[0][pred_idx].item())
+
+            result = {
+                "dominant_tone": self.labels[pred_idx],
+                "confidence": confidence,
+                "tone_profile": probabilities[0].tolist(),
+            }
+            print("[EMOTION OUTPUT]", result)
+            return result
+
+        except Exception as infer_err:
+            print(f"[EMOTION ERROR] Inference failed: {type(infer_err).__name__}: {infer_err}")
+            _tb.print_exc()
+            return self._fallback_result()

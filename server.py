@@ -25,7 +25,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from langgraph.graph import END
 
 from database import get_db, SessionRecord
-from ingest import create_session_index, save_interview_report
+from ingest import create_session_index, save_interview_report, save_rich_report
 from s3_utils import upload_file_to_s3
 from models.registry import registry
 from services import (
@@ -34,7 +34,6 @@ from services import (
     generate_audio,
     generate_audio_stream,
 )
-from celery_worker import process_audio_tone_task
 from tone import analyze_voice_tone
 from agent import (
     app_graph,
@@ -52,6 +51,43 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 UPLOAD_DIR = "./uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def _extract_jd_signals(jd_text: str) -> str:
+    """
+    Extract a concise, structured summary of key JD signals for use in interview prompts.
+    Avoids injecting verbose JD paragraphs that cause long, unnatural questions.
+    """
+    if not jd_text or not jd_text.strip():
+        return "No JD provided."
+
+    lines = [l.strip() for l in jd_text.split("\n") if l.strip()]
+    if not lines:
+        return "No JD provided."
+
+    role_line = lines[0]
+
+    # Collect bullet-point lines as skill/requirement signals (max 10)
+    skill_lines = []
+    for line in lines[1:]:
+        # Strip common bullet markers
+        clean = re.sub(r"^[-•*·✓▪]\s*", "", line).strip()
+        # Keep lines that look like a skill/requirement: short and meaningful
+        if 8 < len(clean) < 120 and not clean.endswith(":"):
+            skill_lines.append(clean)
+        if len(skill_lines) >= 10:
+            break
+
+    if skill_lines:
+        return (
+            f"Role: {role_line}\n"
+            "Key Requirements:\n"
+            + "\n".join(f"- {s}" for s in skill_lines)
+        )
+
+    # Fallback: first 350 chars of the JD if no bullet points detected
+    flat = " ".join(lines)
+    return f"Role: {role_line}\nContext: {flat[:350]}"
 
 
 def extract_candidate_name(cv_text: str, filename: str) -> str:
@@ -127,7 +163,8 @@ def _build_initial_state(
         "current_search_query": "",
         "initial_job_context": {
             "jd_text": jd,
-            "job_title": jd.split("\n")[0] if jd else "Position",
+            "job_title": jd.split("\n")[0].strip() if jd else "Position",
+            "jd_signals": _extract_jd_signals(jd),
             "candidate_name": candidate_name,
             "cv_url": s3_cv_url,
         },
@@ -147,33 +184,30 @@ def _build_initial_state(
 
 
 def _attach_tone_analysis(current_state: Dict[str, Any], audio_path: str, session_id: str):
+    """
+    Run emotion/tone analysis synchronously and store the result in current_state.
+    Never skips — always produces a valid multimodal_analysis entry.
+    Celery/Redis dependency removed: analysis runs in-process, no external services needed.
+    """
+    # analyze_voice_tone guarantees a return value — it never raises
+    dominant_tone, tone_report = analyze_voice_tone(audio_path)
+
+    # Derive confidence from the highest probability in the tone report
     try:
-        dominant_tone, tone_report = analyze_voice_tone(audio_path)
         confidence = max(
-            (
-                float(v.rstrip("%")) / 100
-                for v in tone_report.values()
-                if isinstance(v, str) and v.endswith("%")
-            ),
+            (float(v.rstrip("%")) / 100 for v in tone_report.values()
+             if isinstance(v, str) and v.endswith("%") and not v.startswith("_")),
             default=0.5,
         )
-        current_state["multimodal_analysis"] = {
-            "primary_emotion": dominant_tone,
-            "full_analysis": tone_report,
-            "confidence": confidence,
-        }
-    except Exception as e:
-        print(f"⚠️ Sync tone analysis failed: {e}")
-        current_state["multimodal_analysis"] = {
-            "primary_emotion": "neutral",
-            "full_analysis": {},
-            "confidence": 0.5,
-        }
+    except Exception:
+        confidence = 0.5
 
-    try:
-        process_audio_tone_task.delay(audio_path, session_id)
-    except Exception as e:
-        print(f"⚠️ Celery/Redis unavailable, skipping async tone persistence: {e}")
+    current_state["multimodal_analysis"] = {
+        "primary_emotion": dominant_tone,
+        "full_analysis": tone_report,
+        "confidence": confidence,
+    }
+    print(f"[EMOTION OUTPUT] session={session_id} tone={dominant_tone} confidence={confidence:.2f}")
 
 
 def _build_closing_message(current_state: Dict[str, Any]) -> str:
@@ -228,16 +262,28 @@ def _run_interview_turn(
         closing = _build_closing_message(current_state)
         return current_state, {"status": "completed", "closing_message": closing}
 
+    # Determine answer classification for routing decisions
+    last_evals = current_state.get("evaluations", [])
+    last_classification = last_evals[-1].get("answer_classification", "WEAK") if last_evals else "WEAK"
+
     if current_state.get("next_action") == "drill_down":
-        current_state["consecutive_fails"] = current_state.get("consecutive_fails", 0) + 1
-        current_state["interview_mode"] = "fallback"
-        if current_state["consecutive_fails"] >= 2:
-            failed_topic = current_state.get("current_topic", "unknown topic")
-            current_state["failed_topics"] = current_state.get("failed_topics", []) + [failed_topic]
+        if last_classification == "OFF_TOPIC":
+            # Off-topic is intentional, not a knowledge gap — do NOT enter fallback mode.
+            # Redirect to a fresh topic instead of asking a simpler version of the same question.
             current_state["next_action"] = "switch"
             current_state["consecutive_fails"] = 0
             current_state["interview_mode"] = "normal"
-            next_step = "rewrite"
+        else:
+            # I_DONT_KNOW or WEAK — trigger fallback (simpler question on same topic)
+            current_state["consecutive_fails"] = current_state.get("consecutive_fails", 0) + 1
+            current_state["interview_mode"] = "fallback"
+            if current_state["consecutive_fails"] >= 2:
+                failed_topic = current_state.get("current_topic", "unknown topic")
+                current_state["failed_topics"] = current_state.get("failed_topics", []) + [failed_topic]
+                current_state["next_action"] = "switch"
+                current_state["consecutive_fails"] = 0
+                current_state["interview_mode"] = "normal"
+                next_step = "rewrite"
     else:
         current_state["consecutive_fails"] = 0
         current_state["interview_mode"] = "normal"
@@ -441,12 +487,23 @@ async def live_interview_websocket(
                     job_title_ws = current_state.get("initial_job_context", {}).get("job_title", "Interview")
                     save_interview_report(session_id, candidate_name, current_state["evaluations"])
 
-                    # Generate rich report (non-blocking — failures are soft)
+                    # Single-report guarantee: generate once, save once, never regenerate
+                    import json as _json_ws
+                    _ws_report_path = os.path.join("storage", "reports", f"{session_id}_rich_report.json")
                     rich_report_ws = {}
-                    try:
-                        rich_report_ws = synthesize_report(current_state, candidate_name, job_title_ws)
-                    except Exception as _e:
-                        print(f"WS report synthesis warning: {_e}")
+                    if os.path.exists(_ws_report_path):
+                        try:
+                            with open(_ws_report_path, "r", encoding="utf-8") as _f:
+                                rich_report_ws = _json_ws.load(_f)
+                        except Exception:
+                            pass
+                    if not rich_report_ws:
+                        try:
+                            rich_report_ws = synthesize_report(current_state, candidate_name, job_title_ws)
+                            if rich_report_ws:
+                                save_rich_report(session_id, rich_report_ws)
+                        except Exception as _e:
+                            print(f"WS report synthesis warning: {_e}")
 
                     await websocket.send_json({"type": "ai_response_text", "text": closing})
                     await websocket.send_json(
@@ -538,12 +595,27 @@ async def end_interview(session_id: str, db: Session = Depends(get_db)):
 
     avg_score = round(sum(e["score"] for e in evaluations) / len(evaluations), 1)
 
-    # Generate rich synthesized report
+    # --- Single-report guarantee ---
+    # Load from disk if already generated (idempotent: same object every time).
+    # Only call synthesize_report once — on first completion. Never regenerate.
+    import json as _json
+    _rich_report_path = os.path.join("storage", "reports", f"{session_id}_rich_report.json")
     rich_report = {}
-    try:
-        rich_report = synthesize_report(current_state, candidate_name, job_title)
-    except Exception as e:
-        print(f"Report synthesis warning: {e}")
+    if os.path.exists(_rich_report_path):
+        try:
+            with open(_rich_report_path, "r", encoding="utf-8") as _f:
+                rich_report = _json.load(_f)
+            print(f"📂 Loaded existing rich report for {session_id}")
+        except Exception as _e:
+            print(f"Rich report load warning: {_e}")
+
+    if not rich_report:
+        try:
+            rich_report = synthesize_report(current_state, candidate_name, job_title)
+            if rich_report:
+                save_rich_report(session_id, rich_report)
+        except Exception as e:
+            print(f"Report synthesis warning: {e}")
 
     return {
         "session_id": session_id,
@@ -611,12 +683,23 @@ async def submit_answer(
             job_title_sa = current_state.get("initial_job_context", {}).get("job_title", "Interview")
             save_interview_report(session_id, candidate_name, current_state["evaluations"])
 
-            # Generate rich report (failures are soft)
+            # Single-report guarantee: generate once, save once, never regenerate
+            import json as _json_sa
+            _sa_report_path = os.path.join("storage", "reports", f"{session_id}_rich_report.json")
             rich_report_sa = {}
-            try:
-                rich_report_sa = synthesize_report(current_state, candidate_name, job_title_sa)
-            except Exception as _e:
-                print(f"submit_answer report synthesis warning: {_e}")
+            if os.path.exists(_sa_report_path):
+                try:
+                    with open(_sa_report_path, "r", encoding="utf-8") as _f:
+                        rich_report_sa = _json_sa.load(_f)
+                except Exception:
+                    pass
+            if not rich_report_sa:
+                try:
+                    rich_report_sa = synthesize_report(current_state, candidate_name, job_title_sa)
+                    if rich_report_sa:
+                        save_rich_report(session_id, rich_report_sa)
+                except Exception as _e:
+                    print(f"submit_answer report synthesis warning: {_e}")
 
             closing_audio_path = generate_audio(closing)
             closing_audio_url = (

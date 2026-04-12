@@ -30,10 +30,11 @@ class CriteriaBreakdown(BaseModel):
     star_method: int = Field(ge=0, le=100)
 
 class EvaluationResult(BaseModel):
-    score: int = Field(description="Score 0-100 reflecting overall answer quality. Be strict: off-topic or irrelevant answers should score below 40, mediocre answers 40-65, good answers 65-80, excellent answers 80-100.", ge=0, le=100)
-    feedback: str = Field(description="One sentence feedback")
-    topic_status: Literal["continue", "switch", "drill_down"] = Field(description="Next move")
-    suggested_improvement: str = Field(description="One concrete, actionable suggestion for the candidate to improve their answer")
+    score: int = Field(description="Score 0-100 reflecting overall answer quality. Off-topic=20-35, I_dont_know=16-42, weak=43-55, partial=56-68, good=69-80, strong=81-90, outstanding=91-100.", ge=0, le=100)
+    answer_classification: Literal["STRONG", "PARTIAL", "WEAK", "I_DONT_KNOW", "OFF_TOPIC"] = Field(description="Classification of the answer type")
+    feedback: str = Field(description="2 sentences: first states what was specifically right or wrong (concrete), second explains why it matters for this role")
+    topic_status: Literal["continue", "switch", "drill_down"] = Field(description="Next move: I_DONT_KNOW→drill_down, OFF_TOPIC→switch, WEAK→drill_down, PARTIAL→continue/switch, STRONG→switch")
+    suggested_improvement: str = Field(description="One concrete, actionable step the candidate can take to improve")
     criteria_breakdown: CriteriaBreakdown = Field(description="Per-criterion scores for relevance, clarity, technical_depth, and star_method")
     overall_confidence: float = Field(description="Judge's confidence in this evaluation (0.0-1.0)", ge=0.0, le=1.0)
 
@@ -209,6 +210,8 @@ def generate_question_node(state: AgentState):
         f"Job Title: {job_context.get('job_title', 'N/A')}\n"
         f"Candidate: {job_context.get('candidate_name', 'Candidate')}"
     )
+    # Use pre-extracted concise JD signals (not the raw verbose chunk)
+    jd_signals = job_context.get("jd_signals", state.get("jd_chunk", "No JD signals available."))
 
     # ── MODE: first_question ────────────────────────────────────────────────
     if interview_mode == "first_question":
@@ -221,7 +224,7 @@ def generate_question_node(state: AgentState):
             response = chain.invoke({
                 "global_context": global_context,
                 "cv_chunk": state.get("cv_chunk", "No CV context found."),
-                "jd_chunk": state.get("jd_chunk", "No JD context found."),
+                "jd_signals": jd_signals,
             })
             content = _strip_thinking(response.content)
             if _is_valid_question(content):
@@ -297,7 +300,7 @@ def generate_question_node(state: AgentState):
         response = chain.invoke({
             "global_context": global_context,
             "cv_chunk": state.get("cv_chunk", "No CV context found."),
-            "jd_chunk": state.get("jd_chunk", "No JD context found."),
+            "jd_signals": jd_signals,
             "history": state.get("conversation_history", []),
             "topic": derived_topic,
             "guidance": guidance,
@@ -412,13 +415,20 @@ def evaluate_answer_node(state: AgentState):
     llm_score = float(res.score)
     neural_score = float(neural_results["overall"])
 
-    # Detect flat / undertrained neural model
-    neural_is_flat = abs(neural_score - 50.0) < 5.0
+    # Detect flat / undertrained neural model — use wide threshold (±15 of center)
+    neural_is_flat = abs(neural_score - 50.0) < 15.0
+    score_divergence = abs(llm_score - neural_score)
+
     if neural_is_flat:
+        # Neural model outputting near-constant values — trust LLM almost exclusively
         blended_score = round(0.93 * llm_score + 0.07 * neural_score, 1)
-        print(f"Neural flat ({neural_score:.1f}) — using LLM-dominant blend")
+        print(f"Neural flat ({neural_score:.1f}) — LLM-dominant blend (93/7)")
+    elif score_divergence > 20:
+        # Significant disagreement — LLM is calibrated, neural is likely undertrained
+        blended_score = round(0.88 * llm_score + 0.12 * neural_score, 1)
+        print(f"Score divergence {score_divergence:.1f} — LLM-weighted blend (88/12)")
     else:
-        blended_score = round(0.75 * llm_score + 0.25 * neural_score, 1)
+        blended_score = round(0.80 * llm_score + 0.20 * neural_score, 1)
 
     report_entry = {
         "question": state["last_question"],
@@ -426,12 +436,14 @@ def evaluate_answer_node(state: AgentState):
         "score": blended_score,
         "llm_score": llm_score,
         "neural_score": neural_score,
+        "answer_classification": res.answer_classification,
         "detailed_scores": neural_results,
         "predicted_job_performance": job_prediction,
         "feedback": res.feedback,
         "suggested_improvement": res.suggested_improvement,
         "criteria_breakdown": res.criteria_breakdown.model_dump(),
         "overall_confidence": res.overall_confidence,
+        "tone_data": tone_data,
         "feature_values": feature_values_list,
         "shap_values": shap_values_list,
         "feature_importance": shap_summary,
@@ -448,11 +460,146 @@ def evaluate_answer_node(state: AgentState):
     }
 
 
+def _build_question_scores(evaluations: list) -> list:
+    """Build the question_scores list from raw evaluation entries."""
+    result = []
+    for i, e in enumerate(evaluations, 1):
+        result.append({
+            "index": i,
+            "question": e.get("question", ""),
+            "answer": e.get("answer", ""),
+            "score": e.get("score", 0),
+            "classification": e.get("answer_classification", ""),
+            "feedback": e.get("feedback", ""),
+            "suggested_improvement": e.get("suggested_improvement", ""),
+            "criteria_breakdown": e.get("criteria_breakdown", {}),
+        })
+    return result
+
+
+def _build_communication_from_tone(evaluations: list) -> dict:
+    """
+    Derive a flat communication dict by aggregating per-evaluation tone data.
+    Returns defaults when no tone data is available.
+    """
+    emotions = []
+    confidences = []
+
+    for e in evaluations:
+        t = e.get("tone_data", {})
+        if not t:
+            continue
+        em = t.get("primary_emotion", "")
+        conf = t.get("confidence", None)
+        if em and em not in ("Processing...", "error", ""):
+            emotions.append(em)
+        if conf is not None:
+            try:
+                confidences.append(float(conf))
+            except (TypeError, ValueError):
+                pass
+
+    if not emotions:
+        return {
+            "tone": "neutral",
+            "confidence": "medium",
+            "clarity": "mostly clear",
+            "feedback": "Tone analysis was not available for this session.",
+        }
+
+    # Most frequent dominant emotion
+    from collections import Counter
+    tone = Counter(emotions).most_common(1)[0][0]
+
+    avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
+    if avg_conf >= 0.70:
+        confidence_level = "high"
+    elif avg_conf >= 0.45:
+        confidence_level = "medium"
+    else:
+        confidence_level = "low"
+
+    # Derive clarity heuristic from confidence + tone
+    nervous_tones = {"fear", "anxiety", "nervousness", "nervous", "sad", "sadness"}
+    calm_tones = {"neutral", "calm", "confident", "happy", "joy"}
+    if tone.lower() in nervous_tones or avg_conf < 0.40:
+        clarity = "unclear"
+    elif tone.lower() in calm_tones:
+        clarity = "clear"
+    else:
+        clarity = "mostly clear"
+
+    feedback_map = {
+        "high": "Your tone was confident and composed throughout the interview — this projects credibility effectively.",
+        "medium": "Your tone was generally steady, though some answers showed hesitation. Practising out loud will build consistency.",
+        "low": "The voice analysis detected signs of nervousness or uncertainty in several answers. Structured practice and mock interviews can help project more confidence.",
+    }
+
+    return {
+        "tone": tone,
+        "confidence": confidence_level,
+        "clarity": clarity,
+        "feedback": feedback_map[confidence_level],
+    }
+
+
+def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
+    """
+    Enforce the canonical report structure. Fills every required field so the
+    object returned to the frontend and saved to disk are identical and complete.
+    """
+    # --- question_scores ---
+    raw.setdefault("question_scores", _build_question_scores(evaluations))
+
+    # --- flat communication block ---
+    # Prefer LLM-generated communication_analysis if present, otherwise fall back to tone
+    ca = raw.get("communication_analysis", {})
+    if ca and isinstance(ca, dict):
+        comm = {
+            "tone":       ca.get("overall_tone", "neutral"),
+            "confidence": ca.get("confidence_level", "medium"),
+            "clarity":    ca.get("clarity_of_speech", "mostly clear"),
+            "feedback":   " ".join(ca.get("recommendations", [])) or
+                          ca.get("observations", [""])[0] or
+                          "No communication feedback available.",
+        }
+    else:
+        comm = _build_communication_from_tone(evaluations)
+
+    raw["communication"] = comm
+
+    # --- required top-level fields with safe defaults ---
+    raw.setdefault("overall_score", avg_score)
+    raw.setdefault("strengths", [])
+    raw.setdefault("weaknesses", [])
+    raw.setdefault("improvements", [])
+    raw.setdefault("tips", [])
+    raw.setdefault("recommended_topics", [])
+    raw.setdefault("performance_level", (
+        "Excellent" if avg_score >= 85 else
+        "Good"      if avg_score >= 70 else
+        "Average"   if avg_score >= 50 else
+        "Below Average" if avg_score >= 30 else "Poor"
+    ))
+    raw.setdefault("summary", "")
+    raw.setdefault("hiring_signal", (
+        "Strong Yes" if avg_score >= 85 else
+        "Yes"        if avg_score >= 70 else
+        "Maybe"      if avg_score >= 50 else
+        "No"         if avg_score >= 30 else "Strong No"
+    ))
+
+    return raw
+
+
 def synthesize_report(session_state: dict, candidate_name: str, job_title: str) -> dict:
     """
-    Generate a rich structured feedback report using the LLM.
-    Called at the end of an interview from the /end_interview endpoint.
-    Returns a dict matching the REPORT_SYNTHESIS_PROMPT schema.
+    Generate the single authoritative report for an interview session.
+    The returned dict is the exact object that is:
+      - returned to the API caller
+      - saved to storage via save_rich_report
+      - served on any later retrieval
+    No further transformation or re-generation occurs after this call.
     """
     evaluations = session_state.get("evaluations", [])
     if not evaluations:
@@ -460,16 +607,49 @@ def synthesize_report(session_state: dict, candidate_name: str, job_title: str) 
 
     avg_score = round(sum(e["score"] for e in evaluations) / len(evaluations), 1)
 
-    # Build a readable transcript for the prompt
+    # Build a readable transcript including classification for the prompt
     transcript_lines = []
     for i, e in enumerate(evaluations, 1):
+        classification = e.get("answer_classification", "")
+        classification_str = f" [{classification}]" if classification else ""
         transcript_lines.append(
             f"Q{i}: {e.get('question', '')}\n"
             f"Answer: {e.get('answer', '')}\n"
+            f"Classification: {classification or 'N/A'}\n"
             f"Score: {e.get('score', 0)}/100\n"
             f"AI Feedback: {e.get('feedback', '')}\n"
         )
     transcript = "\n---\n".join(transcript_lines)
+
+    # Build tone summary from per-evaluation tone data
+    tone_entries = []
+    for i, e in enumerate(evaluations, 1):
+        t = e.get("tone_data", {})
+        if not t:
+            continue
+        emotion = t.get("primary_emotion", "")
+        confidence = t.get("confidence", 0.0)
+        full = t.get("full_analysis", {})
+        if emotion and emotion not in ("Processing...", "neutral", "error"):
+            detail = ""
+            if full and isinstance(full, dict):
+                # Show top 2 tones by percentage
+                sorted_tones = sorted(
+                    [(k, v) for k, v in full.items() if isinstance(v, str) and v.endswith("%")],
+                    key=lambda x: float(x[1].rstrip("%")), reverse=True
+                )[:2]
+                detail = ", ".join(f"{k}: {v}" for k, v in sorted_tones)
+            tone_entries.append(
+                f"Q{i}: dominant={emotion}, confidence={confidence:.0%}"
+                + (f" ({detail})" if detail else "")
+            )
+        elif emotion == "neutral" or not emotion:
+            tone_entries.append(f"Q{i}: neutral tone detected")
+
+    if tone_entries:
+        tone_summary = "\n".join(tone_entries)
+    else:
+        tone_summary = "Tone analysis not available for this session."
 
     try:
         chain = REPORT_SYNTHESIS_PROMPT | llm
@@ -478,49 +658,35 @@ def synthesize_report(session_state: dict, candidate_name: str, job_title: str) 
             "job_title": job_title,
             "average_score": avg_score,
             "transcript": transcript,
+            "tone_summary": tone_summary,
         })
 
         content = _strip_thinking(response.content)
 
         # Parse JSON from the response
         import json
-        # Extract JSON block if wrapped in markdown
         json_match = re.search(r'\{.*\}', content, re.DOTALL)
         if json_match:
-            report = json.loads(json_match.group())
+            raw = json.loads(json_match.group())
         else:
-            report = json.loads(content)
+            raw = json.loads(content)
 
-        return report
+        # Normalize to canonical structure — fills question_scores, communication, and defaults
+        return _normalize_report(raw, evaluations, avg_score)
 
     except Exception as e:
         print(f"Report synthesis error: {e}")
-        # Return a minimal fallback structure
-        perf = (
-            "Excellent" if avg_score >= 85 else
-            "Good" if avg_score >= 70 else
-            "Average" if avg_score >= 50 else
-            "Below Average" if avg_score >= 30 else
-            "Poor"
-        )
-        signal = (
-            "Strong Yes" if avg_score >= 85 else
-            "Yes" if avg_score >= 70 else
-            "Maybe" if avg_score >= 50 else
-            "No" if avg_score >= 30 else
-            "Strong No"
-        )
-        return {
+        # Build a complete fallback that still satisfies the full required schema
+        fallback = {
             "overall_score": avg_score,
-            "performance_level": perf,
             "summary": f"{candidate_name} completed the interview for {job_title} with an average score of {avg_score}/100.",
             "strengths": [],
             "weaknesses": [],
             "improvements": [],
             "tips": [],
             "recommended_topics": [],
-            "hiring_signal": signal,
         }
+        return _normalize_report(fallback, evaluations, avg_score)
 
 
 # --- Graph Wiring ---
