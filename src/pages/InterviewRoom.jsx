@@ -191,7 +191,15 @@ const InterviewRoom = () => {
 
                 // Navigate after enough time for the closing message to be spoken (~4 s)
                 setTimeout(
-                    () => navigate("/feedback", { state: { session_id: sessionId, report: resp.report } }),
+                    () => navigate("/feedback", {
+                        state: {
+                            session_id: sessionId,
+                            report: resp.report,
+                            rich_report: resp.rich_report ?? null,
+                            job_title: resp.job_title ?? null,
+                            candidate_name: resp.candidate_name ?? null,
+                        },
+                    }),
                     4000
                 );
             } else {
@@ -235,6 +243,7 @@ const InterviewRoom = () => {
                 state: {
                     session_id: sessionId,
                     report: data.evaluations,
+                    rich_report: data.rich_report ?? null,
                     job_title: data.job_title,
                     candidate_name: data.candidate_name,
                 },
