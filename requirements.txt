@@ -50,3 +50,6 @@ shap>=0.45.0
 
 # LLM clients
 groq>=0.4.0
+
+# Async HTTP (streaming TTS)
+httpx>=0.27.0
