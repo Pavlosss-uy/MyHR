@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import asyncio
 from typing import AsyncIterator, Optional
@@ -16,6 +17,41 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&language=en"
 DEEPGRAM_SPEAK_MP3_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en"
 DEEPGRAM_SPEAK_STREAM_URL = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=16000"
+
+
+def _clean_for_tts(text: str) -> str:
+    """
+    Prepare text for Deepgram TTS so punctuation creates natural pauses
+    and markdown characters are not read aloud literally.
+    """
+    if not text:
+        return ""
+
+    # Remove any lingering <thinking> blocks the LLM might have leaked
+    text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
+
+    # Strip markdown: bold, italic, code spans
+    text = re.sub(r"\*{1,3}([^*\n]+)\*{1,3}", r"\1", text)
+    text = re.sub(r"`{1,3}([^`\n]+)`{1,3}", r"\1", text)
+
+    # Strip markdown headers
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+
+    # Convert em-dashes and en-dashes to a comma + space (natural pause in TTS)
+    text = re.sub(r"\s*[—–]\s*", ", ", text)
+
+    # Remove bullet / numbered list markers
+    text = re.sub(r"^\s*[-•*]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*\d+[.)]\s+", "", text, flags=re.MULTILINE)
+
+    # Collapse multiple blank lines → single space between sentences
+    text = re.sub(r"\n{2,}", " ", text)
+    text = re.sub(r"\n", " ", text)
+
+    # Collapse multiple spaces
+    text = re.sub(r" {2,}", " ", text)
+
+    return text.strip()
 
 
 def _detect_content_type(audio_path: str) -> str:
@@ -81,6 +117,10 @@ def generate_audio(text: str) -> Optional[str]:
     if not DEEPGRAM_API_KEY:
         return None
 
+    text = _clean_for_tts(text)
+    if not text:
+        return None
+
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
         "Content-Type": "application/json",
@@ -106,6 +146,10 @@ async def generate_audio_stream(text: str) -> AsyncIterator[bytes]:
     Frontend should treat this as linear16 PCM, 16kHz, mono.
     """
     if not DEEPGRAM_API_KEY:
+        return
+
+    text = _clean_for_tts(text)
+    if not text:
         return
 
     headers = {

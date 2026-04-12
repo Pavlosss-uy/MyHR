@@ -80,6 +80,11 @@ const FeedbackReport = () => {
                 // ③ Fetch from backend as fallback
                 try {
                     const data = await getReport(routeState.session_id);
+                    if (data.status === "incomplete") {
+                        setError(data.message || "Interview ended too early to generate a report.");
+                        setLoading(false);
+                        return;
+                    }
                     if (data.evaluations) persistReport(routeState.session_id, data.evaluations);
                     setReport(data);
                 } catch (err) {

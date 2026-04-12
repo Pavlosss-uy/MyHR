@@ -323,10 +323,17 @@ def evaluate_answer_node(state: AgentState):
         "facial_expression_data": str(facial_expression_data) if facial_expression_data else "Not available",
     })
 
-    # LLM judge is the primary signal (70 %); neural handles structural/tonal features (30 %)
     llm_score = float(res.score)
     neural_score = float(neural_results["overall"])
-    blended_score = round(0.7 * llm_score + 0.3 * neural_score, 1)
+
+    # Detect a flat / undertrained neural model: output stuck within ±5 of 50
+    # In that case it acts as a random floor — trust LLM almost entirely.
+    neural_is_flat = abs(neural_score - 50.0) < 5.0
+    if neural_is_flat:
+        blended_score = round(0.93 * llm_score + 0.07 * neural_score, 1)
+        print(f"⚠️  Neural flat ({neural_score:.1f}) — using LLM-dominant blend")
+    else:
+        blended_score = round(0.75 * llm_score + 0.25 * neural_score, 1)
 
     report_entry = {
         "question": state["last_question"],
