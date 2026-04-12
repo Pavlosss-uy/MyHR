@@ -69,8 +69,8 @@ class AgentState(TypedDict, total=False):
 
 
 # --- Interview bounds (shared with decide_next_step and generate_question_node) ---
-MIN_QUESTIONS = 3
-MAX_QUESTIONS = 8
+MIN_QUESTIONS = 5   # Minimum before any early-stop evaluation runs
+MAX_QUESTIONS = 7   # Hard ceiling on questions per session
 
 def _strip_thinking(content: str) -> str:
     if not content:
@@ -772,15 +772,18 @@ def decide_next_step(state: AgentState):
         recent = scores[-3:]
         avg_recent = sum(recent) / len(recent)
 
-        if avg_recent >= 78:
-            print(f"Early stop: strong performance (avg recent={avg_recent:.1f})")
+        # Strong performance — stop only after at least 5 answers with high recent average
+        if n >= 5 and avg_recent >= 78:
+            print(f"Early stop: strong performance after {n} questions (avg recent={avg_recent:.1f})")
             return END
 
-        if len(recent) == 3 and avg_recent < 35:
-            print(f"Early stop: consistently low scores (avg recent={avg_recent:.1f})")
+        # Consistently very low — no value in continuing after 5+ questions
+        if n >= 5 and len(recent) == 3 and avg_recent < 35:
+            print(f"Early stop: consistently low scores after {n} questions (avg recent={avg_recent:.1f})")
             return END
 
-        if n >= 5:
+        # Stable signal — score variance is flat, little new information gained
+        if n >= 6:
             score_range = max(scores) - min(scores)
             if score_range < 20:
                 print(f"Early stop: stable signal after {n} questions (range={score_range:.1f})")

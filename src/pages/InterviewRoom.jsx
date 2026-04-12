@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate, useLocation } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import VoiceWaveform from "@/components/VoiceWaveform";
 import CameraFeed from "@/components/CameraFeed";
@@ -28,9 +29,11 @@ import {
 const FALLBACK_MAX_QUESTIONS = 7;
 
 const InterviewRoom = () => {
-    const navigate   = useNavigate();
-    const location   = useLocation();
+    const navigate    = useNavigate();
+    const location    = useLocation();
     const sessionData = location.state;
+    const { user }    = useAuth();
+    const uid         = user?.uid ?? null;
 
     // Media devices
     const {
@@ -167,46 +170,73 @@ const InterviewRoom = () => {
             }
 
             if (resp.status === "completed") {
-                const closing = resp.closing_message || "Thank you for your time today. Goodbye!";
+                const closing = resp.closing_message || "Thank you so much for your time today. We will review your responses carefully and be in touch very soon. Best of luck!";
                 setMessages((prev) => [
                     ...prev,
                     { role: "ai", text: closing },
                 ]);
                 toast.success("Interview complete!", { description: "Preparing your feedback report…" });
 
-                // Play closing audio if available, otherwise speak via browser TTS
-                if (resp.closing_audio_url && audioRef.current) {
-                    audioRef.current.src = resp.closing_audio_url;
-                    audioRef.current.play().catch(() => speakQuestion(closing));
-                } else {
-                    speakQuestion(closing);
-                }
+                const feedbackState = {
+                    session_id: sessionId,
+                    report: resp.report,
+                    rich_report: resp.rich_report ?? null,
+                    job_title: resp.job_title ?? null,
+                    candidate_name: resp.candidate_name ?? null,
+                };
+
+                // Estimate TTS duration: ~55 ms/char at rate 0.95, clamped 4s–15s
+                const estimatedMs = Math.min(15000, Math.max(4000, closing.length * 55));
+
+                // Guard: navigate exactly once
+                let navigated = false;
+                const goToFeedback = () => {
+                    if (navigated) return;
+                    navigated = true;
+                    navigate("/feedback", { state: feedbackState });
+                };
 
                 try {
+                    const storageKey = uid
+                        ? `myhr_report_${uid}_${sessionId}`
+                        : `myhr_report_${sessionId}`;
                     localStorage.setItem(
-                        `myhr_report_${sessionId}`,
+                        storageKey,
                         JSON.stringify({
                             report: resp.report,
                             rich_report: resp.rich_report ?? null,
                             session_id: sessionId,
+                            uid,
                             timestamp: Date.now(),
                         })
                     );
                 } catch { /* storage full — non-fatal */ }
 
-                // Navigate after enough time for the closing message to be spoken (~4 s)
-                setTimeout(
-                    () => navigate("/feedback", {
-                        state: {
-                            session_id: sessionId,
-                            report: resp.report,
-                            rich_report: resp.rich_report ?? null,
-                            job_title: resp.job_title ?? null,
-                            candidate_name: resp.candidate_name ?? null,
-                        },
-                    }),
-                    4000
-                );
+                if (resp.closing_audio_url && audioRef.current) {
+                    // Play backend-generated TTS — navigate when it finishes
+                    const hardCap = setTimeout(goToFeedback, 15000);
+                    audioRef.current.onended = () => {
+                        clearTimeout(hardCap);
+                        // Short pause so the last word isn't clipped
+                        setTimeout(goToFeedback, 800);
+                    };
+                    audioRef.current.onerror = () => {
+                        clearTimeout(hardCap);
+                        // Fall back to browser TTS, then navigate after estimated duration
+                        speakQuestion(closing);
+                        setTimeout(goToFeedback, estimatedMs);
+                    };
+                    audioRef.current.src = resp.closing_audio_url;
+                    audioRef.current.play().catch(() => {
+                        clearTimeout(hardCap);
+                        speakQuestion(closing);
+                        setTimeout(goToFeedback, estimatedMs);
+                    });
+                } else {
+                    // Browser TTS — navigate after estimated duration
+                    speakQuestion(closing);
+                    setTimeout(goToFeedback, estimatedMs);
+                }
             } else {
                 const nextQ = resp.next_question;
                 setCurrentQuestion(nextQ);

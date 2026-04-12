@@ -81,17 +81,22 @@ const Navbar = () => {
                             </div>
 
                             <Button
-                                variant="ghost"
+                                variant="outline"
                                 size="sm"
                                 onClick={handleLogout}
-                                className="gap-1.5 text-muted-foreground hover:text-foreground"
+                                className="gap-1.5 h-8 px-3 text-sm font-medium border-border text-muted-foreground hover:text-foreground hover:bg-muted hover:border-border/80 rounded-lg transition-all"
                             >
-                                <LogOut className="w-4 h-4" />
+                                <LogOut className="w-3.5 h-3.5" />
                                 Sign Out
                             </Button>
                         </>
                     ) : (
-                        <Button variant="ghost" size="sm" asChild>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            asChild
+                            className="h-8 px-4 text-sm font-medium border-cobalt/50 text-cobalt-lighter hover:bg-cobalt/10 hover:border-cobalt hover:text-cobalt-lighter rounded-lg transition-all"
+                        >
                             <Link to="/auth">Sign In</Link>
                         </Button>
                     )}
@@ -127,17 +132,22 @@ const Navbar = () => {
                             </Link>
 
                             <Button
-                                variant="ghost"
+                                variant="outline"
                                 size="sm"
                                 onClick={() => { handleLogout(); setMobileOpen(false); }}
-                                className="gap-1.5 w-full justify-start px-4"
+                                className="gap-1.5 w-full justify-start px-4 h-9 text-sm font-medium border-border text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-all"
                             >
-                                <LogOut className="w-4 h-4" />
+                                <LogOut className="w-3.5 h-3.5" />
                                 Sign Out
                             </Button>
                         </>
                     ) : (
-                        <Button variant="ghost" size="sm" asChild className="w-full">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            asChild
+                            className="w-full h-9 text-sm font-medium border-cobalt/50 text-cobalt-lighter hover:bg-cobalt/10 hover:border-cobalt rounded-lg transition-all"
+                        >
                             <Link to="/auth" onClick={() => setMobileOpen(false)}>Sign In</Link>
                         </Button>
                     )}
