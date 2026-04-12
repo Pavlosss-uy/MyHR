@@ -1,6 +1,10 @@
+import importlib
 import os
 import sys
 import torch
+
+# Check once at import time whether stable_baselines3 is available
+_ppo_available = importlib.util.find_spec("stable_baselines3") is not None
 
 # --- BULLETPROOF PATH FIX ---
 # This finds the 'MyHR' folder and tells Python to look there for modules
@@ -91,7 +95,13 @@ class ModelRegistry:
         return self.loaded_models["difficulty"]
 
     def load_difficulty_ppo(self):
-        """Load the PPO difficulty engine (best performer: 78.6% in-zone)."""
+        """Load the PPO difficulty engine (best performer: 78.6% in-zone).
+
+        Falls back to REINFORCE instantly if stable_baselines3 is not installed.
+        """
+        if not _ppo_available:
+            return self.load_difficulty_engine(use_ppo=False)
+
         if "difficulty_ppo" not in self.loaded_models:
             print("Loading PPO Difficulty Engine...")
             try:
