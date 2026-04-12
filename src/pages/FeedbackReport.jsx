@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import Navbar from "@/components/Navbar";
 import CircularProgress from "@/components/CircularProgress";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,11 @@ import {
     ThumbsDown,
     BarChart3,
     Loader2,
-    Download,
+    BookOpen,
+    Target,
+    TrendingUp,
+    Award,
+    HelpCircle,
 } from "lucide-react";
 import { getReport } from "@/lib/interviewApi";
 
@@ -27,14 +31,56 @@ const persistReport = (sessionId, report) => {
     } catch { /* storage full — non-fatal */ }
 };
 
+// ── Small UI helpers ─────────────────────────────────────────────────────────
+
+const PerformanceBadge = ({ level }) => {
+    const styles = {
+        "Excellent":     "bg-mint/15 text-mint border-mint/30",
+        "Good":          "bg-cobalt/15 text-cobalt-lighter border-cobalt/30",
+        "Average":       "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+        "Below Average": "bg-orange-500/15 text-orange-400 border-orange-500/30",
+        "Poor":          "bg-warning/15 text-warning border-warning/30",
+    };
+    return (
+        <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold border ${styles[level] || styles["Average"]}`}>
+            {level}
+        </span>
+    );
+};
+
+const HiringBadge = ({ signal }) => {
+    const styles = {
+        "Strong Yes": "bg-mint/15 text-mint border-mint/30",
+        "Yes":        "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+        "Maybe":      "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+        "No":         "bg-orange-500/15 text-orange-400 border-orange-500/30",
+        "Strong No":  "bg-warning/15 text-warning border-warning/30",
+    };
+    return (
+        <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold border ${styles[signal] || styles["Maybe"]}`}>
+            <Award className="w-3.5 h-3.5" />
+            Hiring Signal: {signal}
+        </span>
+    );
+};
+
+const SectionHeader = ({ icon: Icon, label, color = "text-cobalt" }) => (
+    <div className="p-5 border-b border-border flex items-center gap-2">
+        <Icon className={`w-5 h-5 ${color}`} />
+        <h3 className="font-semibold text-foreground">{label}</h3>
+    </div>
+);
+
+// ── Main Component ───────────────────────────────────────────────────────────
+
 const FeedbackReport = () => {
-    const location  = useLocation();
-    const navigate  = useNavigate();
+    const location   = useLocation();
     const routeState = location.state;
 
-    const [report,   setReport]   = useState(null);
-    const [loading,  setLoading]  = useState(true);
-    const [error,    setError]    = useState("");
+    const [report,     setReport]     = useState(null);
+    const [richReport, setRichReport] = useState(null);
+    const [loading,    setLoading]    = useState(true);
+    const [error,      setError]      = useState("");
 
     useEffect(() => {
         (async () => {
@@ -52,11 +98,12 @@ const FeedbackReport = () => {
                 };
                 if (routeState.session_id) persistReport(routeState.session_id, evaluations);
                 setReport(built);
+                if (routeState.rich_report) setRichReport(routeState.rich_report);
                 setLoading(false);
                 return;
             }
 
-            // ② Try to load from localStorage cache (e.g. navigated directly)
+            // ② Try to load from localStorage cache
             if (routeState?.session_id) {
                 try {
                     const cached = localStorage.getItem(`myhr_report_${routeState.session_id}`);
@@ -87,6 +134,7 @@ const FeedbackReport = () => {
                     }
                     if (data.evaluations) persistReport(routeState.session_id, data.evaluations);
                     setReport(data);
+                    if (data.rich_report) setRichReport(data.rich_report);
                 } catch (err) {
                     setError(err.message || "Failed to load report.");
                 }
@@ -94,7 +142,6 @@ const FeedbackReport = () => {
                 return;
             }
 
-            // No data at all
             setLoading(false);
         })();
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -130,24 +177,33 @@ const FeedbackReport = () => {
         );
     }
 
-    const evaluations = report.evaluations || [];
-    const avgScore    = report.average_score || 0;
-    const strengths   = evaluations.filter((e) => e.score >= 70);
-    const improvements = evaluations.filter((e) => e.score < 70);
+    const evaluations  = report.evaluations || [];
+    const avgScore     = report.average_score || 0;
+    const scoreColor   = avgScore >= 80 ? "mint" : avgScore >= 60 ? "cobalt" : "warning";
+    const scoreLabel   = avgScore >= 80 ? "Excellent" : avgScore >= 60 ? "Good" : "Needs Work";
 
-    const scoreColor = avgScore >= 80 ? "mint" : avgScore >= 60 ? "cobalt" : "warning";
-    const scoreLabel = avgScore >= 80 ? "Excellent" : avgScore >= 60 ? "Good" : "Needs Work";
+    // Rich report fields (may be null if synthesis failed)
+    const rr = richReport || {};
+    const strengths      = rr.strengths      || [];
+    const weaknesses     = rr.weaknesses     || [];
+    const improvements   = rr.improvements   || [];
+    const tips           = rr.tips           || [];
+    const recTopics      = rr.recommended_topics || [];
+
+    // Fallback strength/weakness lists from raw scores if no rich report
+    const fallbackStrengths    = evaluations.filter((e) => e.score >= 70);
+    const fallbackImprovements = evaluations.filter((e) => e.score < 70);
 
     return (
         <div className="min-h-screen bg-background">
             <Navbar />
             <main className="pt-24 pb-12 max-w-5xl mx-auto px-6">
 
-                {/* Page header */}
+                {/* ── Page header ─────────────────────────────────────────── */}
                 <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="mb-8 flex items-center justify-between flex-wrap gap-4"
+                    className="mb-8 flex items-start justify-between flex-wrap gap-4"
                 >
                     <div>
                         <Button variant="ghost" size="sm" className="mb-2 -ml-2" asChild>
@@ -161,9 +217,13 @@ const FeedbackReport = () => {
                             {report.job_title} — {report.total_questions} question{report.total_questions !== 1 ? "s" : ""} answered
                         </p>
                     </div>
+                    <div className="flex flex-col items-end gap-2 pt-8">
+                        {rr.performance_level && <PerformanceBadge level={rr.performance_level} />}
+                        {rr.hiring_signal     && <HiringBadge signal={rr.hiring_signal} />}
+                    </div>
                 </motion.div>
 
-                {/* Score overview */}
+                {/* ── Score overview ───────────────────────────────────────── */}
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -180,6 +240,11 @@ const FeedbackReport = () => {
                             color={scoreColor}
                         />
                         <div className="flex-1 w-full">
+                            {rr.summary && (
+                                <p className="text-sm text-muted-foreground leading-relaxed mb-4 italic">
+                                    {rr.summary}
+                                </p>
+                            )}
                             <h3 className="font-semibold text-foreground mb-4">Question Scores</h3>
                             <div className="space-y-3">
                                 {evaluations.map((e, idx) => (
@@ -209,17 +274,14 @@ const FeedbackReport = () => {
                     </div>
                 </motion.div>
 
-                {/* Detailed Q&A breakdown */}
+                {/* ── Detailed Q&A breakdown ───────────────────────────────── */}
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.2 }}
                     className="bg-card rounded-xl border border-border shadow-sm mb-6"
                 >
-                    <div className="p-5 border-b border-border flex items-center gap-2">
-                        <BarChart3 className="w-5 h-5 text-cobalt" />
-                        <h3 className="font-semibold text-foreground">Detailed Breakdown</h3>
-                    </div>
+                    <SectionHeader icon={BarChart3} label="Detailed Breakdown" />
                     <div className="divide-y divide-border">
                         {evaluations.map((e, idx) => (
                             <motion.div
@@ -262,64 +324,210 @@ const FeedbackReport = () => {
                     </div>
                 </motion.div>
 
-                {/* Strengths & improvements */}
-                <div className="grid md:grid-cols-2 gap-6 mb-8">
-                    {strengths.length > 0 && (
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.35 }}
-                            className="bg-card rounded-xl border border-border shadow-sm"
-                        >
-                            <div className="p-5 border-b border-border flex items-center gap-2">
-                                <CheckCircle2 className="w-5 h-5 text-mint" />
-                                <h3 className="font-semibold text-foreground">Strong Answers</h3>
-                            </div>
-                            <div className="p-5 space-y-3">
-                                {strengths.map((s, i) => (
-                                    <div key={i} className="flex items-start gap-3">
-                                        <ThumbsUp className="w-4 h-4 text-mint mt-0.5 shrink-0" />
-                                        <div>
-                                            <p className="text-sm font-medium text-foreground">Score: {s.score}%</p>
-                                            <p className="text-xs text-muted-foreground">{s.feedback}</p>
-                                        </div>
+                {/* ── Rich report: Strengths ───────────────────────────────── */}
+                {strengths.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.35 }}
+                        className="bg-card rounded-xl border border-border shadow-sm mb-6"
+                    >
+                        <SectionHeader icon={CheckCircle2} label="Strengths" color="text-mint" />
+                        <div className="p-5 space-y-4">
+                            {strengths.map((s, i) => (
+                                <div key={i} className="flex items-start gap-3">
+                                    <ThumbsUp className="w-4 h-4 text-mint mt-0.5 shrink-0" />
+                                    <div>
+                                        <p className="text-sm font-semibold text-foreground">{s.area}</p>
+                                        {s.evidence && (
+                                            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                                                <span className="font-medium text-foreground/60">Evidence: </span>
+                                                {s.evidence}
+                                            </p>
+                                        )}
+                                        {s.impact && (
+                                            <p className="text-xs text-mint/80 mt-0.5 leading-relaxed">
+                                                <span className="font-medium">Why it matters: </span>
+                                                {s.impact}
+                                            </p>
+                                        )}
                                     </div>
-                                ))}
-                            </div>
-                        </motion.div>
-                    )}
+                                </div>
+                            ))}
+                        </div>
+                    </motion.div>
+                )}
 
-                    {improvements.length > 0 && (
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.4 }}
-                            className="bg-card rounded-xl border border-border shadow-sm"
-                        >
-                            <div className="p-5 border-b border-border flex items-center gap-2">
-                                <AlertCircle className="w-5 h-5 text-warning" />
-                                <h3 className="font-semibold text-foreground">Areas to Improve</h3>
-                            </div>
-                            <div className="p-5 space-y-3">
-                                {improvements.map((w, i) => (
-                                    <div key={i} className="flex items-start gap-3">
-                                        <ThumbsDown className="w-4 h-4 text-warning mt-0.5 shrink-0" />
-                                        <div>
-                                            <p className="text-sm font-medium text-foreground">Score: {w.score}%</p>
-                                            <p className="text-xs text-muted-foreground">{w.feedback}</p>
-                                        </div>
+                {/* Fallback strengths when no rich report */}
+                {strengths.length === 0 && fallbackStrengths.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.35 }}
+                        className="bg-card rounded-xl border border-border shadow-sm mb-6"
+                    >
+                        <SectionHeader icon={CheckCircle2} label="Strong Answers" color="text-mint" />
+                        <div className="p-5 space-y-3">
+                            {fallbackStrengths.map((s, i) => (
+                                <div key={i} className="flex items-start gap-3">
+                                    <ThumbsUp className="w-4 h-4 text-mint mt-0.5 shrink-0" />
+                                    <div>
+                                        <p className="text-sm font-medium text-foreground">Score: {s.score}%</p>
+                                        <p className="text-xs text-muted-foreground">{s.feedback}</p>
                                     </div>
-                                ))}
-                            </div>
-                        </motion.div>
-                    )}
-                </div>
+                                </div>
+                            ))}
+                        </div>
+                    </motion.div>
+                )}
 
-                {/* CTA */}
+                {/* ── Rich report: Weaknesses ──────────────────────────────── */}
+                {weaknesses.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.4 }}
+                        className="bg-card rounded-xl border border-border shadow-sm mb-6"
+                    >
+                        <SectionHeader icon={AlertCircle} label="Areas to Improve" color="text-warning" />
+                        <div className="p-5 space-y-4">
+                            {weaknesses.map((w, i) => (
+                                <div key={i} className="flex items-start gap-3">
+                                    <ThumbsDown className="w-4 h-4 text-warning mt-0.5 shrink-0" />
+                                    <div>
+                                        <p className="text-sm font-semibold text-foreground">{w.area}</p>
+                                        {w.evidence && (
+                                            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                                                <span className="font-medium text-foreground/60">Evidence: </span>
+                                                {w.evidence}
+                                            </p>
+                                        )}
+                                        {w.impact && (
+                                            <p className="text-xs text-warning/80 mt-0.5 leading-relaxed">
+                                                <span className="font-medium">Impact: </span>
+                                                {w.impact}
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </motion.div>
+                )}
+
+                {/* Fallback weaknesses when no rich report */}
+                {weaknesses.length === 0 && fallbackImprovements.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.4 }}
+                        className="bg-card rounded-xl border border-border shadow-sm mb-6"
+                    >
+                        <SectionHeader icon={AlertCircle} label="Areas to Improve" color="text-warning" />
+                        <div className="p-5 space-y-3">
+                            {fallbackImprovements.map((w, i) => (
+                                <div key={i} className="flex items-start gap-3">
+                                    <ThumbsDown className="w-4 h-4 text-warning mt-0.5 shrink-0" />
+                                    <div>
+                                        <p className="text-sm font-medium text-foreground">Score: {w.score}%</p>
+                                        <p className="text-xs text-muted-foreground">{w.feedback}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </motion.div>
+                )}
+
+                {/* ── Rich report: Improvements (WHAT / WHY / HOW) ────────── */}
+                {improvements.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.45 }}
+                        className="bg-card rounded-xl border border-border shadow-sm mb-6"
+                    >
+                        <SectionHeader icon={TrendingUp} label="How to Improve" color="text-cobalt-lighter" />
+                        <div className="divide-y divide-border">
+                            {improvements.map((imp, i) => (
+                                <div key={i} className="p-5">
+                                    <p className="text-sm font-semibold text-foreground mb-3">
+                                        {imp.weakness_area}
+                                    </p>
+                                    <div className="space-y-2.5">
+                                        {imp.what_is_wrong && (
+                                            <div className="flex items-start gap-2.5">
+                                                <span className="text-xs font-bold text-warning/80 w-10 pt-0.5 shrink-0">WHAT</span>
+                                                <p className="text-xs text-muted-foreground leading-relaxed">{imp.what_is_wrong}</p>
+                                            </div>
+                                        )}
+                                        {imp.why_it_matters && (
+                                            <div className="flex items-start gap-2.5">
+                                                <span className="text-xs font-bold text-cobalt-lighter/80 w-10 pt-0.5 shrink-0">WHY</span>
+                                                <p className="text-xs text-muted-foreground leading-relaxed">{imp.why_it_matters}</p>
+                                            </div>
+                                        )}
+                                        {imp.how_to_improve && (
+                                            <div className="flex items-start gap-2.5">
+                                                <span className="text-xs font-bold text-mint/80 w-10 pt-0.5 shrink-0">HOW</span>
+                                                <p className="text-xs text-muted-foreground leading-relaxed">{imp.how_to_improve}</p>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </motion.div>
+                )}
+
+                {/* ── Tips ────────────────────────────────────────────────── */}
+                {tips.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.5 }}
+                        className="bg-card rounded-xl border border-border shadow-sm mb-6"
+                    >
+                        <SectionHeader icon={Lightbulb} label="Interview Tips" color="text-yellow-400" />
+                        <div className="p-5 space-y-3">
+                            {tips.map((t, i) => (
+                                <div key={i} className="flex items-start gap-3">
+                                    <div className="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-semibold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
+                                        {t.category}
+                                    </div>
+                                    <p className="text-xs text-muted-foreground leading-relaxed">{t.tip}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </motion.div>
+                )}
+
+                {/* ── Recommended topics ───────────────────────────────────── */}
+                {recTopics.length > 0 && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.55 }}
+                        className="bg-card rounded-xl border border-border shadow-sm mb-8"
+                    >
+                        <SectionHeader icon={BookOpen} label="Recommended Study Topics" color="text-cobalt" />
+                        <div className="p-5 flex flex-wrap gap-2">
+                            {recTopics.map((topic, i) => (
+                                <span
+                                    key={i}
+                                    className="px-3 py-1.5 rounded-full text-xs font-medium bg-cobalt/10 text-cobalt-lighter border border-cobalt/20"
+                                >
+                                    {topic}
+                                </span>
+                            ))}
+                        </div>
+                    </motion.div>
+                )}
+
+                {/* ── CTA ─────────────────────────────────────────────────── */}
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.45 }}
+                    transition={{ delay: 0.6 }}
                     className="flex justify-center gap-4"
                 >
                     <Button variant="hero" size="lg" asChild>

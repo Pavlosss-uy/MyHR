@@ -43,6 +43,7 @@ from agent import (
     generate_question_node,
     evaluate_answer_node,
     decide_next_step,
+    synthesize_report,
     MAX_QUESTIONS,
 )
 
@@ -140,6 +141,8 @@ def _build_initial_state(
         "failed_topics": [],
         "consecutive_fails": 0,
         "current_difficulty": 3,
+        "interview_mode": "first_question",
+        "current_search_query": "candidate main technical skills and experience",
     }
 
 
@@ -227,14 +230,17 @@ def _run_interview_turn(
 
     if current_state.get("next_action") == "drill_down":
         current_state["consecutive_fails"] = current_state.get("consecutive_fails", 0) + 1
+        current_state["interview_mode"] = "fallback"
         if current_state["consecutive_fails"] >= 2:
             failed_topic = current_state.get("current_topic", "unknown topic")
             current_state["failed_topics"] = current_state.get("failed_topics", []) + [failed_topic]
             current_state["next_action"] = "switch"
             current_state["consecutive_fails"] = 0
+            current_state["interview_mode"] = "normal"
             next_step = "rewrite"
     else:
         current_state["consecutive_fails"] = 0
+        current_state["interview_mode"] = "normal"
 
     if next_step != "generate":
         current_state.update(rewrite_query_node(current_state))
@@ -432,7 +438,15 @@ async def live_interview_websocket(
                 if outcome["status"] == "completed":
                     closing = outcome.get("closing_message", "Thank you for your time today. Goodbye!")
                     candidate_name = current_state.get("initial_job_context", {}).get("candidate_name", "Unknown Candidate")
+                    job_title_ws = current_state.get("initial_job_context", {}).get("job_title", "Interview")
                     save_interview_report(session_id, candidate_name, current_state["evaluations"])
+
+                    # Generate rich report (non-blocking — failures are soft)
+                    rich_report_ws = {}
+                    try:
+                        rich_report_ws = synthesize_report(current_state, candidate_name, job_title_ws)
+                    except Exception as _e:
+                        print(f"WS report synthesis warning: {_e}")
 
                     await websocket.send_json({"type": "ai_response_text", "text": closing})
                     await websocket.send_json(
@@ -447,6 +461,7 @@ async def live_interview_websocket(
                             "type": "end_interview",
                             "message": closing,
                             "report": current_state["evaluations"],
+                            "rich_report": rich_report_ws,
                             "transcription": transcription,
                         }
                     )
@@ -519,9 +534,16 @@ def end_interview(session_id: str, db: Session = Depends(get_db)):
     try:
         save_interview_report(session_id, candidate_name, evaluations)
     except Exception as e:
-        print(f"⚠️ Report save warning: {e}")
+        print(f"Report save warning: {e}")
 
     avg_score = round(sum(e["score"] for e in evaluations) / len(evaluations), 1)
+
+    # Generate rich synthesized report
+    rich_report = {}
+    try:
+        rich_report = synthesize_report(current_state, candidate_name, job_title)
+    except Exception as e:
+        print(f"Report synthesis warning: {e}")
 
     return {
         "session_id": session_id,
@@ -531,6 +553,7 @@ def end_interview(session_id: str, db: Session = Depends(get_db)):
         "total_questions": len(evaluations),
         "job_title": job_title,
         "candidate_name": candidate_name,
+        "rich_report": rich_report,
     }
 
 
@@ -585,7 +608,15 @@ async def submit_answer(
         if outcome["status"] == "completed":
             closing = outcome.get("closing_message", "Thank you for your time today. Goodbye!")
             candidate_name = current_state.get("initial_job_context", {}).get("candidate_name", "Unknown Candidate")
+            job_title_sa = current_state.get("initial_job_context", {}).get("job_title", "Interview")
             save_interview_report(session_id, candidate_name, current_state["evaluations"])
+
+            # Generate rich report (failures are soft)
+            rich_report_sa = {}
+            try:
+                rich_report_sa = synthesize_report(current_state, candidate_name, job_title_sa)
+            except Exception as _e:
+                print(f"submit_answer report synthesis warning: {_e}")
 
             closing_audio_path = generate_audio(closing)
             closing_audio_url = (
@@ -597,6 +628,7 @@ async def submit_answer(
                 "closing_message": closing,
                 "closing_audio_url": closing_audio_url,
                 "report": current_state["evaluations"],
+                "rich_report": rich_report_sa,
                 "transcription": transcription,
             }
 
