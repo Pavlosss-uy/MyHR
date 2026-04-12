@@ -8,7 +8,7 @@ import AudioQuestionPlayer from "@/components/AudioQuestionPlayer";
 import { useMediaDevices } from "@/hooks/useMediaDevices";
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
-import { submitAnswer } from "@/lib/interviewApi";
+import { submitAnswer, endInterview } from "@/lib/interviewApi";
 import {
     Mic,
     MicOff,
@@ -217,7 +217,22 @@ const InterviewRoom = () => {
             setIsBackendPlaying(false);
         }
         if (isRecording) await stopRecording();
-        navigate("/feedback", { state: { session_id: sessionId } });
+
+        // Fetch (and persist) whatever report exists before navigating
+        try {
+            const data = await endInterview(sessionId);
+            navigate("/feedback", {
+                state: {
+                    session_id: sessionId,
+                    report: data.evaluations,
+                    job_title: data.job_title,
+                    candidate_name: data.candidate_name,
+                },
+            });
+        } catch {
+            // Fallback: navigate anyway; FeedbackReport will try the API itself
+            navigate("/feedback", { state: { session_id: sessionId } });
+        }
     }, [sessionId, navigate, stopSpeaking, isRecording, stopRecording, isEnding]);
 
     // ── Space shortcut ─────────────────────────────────────────────────────

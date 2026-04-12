@@ -206,6 +206,12 @@ def generate_question_node(state: AgentState):
         raw_query = state.get("current_search_query", "").strip()
         derived_topic = " ".join(raw_query.split()[:4]).title() if raw_query else state.get("current_topic", "General")
 
+        # Pass last_answer so the model can react naturally before asking
+        last_answer = state.get("last_answer", "").strip()
+        # First question of the session has no previous answer
+        if not last_answer or last_answer == state.get("last_question", ""):
+            last_answer = ""
+
         response = chain.invoke({
             "global_context": global_context,
             "cv_chunk": state.get("cv_chunk", "No CV context found."),
@@ -213,6 +219,7 @@ def generate_question_node(state: AgentState):
             "history": state.get("conversation_history", []),
             "topic": derived_topic,
             "guidance": guidance,
+            "last_answer": last_answer or "(First question — no previous answer yet.)",
             "asked_questions": "\n".join(f"- {q}" for q in asked_questions) or "None yet.",
             "failed_topics": "\n".join(f"- {t}" for t in failed_topics) or "None.",
         })
@@ -316,10 +323,10 @@ def evaluate_answer_node(state: AgentState):
         "facial_expression_data": str(facial_expression_data) if facial_expression_data else "Not available",
     })
 
-    # Blend LLM score (primary quality signal) with neural score (structural features)
+    # LLM judge is the primary signal (70 %); neural handles structural/tonal features (30 %)
     llm_score = float(res.score)
     neural_score = float(neural_results["overall"])
-    blended_score = round(0.6 * llm_score + 0.4 * neural_score, 1)
+    blended_score = round(0.7 * llm_score + 0.3 * neural_score, 1)
 
     report_entry = {
         "question": state["last_question"],
@@ -379,28 +386,34 @@ def decide_next_step(state: AgentState):
     evaluations = state.get("evaluations", [])
     n = len(evaluations)
 
-    # ── Hard ceiling ──────────────────────────────────────────────────────────
+    # ── Hard ceiling ─────────────────────────────────────────────────────────
     if n >= MAX_QUESTIONS:
-        print(f"🛑 Stopping: reached max questions ({MAX_QUESTIONS})")
+        print(f"🛑 Stopping: max questions reached ({MAX_QUESTIONS})")
         return END
 
-    # ── Below minimum: never stop early ──────────────────────────────────────
+    # ── Topic exhaustion: candidate struggled on 3+ distinct topics ──────────
+    failed_topics = state.get("failed_topics", [])
+    if len(failed_topics) >= 3:
+        print(f"⚠️ Early stop: candidate struggled on {len(failed_topics)} topics")
+        return END
+
+    # ── Early-stop logic (only after MIN_QUESTIONS answered) ─────────────────
     if n >= MIN_QUESTIONS:
-        scores  = [e["score"] for e in evaluations]
-        recent  = scores[-3:]
+        scores = [e["score"] for e in evaluations]
+        recent = scores[-3:]
         avg_recent = sum(recent) / len(recent)
 
-        # Strong performer — enough signal, end with positive note
-        if avg_recent >= 80:
+        # Strong performer — solid signal, wrap up positively
+        if avg_recent >= 78:
             print(f"✅ Early stop: strong performance (avg recent={avg_recent:.1f})")
             return END
 
-        # Clearly disengaged / trolling: 3 consecutive scores below 30
-        if len(recent) == 3 and all(s < 30 for s in recent):
+        # Consistently disengaged: average of last 3 below 35
+        if len(recent) == 3 and avg_recent < 35:
             print(f"⚠️ Early stop: consistently low scores (avg recent={avg_recent:.1f})")
             return END
 
-        # Stable signal after 5+ questions: score range < 20 → we've learned enough
+        # Stable signal after 5+ questions: range < 20 → enough information
         if n >= 5:
             score_range = max(scores) - min(scores)
             if score_range < 20:

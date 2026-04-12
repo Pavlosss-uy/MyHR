@@ -8,6 +8,7 @@ llama-index
 llama-index-embeddings-huggingface
 deepgram-sdk
 python-dotenv
+PyPDF2
 streamlit>=1.40.0
 sqlalchemy
 psycopg2-binary
