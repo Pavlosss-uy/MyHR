@@ -145,6 +145,22 @@ def get_session_index(session_id: str):
     return VectorStoreIndex.from_vector_store(vector_store=vector_store)
 
 
+def save_rich_report(session_id: str, rich_report: dict) -> str:
+    """
+    Persist the synthesized rich report (JSON) to storage.
+    This is the authoritative final report — same content shown to the user and stored.
+    """
+    report_dir = "storage/reports"
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, f"{session_id}_rich_report.json")
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(rich_report, f, ensure_ascii=False, indent=2)
+
+    print(f"📊 Rich report saved: {report_path}")
+    return report_path
+
+
 def save_interview_report(session_id: str, candidate_name: str, evaluations: list):
     """
     Generates a Markdown interview report from the evaluation data.
