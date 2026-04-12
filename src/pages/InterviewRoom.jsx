@@ -167,11 +167,20 @@ const InterviewRoom = () => {
             }
 
             if (resp.status === "completed") {
+                const closing = resp.closing_message || "Thank you for your time today. Goodbye!";
                 setMessages((prev) => [
                     ...prev,
-                    { role: "system", text: "Interview complete — generating your report…" },
+                    { role: "ai", text: closing },
                 ]);
                 toast.success("Interview complete!", { description: "Preparing your feedback report…" });
+
+                // Play closing audio if available, otherwise speak via browser TTS
+                if (resp.closing_audio_url && audioRef.current) {
+                    audioRef.current.src = resp.closing_audio_url;
+                    audioRef.current.play().catch(() => speakQuestion(closing));
+                } else {
+                    speakQuestion(closing);
+                }
 
                 try {
                     localStorage.setItem(
@@ -180,9 +189,10 @@ const InterviewRoom = () => {
                     );
                 } catch { /* storage full — non-fatal */ }
 
+                // Navigate after enough time for the closing message to be spoken (~4 s)
                 setTimeout(
                     () => navigate("/feedback", { state: { session_id: sessionId, report: resp.report } }),
-                    1500
+                    4000
                 );
             } else {
                 const nextQ = resp.next_question;
