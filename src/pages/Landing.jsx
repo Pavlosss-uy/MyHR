@@ -95,13 +95,7 @@ const pillars = [
     },
 ];
 
-/* ─── Stats ──────────────────────────────────────────────────────────────── */
-const stats = [
-    { value: "10K+", label: "Interviews Conducted" },
-    { value: "98%",  label: "Evaluation Accuracy" },
-    { value: "50+",  label: "Companies Onboarded" },
-    { value: "8",    label: "Custom AI Models" },
-];
+
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -165,22 +159,7 @@ const Landing = () => {
                                 </Button>
                             </motion.div>
 
-                            {/* Trust stats */}
-                            <motion.div
-                                custom={4}
-                                variants={fadeUp}
-                                className="flex flex-wrap items-center gap-5 pt-2"
-                            >
-                                {["10K+ Interviews", "98% Accuracy", "50+ Companies"].map((s) => (
-                                    <div
-                                        key={s}
-                                        className="flex items-center gap-1.5 text-sm text-muted-foreground"
-                                    >
-                                        <CheckCircle2 className="w-4 h-4 text-mint shrink-0" />
-                                        {s}
-                                    </div>
-                                ))}
-                            </motion.div>
+
                         </motion.div>
 
                         {/* Right — illustration */}
@@ -203,25 +182,7 @@ const Landing = () => {
                 </div>
             </section>
 
-            {/* ── STATS STRIP ──────────────────────────────────────────────── */}
-            <section className="border-y border-border bg-card/60 py-10">
-                <div className="max-w-5xl mx-auto px-6">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
-                        {stats.map((s, i) => (
-                            <motion.div
-                                key={s.label}
-                                initial={{ opacity: 0, y: 16 }}
-                                whileInView={{ opacity: 1, y: 0 }}
-                                viewport={{ once: true }}
-                                transition={{ delay: i * 0.07 }}
-                            >
-                                <p className="text-3xl font-extrabold text-gradient-cobalt">{s.value}</p>
-                                <p className="text-sm text-muted-foreground mt-1">{s.label}</p>
-                            </motion.div>
-                        ))}
-                    </div>
-                </div>
-            </section>
+
 
             {/* ── WHO WE ARE / WHAT WE DO ──────────────────────────────────── */}
             <section className="py-24 bg-background">
