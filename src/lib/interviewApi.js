@@ -110,10 +110,21 @@ export async function submitAnswer(sessionId, audioBlob) {
 }
 
 /**
- * Fetch the final interview report.
+ * Fetch the final interview report (read-only, no side-effects).
+ * Used by FeedbackReport when it receives only a session_id (no inline report).
  * @param {string} sessionId
  * @returns {{ session_id, evaluations, average_score, total_questions, job_title, candidate_name }}
  */
 export async function getReport(sessionId) {
+    return apiFetch(`/end_interview/${sessionId}`);
+}
+
+/**
+ * End the interview early and retrieve whatever report exists so far.
+ * Safe to call even if the interview was already completed by the AI.
+ * @param {string} sessionId
+ * @returns {{ session_id, evaluations, average_score, total_questions, job_title, candidate_name }}
+ */
+export async function endInterview(sessionId) {
     return apiFetch(`/end_interview/${sessionId}`);
 }
