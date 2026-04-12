@@ -262,16 +262,24 @@ RUBRIC CRITERIA (each 0-100):
 3. Technical Depth — Did they show real understanding, or just surface-level buzzwords?
 4. STAR Method  — Situation → Task → Action → Result. All 4 = full marks; 2-3 parts = partial; pure theory = 0.
 
-OVERALL SCORE CALIBRATION (be fair, not harsh):
+OVERALL SCORE CALIBRATION (be fair, not harsh — you are a senior interviewer, not a strict examiner):
 - 0–15  : Flat refusal — completely silent or zero words
 - 16–28 : Flat "I don't know" with no reasoning attempt
 - 29–42 : "I don't know" but showed a related keyword, clarifying question, or reasoning attempt
 - 20–35 : OFF_TOPIC answer — intentional redirect, not a knowledge gap (score in this range regardless of length)
-- 43–55 : Very vague, buzzwords only, minimal understanding
-- 56–68 : Partial answer — core correct but lacks depth
-- 69–80 : Good answer — clear, relevant, concrete
-- 81–90 : Strong answer — specific examples, well-structured, solid depth
-- 91–100: Outstanding — mastery demonstrated, complete STAR, insightful
+- 43–54 : Very vague, buzzwords only, minimal understanding — answer is mostly incorrect or irrelevant
+- 55–64 : Attempted but weak — superficial, missing key concepts, or significantly incomplete
+- 65–75 : Partial answer — core concept is CORRECT but lacks depth, examples, or structure (MINIMUM 65 for any partial understanding)
+- 76–84 : Good answer — correct, clear, concrete; may lack one element of full depth
+- 85–93 : Strong answer — specific examples, well-structured, solid depth
+- 94–100: Outstanding — mastery demonstrated, complete STAR, insightful
+
+CRITICAL CALIBRATION RULES:
+- If the answer shows PARTIAL understanding (core concept correct) → MINIMUM score of 65
+- If the answer is CORRECT but lacks depth → score 70–80 (NEVER in the 60s)
+- Only give <50 if the answer is completely wrong, completely irrelevant, or the candidate says nothing
+- Do NOT cluster scores in the 50–70 range — spread scores across the full scale based on quality
+- Always include at least 1 positive observation in feedback even for weak answers
 
 MODE-SPECIFIC ADJUSTMENTS:
 - fallback mode: Score relative to the simpler question's difficulty. Complete answer to a simpler question → 60–75.
@@ -281,14 +289,21 @@ MODE-SPECIFIC ADJUSTMENTS:
 SCORE VARIATION RULES:
 - Vary scores based on specifics — no two identical-type answers should score identically unless word-for-word.
 - I_DONT_KNOW lifts: +3 for related keyword, +4 for clarifying question, +8 for reasoning attempt.
-- Correct core concept without depth → 56–65. Partial STAR (2-3 elements) → 67–76.
+- Correct core concept without depth → 70–80 (NEVER 60s). Partial STAR (2-3 elements) → 72–80.
 - Tone confidence present and positive → lift 3–6 points.
 - OFF_TOPIC: always score 20–35 regardless of how eloquent the off-topic answer is.
+- Partial understanding with correct core → NEVER below 65.
 
 FEEDBACK QUALITY RULES:
 - feedback field: 2 sentences. First: what specifically was right or wrong (concrete). Second: why it matters for this role or what consequence it has.
 - Do NOT just summarize what happened. Explain the impact.
 - WRONG: "The candidate did not answer the question." RIGHT: "The answer was unrelated to the question asked, which signals difficulty staying focused under interview pressure — a concern for roles requiring clear technical communication."
+- TONE MUST MATCH SCORE:
+  - score ≥ 75: lead with what was done well, note improvements as additions
+  - score 60–74: mixed tone — acknowledge what worked, then state what was missing
+  - score < 60: clearly state the gap, but always open with 1 positive note (e.g. attempted, named a concept, showed effort)
+- NEVER use "No problem" or "That's okay" in feedback text.
+- COACHING LANGUAGE: Replace "lacks knowledge of" with "needs stronger understanding of". Replace "failed to" with "could strengthen by". Replace "wrong" with "less precise than expected".
 
 --- FEW-SHOT EXAMPLES ---
 
@@ -296,9 +311,9 @@ Example 1 — surface-level answer:
 Question: Can you walk me through a REST API you designed?
 Answer: I designed a REST API using Flask. I used GET and POST endpoints. It worked fine.
 <thinking>
-Partial answer — correct topic, mentions Flask and HTTP methods, but zero design rationale, no auth, no error handling, no STAR.
+Partial answer — correct topic, mentions Flask and HTTP methods. Core concept is right but zero design rationale, no auth, no error handling, no STAR. Correct but shallow → 70-80 range, but this is on the weaker end of partial → low 70s.
 </thinking>
-{{"score": 54, "answer_classification": "PARTIAL", "feedback": "The answer identifies the right framework and HTTP verbs but provides no design reasoning — no auth strategy, versioning, or error handling is mentioned. In a backend role, design decisions and trade-offs are what matter most, not just listing tools used.", "topic_status": "drill_down", "suggested_improvement": "Add one concrete design decision: e.g. how you handled API versioning or rate limiting.", "criteria_breakdown": {{"relevance": 65, "clarity": 60, "technical_depth": 35, "star_method": 10}}, "overall_confidence": 0.88}}
+{{"score": 70, "answer_classification": "PARTIAL", "feedback": "The answer correctly identifies Flask and REST conventions — a solid starting point. To be stronger for a backend role, include one design decision: for example, how you handled authentication, versioning, or error responses.", "topic_status": "drill_down", "suggested_improvement": "Add one concrete design decision: e.g. how you handled API versioning or rate limiting.", "criteria_breakdown": {{"relevance": 75, "clarity": 65, "technical_depth": 40, "star_method": 10}}, "overall_confidence": 0.88}}
 
 Example 2 — strong STAR answer:
 Question: How do you handle scope changes mid-sprint?
@@ -336,9 +351,9 @@ Example 6 — good definitional answer:
 Question: What is tokenization in NLP?
 Answer: Tokenization splits text into smaller units like words or subwords so the model can process them as numbers. It is the first preprocessing step in any NLP pipeline.
 <thinking>
-Correct, clear definition. No STAR needed for definitional questions. Missing trade-off discussion. PARTIAL leaning good.
+Correct, clear definition. No STAR needed for definitional questions. Core concept is accurate and well-explained. Missing trade-off discussion. Correct but lacks depth → 76-80 range.
 </thinking>
-{{"score": 68, "answer_classification": "PARTIAL", "feedback": "The definition is accurate and well-explained for a foundational concept. The answer lacks depth on tokenizer trade-offs — in production NLP, the choice of tokenizer (BPE vs WordPiece) directly affects model generalization on rare or domain-specific terms.", "topic_status": "switch", "suggested_improvement": "Explain how different tokenizers (BPE vs WordPiece) handle out-of-vocabulary words differently.", "criteria_breakdown": {{"relevance": 90, "clarity": 85, "technical_depth": 55, "star_method": 0}}, "overall_confidence": 0.91}}
+{{"score": 76, "answer_classification": "PARTIAL", "feedback": "The definition is accurate and well-structured — tokenization as a preprocessing step for numerical representation is spot-on. Adding depth on tokenizer trade-offs (e.g. BPE vs WordPiece for OOV handling) would elevate this to a strong answer for an NLP role.", "topic_status": "switch", "suggested_improvement": "Explain how different tokenizers (BPE vs WordPiece) handle out-of-vocabulary words differently.", "criteria_breakdown": {{"relevance": 92, "clarity": 88, "technical_depth": 58, "star_method": 0}}, "overall_confidence": 0.91}}
 
 Example 7 — strong technical answer with example:
 Question: What subword tokenization technique handles out-of-vocabulary words best?
@@ -388,12 +403,12 @@ COMMUNICATION AND TONE DATA (from voice analysis per answer):
 INSTRUCTIONS:
 1. Analyze ALL questions, answers, and classifications to identify patterns — do not cherry-pick.
 2. Identify genuine STRENGTHS (areas where the candidate performed well with evidence from their answers).
-3. Identify genuine WEAKNESSES (areas where the candidate struggled, with specific evidence).
-4. For EACH weakness, write a structured improvement entry explaining WHAT is wrong, WHY it matters, and HOW to fix it.
+3. Identify genuine AREAS TO IMPROVE (areas where the candidate struggled, with specific evidence).
+4. For EACH area to improve, write a structured entry explaining WHAT is missing, WHY it matters, and HOW to fix it.
 5. Write 3-5 actionable TIPS for the candidate's interview preparation.
 6. List 2-4 RECOMMENDED TOPICS the candidate should study before their next interview.
 7. Provide an honest HIRING SIGNAL based on the overall performance.
-8. Analyze the COMMUNICATION AND TONE DATA to produce a communication_analysis section.
+8. Analyze the COMMUNICATION AND TONE DATA to produce a tone_analysis section.
    - Aggregate tone observations across all answers to identify patterns.
    - If tone data is not available, state "Tone analysis not available" and omit scores.
    - Be honest: flag nervousness, uncertainty, or inconsistency if present.
@@ -401,15 +416,21 @@ INSTRUCTIONS:
 10. Base performance_level on the average score:
     - 85-100: Excellent
     - 70-84:  Good
-    - 50-69:  Average
-    - 30-49:  Below Average
+    - 55-69:  Needs Improvement
+    - 30-54:  Below Average
     - 0-29:   Poor
+11. TONE ALIGNMENT — summary and section tone MUST match the score:
+    - score > 70: positive tone, lead with strengths, mention improvements as growth areas
+    - score 55-70: balanced tone, acknowledge effort and what worked, clearly state what needs work
+    - score < 55: honest about gaps, but ALWAYS include at least 1 positive observation
+12. NEVER say "No problem" or use dismissive phrases in any feedback section.
+13. COACHING LANGUAGE: use "needs stronger understanding of X" instead of "lacks X". Use "could develop by" instead of "failed to". Be a mentor, not a judge.
 
 REQUIRED JSON OUTPUT:
 {{
     "overall_score": {average_score},
-    "performance_level": "Excellent | Good | Average | Below Average | Poor",
-    "summary": "2-3 sentence overall assessment of the candidate's performance",
+    "performance_level": "Excellent | Good | Needs Improvement | Below Average | Poor",
+    "summary": "2-3 sentence overall assessment — tone must match score (positive ≥70, balanced 55-70, honest <55, always 1 positive)",
     "strengths": [
         {{
             "area": "short name of the strength area",
@@ -417,19 +438,19 @@ REQUIRED JSON OUTPUT:
             "impact": "why this strength matters for the role"
         }}
     ],
-    "weaknesses": [
+    "areas_to_improve": [
         {{
-            "area": "short name of the weakness area",
-            "evidence": "specific quote or paraphrase from their answer that reveals this weakness",
-            "impact": "how this weakness would affect their performance in the role"
+            "area": "short name of the improvement area",
+            "evidence": "specific quote or paraphrase from their answer that reveals this gap",
+            "impact": "how addressing this would improve their performance in the role"
         }}
     ],
-    "improvements": [
+    "how_to_improve": [
         {{
-            "weakness_area": "same area name as in weaknesses",
-            "what_is_wrong": "precise description of the gap — be specific about what was missing",
+            "area": "same area name as in areas_to_improve",
+            "what_is_wrong": "precise description of what was missing — coaching tone, not judgmental",
             "why_it_matters": "business or technical consequence of this gap in the target role",
-            "how_to_improve": "3-5 concrete, actionable steps to address this weakness"
+            "how_to_improve": "3-5 concrete, actionable steps to address this gap"
         }}
     ],
     "tips": [
@@ -439,8 +460,8 @@ REQUIRED JSON OUTPUT:
         }}
     ],
     "recommended_topics": ["topic1", "topic2", "topic3"],
-    "hiring_signal": "Strong Yes | Yes | Maybe | No | Strong No",
-    "communication_analysis": {{
+    "hiring_signal": "Yes | Borderline | No",
+    "tone_analysis": {{
         "overall_tone": "calm | nervous | confident | uncertain | mixed",
         "confidence_level": "high | medium | low",
         "clarity_of_speech": "clear | mostly clear | unclear",
@@ -455,11 +476,13 @@ REQUIRED JSON OUTPUT:
 }}
 
 CALIBRATION RULES:
-- Hiring signal should reflect average score: 85+ → Strong Yes, 70-84 → Yes, 50-69 → Maybe, 30-49 → No, <30 → Strong No
+- Hiring signal must reflect average score: 85+ → "Yes", 70-84 → "Borderline", 55-69 → "Borderline" (if 1+ strong area) or "No", <55 → "No"
 - If the candidate scored well on 1-2 questions but poorly overall, explain this discrepancy in the summary.
-- If ALL answers were I_DONT_KNOW or OFF_TOPIC, the hiring_signal should be "Strong No" regardless of score.
-- Strengths list: 1-3 items. If there are no genuine strengths, return an empty array.
-- Weaknesses list: 1-4 items. Mirror each weakness with a corresponding improvement entry.
-- improvements list must have EXACTLY the same number of entries as weaknesses list.
-- communication_analysis: base on tone_summary data. If unavailable, set tone_effectiveness to "needs improvement" and note data was unavailable in observations.
+- If ALL answers were I_DONT_KNOW or OFF_TOPIC, the hiring_signal must be "No" regardless of score.
+- Strengths list: 1-3 items. If there are no genuine strengths, return an empty array (never fabricate).
+- areas_to_improve list: 1-4 items. Mirror each item with a corresponding how_to_improve entry.
+- how_to_improve list must have EXACTLY the same number of entries as areas_to_improve list.
+- tone_analysis: base on tone_summary data. If unavailable, set tone_effectiveness to "needs improvement" and note data was unavailable in observations.
+- FAIR SCORING: scores 70-84 = Good candidate worth further consideration. Do NOT cluster all candidates into the "No" bucket for average performance.
+- summary field: NEVER contradict the score. If score is 70+ do not write a predominantly negative summary. If score <55, do not write a predominantly positive one.
 """)

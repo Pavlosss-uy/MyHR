@@ -547,20 +547,43 @@ def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
     """
     Enforce the canonical report structure. Fills every required field so the
     object returned to the frontend and saved to disk are identical and complete.
+
+    Supports both old key names (weaknesses, improvements, communication_analysis)
+    and new canonical names (areas_to_improve, how_to_improve, tone_analysis).
+    Both are always present so old cached reports and new ones render identically.
     """
     # --- question_scores ---
     raw.setdefault("question_scores", _build_question_scores(evaluations))
 
+    # --- key-name aliases (old ↔ new, bidirectional) ---
+    # areas_to_improve ↔ weaknesses
+    if "areas_to_improve" in raw and "weaknesses" not in raw:
+        raw["weaknesses"] = raw["areas_to_improve"]
+    elif "weaknesses" in raw and "areas_to_improve" not in raw:
+        raw["areas_to_improve"] = raw["weaknesses"]
+
+    # how_to_improve ↔ improvements
+    if "how_to_improve" in raw and "improvements" not in raw:
+        raw["improvements"] = raw["how_to_improve"]
+    elif "improvements" in raw and "how_to_improve" not in raw:
+        raw["how_to_improve"] = raw["improvements"]
+
+    # tone_analysis ↔ communication_analysis
+    if "tone_analysis" in raw and "communication_analysis" not in raw:
+        raw["communication_analysis"] = raw["tone_analysis"]
+    elif "communication_analysis" in raw and "tone_analysis" not in raw:
+        raw["tone_analysis"] = raw["communication_analysis"]
+
     # --- flat communication block ---
-    # Prefer LLM-generated communication_analysis if present, otherwise fall back to tone
-    ca = raw.get("communication_analysis", {})
+    # Prefer LLM-generated tone_analysis / communication_analysis if present
+    ca = raw.get("tone_analysis") or raw.get("communication_analysis") or {}
     if ca and isinstance(ca, dict):
         comm = {
             "tone":       ca.get("overall_tone", "neutral"),
             "confidence": ca.get("confidence_level", "medium"),
             "clarity":    ca.get("clarity_of_speech", "mostly clear"),
             "feedback":   " ".join(ca.get("recommendations", [])) or
-                          ca.get("observations", [""])[0] or
+                          (ca.get("observations") or [""])[0] or
                           "No communication feedback available.",
         }
     else:
@@ -572,22 +595,41 @@ def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
     raw.setdefault("overall_score", avg_score)
     raw.setdefault("strengths", [])
     raw.setdefault("weaknesses", [])
+    raw.setdefault("areas_to_improve", raw["weaknesses"])
     raw.setdefault("improvements", [])
+    raw.setdefault("how_to_improve", raw["improvements"])
     raw.setdefault("tips", [])
     raw.setdefault("recommended_topics", [])
     raw.setdefault("performance_level", (
-        "Excellent" if avg_score >= 85 else
-        "Good"      if avg_score >= 70 else
-        "Average"   if avg_score >= 50 else
-        "Below Average" if avg_score >= 30 else "Poor"
+        "Excellent"        if avg_score >= 85 else
+        "Good"             if avg_score >= 70 else
+        "Needs Improvement" if avg_score >= 55 else
+        "Below Average"    if avg_score >= 30 else "Poor"
     ))
     raw.setdefault("summary", "")
-    raw.setdefault("hiring_signal", (
-        "Strong Yes" if avg_score >= 85 else
-        "Yes"        if avg_score >= 70 else
-        "Maybe"      if avg_score >= 50 else
-        "No"         if avg_score >= 30 else "Strong No"
-    ))
+
+    # --- hiring_signal: canonical 3-level (Yes / Borderline / No) ---
+    # Accept legacy 5-level values from old stored reports and map them.
+    legacy_map = {
+        "Strong Yes": "Yes",
+        "Yes":        "Yes",
+        "Maybe":      "Borderline",
+        "No":         "No",
+        "Strong No":  "No",
+    }
+    existing_signal = raw.get("hiring_signal", "")
+    if existing_signal in legacy_map:
+        raw["hiring_signal"] = legacy_map[existing_signal]
+    elif existing_signal not in ("Yes", "Borderline", "No"):
+        # Generate from score if missing or unrecognised
+        raw["hiring_signal"] = (
+            "Yes"       if avg_score >= 85 else
+            "Borderline" if avg_score >= 70 else
+            "No"
+        )
+
+    # Ensure tone_analysis always present (alias may have been set above; fill defaults if not)
+    raw.setdefault("tone_analysis", raw.get("communication_analysis", {}))
 
     return raw
 
