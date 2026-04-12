@@ -428,6 +428,29 @@ async def live_interview_websocket(
         print(f"Client {session_id} disconnected.")
 
 
+@app.get("/end_interview/{session_id}")
+async def end_interview(session_id: str, db: Session = Depends(get_db)):
+    record = db.query(SessionRecord).filter(SessionRecord.session_id == session_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    state = record.state_data
+    evaluations = state.get("evaluations", [])
+
+    # Compute average score
+    scores = [e["score"] for e in evaluations if isinstance(e, dict) and "score" in e]
+    avg_score = round(sum(scores) / len(scores)) if scores else 0
+
+    return {
+        "session_id": session_id,
+        "evaluations": evaluations,
+        "average_score": avg_score,
+        "total_questions": len(evaluations),
+        "job_title": state.get("initial_job_context", {}).get("job_title", "Position"),
+        "candidate_name": state.get("initial_job_context", {}).get("candidate_name", "Candidate"),
+    }
+
+
 @app.post("/submit_answer")
 async def submit_answer(
     background_tasks: BackgroundTasks,

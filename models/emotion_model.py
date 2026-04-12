@@ -45,7 +45,32 @@ class InterviewEmotionModel(nn.Module):
 
     def predict_from_audio(self, audio_path):
         self.eval()
-        speech, _ = librosa.load(audio_path, sr=16000)
+
+        # Convert to real 16 kHz mono WAV so PySoundFile never falls back to
+        # the deprecated audioread path (eliminates the UserWarning).
+        import subprocess, tempfile, os
+        wav_path = None
+        try:
+            wav_path = tempfile.mktemp(suffix=".wav")
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", audio_path,
+                    "-ar", "16000", "-ac", "1", "-f", "wav", wav_path,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+            speech, _ = librosa.load(wav_path, sr=16000)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            # ffmpeg not available — fall back to librosa directly
+            speech, _ = librosa.load(audio_path, sr=16000)
+        finally:
+            if wav_path and os.path.exists(wav_path):
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
         
         inputs = self.feature_extractor(speech, sampling_rate=16000, return_tensors="pt", padding=True)
         

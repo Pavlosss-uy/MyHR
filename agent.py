@@ -131,7 +131,7 @@ def generate_question_node(state: AgentState):
     """Generates the question using Adaptive Difficulty + CoT/Drill Down."""
     
     # --- MOD-7: Adaptive Difficulty Integration (PPO default) ---
-    diff_engine = registry.load_difficulty_ppo()
+    diff_engine = registry.load_difficulty_engine()
 
     # Extract score history
     score_history = [e['score'] for e in state.get("evaluations", [])]
