@@ -90,6 +90,67 @@ def _extract_jd_signals(jd_text: str) -> str:
     return f"Role: {role_line}\nContext: {flat[:350]}"
 
 
+def _is_valid_cv(text: str) -> bool:
+    """Rule-based CV/resume content validation."""
+    if not text or len(text.strip()) < 100:
+        return False
+
+    text_lower = text.lower()
+
+    cv_sections = [
+        "education", "experience", "work experience", "employment history",
+        "professional experience", "skills", "objective", "summary", "profile",
+        "contact", "references", "certifications", "achievements", "projects",
+        "internship", "volunteer", "languages", "awards",
+    ]
+    section_hits = sum(1 for kw in cv_sections if kw in text_lower)
+
+    # Documents that are clearly NOT a CV
+    negative_keywords = [
+        "invoice", "purchase order", "receipt", "payment due", "tax return",
+        "table of contents", "bibliography", "dear sir", "dear madam",
+        "sincerely yours", "to whom it may concern", "chapter ",
+    ]
+    negative_hits = sum(1 for kw in negative_keywords if kw in text_lower)
+    if negative_hits >= 2:
+        return False
+
+    # Year-range patterns common in CVs (e.g. 2018–2022, 2020 - present)
+    date_hits = len(re.findall(r'\b(19|20)\d{2}\b', text))
+
+    # Pass if at least 2 recognisable CV sections OR high combined signal
+    return section_hits >= 2 or (section_hits >= 1 and date_hits >= 2)
+
+
+def _is_valid_jd(text: str) -> bool:
+    """Rule-based Job Description content validation."""
+    if not text or len(text.strip()) < 50:
+        return False
+
+    text_lower = text.lower()
+
+    jd_keywords = [
+        "responsibilities", "requirements", "qualifications", "skills",
+        "experience", "role", "position", "candidate", "apply",
+        "preferred", "must have", "required", "team", "company",
+        "full-time", "part-time", "salary", "benefits",
+        "we are looking", "we're looking", "join our", "opportunity",
+        "degree", "bachelor", "master", "years of experience",
+        "proficiency", "knowledge of", "ability to", "strong understanding",
+    ]
+    hits = sum(1 for kw in jd_keywords if kw in text_lower)
+
+    negative_keywords = [
+        "invoice", "receipt", "chapter ", "bibliography",
+        "dear sir", "dear madam", "sincerely",
+    ]
+    negative_hits = sum(1 for kw in negative_keywords if kw in text_lower)
+    if negative_hits >= 2:
+        return False
+
+    return hits >= 3
+
+
 def extract_candidate_name(cv_text: str, filename: str) -> str:
     if cv_text:
         first_block = cv_text[:600].strip()
@@ -319,6 +380,18 @@ async def start_interview(
         extracted = page.extract_text()
         if extracted:
             cv_text += extracted + "\n"
+
+    if not _is_valid_cv(cv_text):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid CV uploaded. Please upload a valid resume.",
+        )
+
+    if not _is_valid_jd(jd):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid Job Description. Please provide a proper job description.",
+        )
 
     await cv.seek(0)
     s3_cv_url = upload_file_to_s3(cv, prefix=f"cvs/{session_id}")
