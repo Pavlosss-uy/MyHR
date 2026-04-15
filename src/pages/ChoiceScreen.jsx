@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Brain, Building2, GraduationCap, ArrowRight, ArrowLeft } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -41,7 +41,11 @@ const cardVariants = {
 
 const ChoiceScreen = () => {
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
     const { isAuthenticated, emailVerified } = useAuth();
+
+    // "signin" mode = returning user choosing their portal
+    const isSignIn = searchParams.get("mode") === "signin";
 
     // If the user is already authenticated + verified, skip onboarding entirely
     useEffect(() => {
@@ -52,11 +56,20 @@ const ChoiceScreen = () => {
     }, [isAuthenticated, emailVerified, navigate]);
 
     const handleChoose = (role) => {
-        // Persist in both storages: sessionStorage for OAuth round-trips,
-        // localStorage so returning users don't see this screen again after login.
+        if (role === "hr") {
+            if (isSignIn) {
+                // Existing enterprise users sign in directly
+                navigate("/auth?role=hr");
+            } else {
+                // New enterprise users go through request access flow
+                navigate("/request-access");
+            }
+            return;
+        }
+        // Candidates go to auth (sign up or sign in)
         sessionStorage.setItem(ROLE_KEY, role);
         localStorage.setItem(ROLE_KEY, role);
-        navigate(`/auth?role=${role}`);
+        navigate(`/auth?role=${role}${isSignIn ? "&mode=signin" : ""}`);
     };
 
     return (
@@ -81,10 +94,10 @@ const ChoiceScreen = () => {
                     </span>
                 </div>
                 <h1 className="text-3xl sm:text-4xl font-bold text-foreground leading-tight">
-                    How will you use MyHR?
+                    {isSignIn ? "Sign in to MyHR" : "How will you use MyHR?"}
                 </h1>
                 <p className="mt-3 text-muted-foreground text-base max-w-sm mx-auto">
-                    Choose the experience that fits your needs.
+                    {isSignIn ? "Choose your portal to continue." : "Choose the experience that fits your needs."}
                 </p>
             </motion.div>
 
@@ -119,7 +132,7 @@ const ChoiceScreen = () => {
                                 ))}
                             </ul>
                             <div className="flex items-center gap-2 text-sm font-semibold text-cobalt-light group-hover:gap-3 transition-all">
-                                Get started <ArrowRight className="w-4 h-4" />
+                                {isSignIn ? "Sign in" : "Get started"} <ArrowRight className="w-4 h-4" />
                             </div>
                         </motion.button>
                     );
@@ -141,12 +154,14 @@ const ChoiceScreen = () => {
                     Back to home
                 </Link>
                 <span className="text-border">|</span>
-                <button
-                    onClick={() => navigate("/auth")}
-                    className="text-cobalt-light hover:text-cobalt font-medium transition-colors"
-                >
-                    Already have an account? Sign in
-                </button>
+                {!isSignIn && (
+                    <button
+                        onClick={() => navigate("/choose?mode=signin")}
+                        className="text-cobalt-light hover:text-cobalt font-medium transition-colors"
+                    >
+                        Already have an account? Sign in
+                    </button>
+                )}
             </motion.div>
         </div>
     );

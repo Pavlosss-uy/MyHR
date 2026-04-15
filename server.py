@@ -49,6 +49,13 @@ from agent import (
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# B2B / HR endpoints
+try:
+    from hr_routes import hr_router
+    app.include_router(hr_router)
+except ImportError as _hr_err:
+    print(f"⚠️ HR routes not loaded (missing dependencies): {_hr_err}")
+
 UPLOAD_DIR = "./uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -447,6 +454,74 @@ async def start_interview(
         "audio_url": audio_url,
         "question_number": 1,
         "ws_url": f"ws://localhost:8000/ws/interview/{session_id}",
+    }
+
+
+@app.post("/candidate-interview/{token}/start")
+async def start_interview_from_token(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Start an AI interview session for a candidate using their invitation token.
+    Fetches the candidate's stored CV text and job description from Firestore —
+    no file upload required.  Uses the same session infrastructure as /start_interview.
+    """
+    from hr_routes import get_interview_context_for_token
+
+    ctx = get_interview_context_for_token(token)  # raises HTTPException on bad token
+
+    cv_text = ctx["cv_text"]
+    jd = ctx["jd"]
+    candidate_name = ctx["candidate_name"]
+
+    if not cv_text or len(cv_text.strip()) < 50:
+        raise HTTPException(status_code=422, detail="Candidate CV not found or too short to conduct interview.")
+    if not jd or len(jd.strip()) < 50:
+        raise HTTPException(status_code=422, detail="Job description not found.")
+
+    session_id = str(uuid.uuid4())
+
+    try:
+        create_session_index(session_id, cv_text, jd, candidate_name=candidate_name, role=ctx["job_title"])
+    except Exception as e:
+        print(f"Ingestion Warning: {e}")
+
+    try:
+        skill_matcher = registry.load_skill_matcher()
+        skill_score = skill_matcher.calculate_match_score(cv_text, jd)
+        if isinstance(skill_score, (int, float)):
+            skill_score = float(skill_score)
+            skill_score = skill_score if skill_score <= 1.0 else skill_score / 100.0
+        else:
+            skill_score = 0.5
+    except Exception as e:
+        print(f"Skill Match Warning: {e}")
+        skill_score = 0.5
+
+    initial_state = _build_initial_state(session_id, candidate_name, jd, "", skill_score)
+    result = app_graph.invoke(initial_state)
+    result["question_number"] = 1
+
+    db_record = SessionRecord(session_id=session_id, state_data=result)
+    db.add(db_record)
+    db.commit()
+
+    job_title = ctx["job_title"]
+    first_question = result["last_question"]
+    greeting = (
+        f"Hello {candidate_name}! Welcome to your AI interview for the {job_title} position. "
+        f"I'm your interviewer today. Let's get started!\n\n{first_question}"
+    )
+
+    audio_path = generate_audio(greeting)
+    audio_url = f"http://localhost:8000/static/audio/{os.path.basename(audio_path)}" if audio_path else None
+
+    return {
+        "session_id": session_id,
+        "question": greeting,
+        "audio_url": audio_url,
+        "max_questions": MAX_QUESTIONS,
     }
 
 

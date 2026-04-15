@@ -97,7 +97,7 @@ const Navbar = () => {
                             asChild
                             className="h-8 px-4 text-sm font-medium border-cobalt/50 text-cobalt-lighter hover:bg-cobalt/10 hover:border-cobalt hover:text-cobalt-lighter rounded-lg transition-all"
                         >
-                            <Link to="/auth">Sign In</Link>
+                            <Link to="/choose?mode=signin">Sign In</Link>
                         </Button>
                     )}
                 </div>
@@ -148,7 +148,7 @@ const Navbar = () => {
                             asChild
                             className="w-full h-9 text-sm font-medium border-cobalt/50 text-cobalt-lighter hover:bg-cobalt/10 hover:border-cobalt rounded-lg transition-all"
                         >
-                            <Link to="/auth" onClick={() => setMobileOpen(false)}>Sign In</Link>
+                            <Link to="/choose?mode=signin" onClick={() => setMobileOpen(false)}>Sign In</Link>
                         </Button>
                     )}
                 </div>

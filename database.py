@@ -37,8 +37,20 @@ class SessionRecord(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
-# Ensure tables are created
-Base.metadata.create_all(bind=engine)
+# Ensure tables are created (with retry for Neon cold-start)
+import time as _time
+
+for _attempt in range(3):
+    try:
+        Base.metadata.create_all(bind=engine)
+        break
+    except Exception as _db_err:
+        if _attempt < 2:
+            print(f"⚠️ Database connection attempt {_attempt + 1}/3 failed, retrying in 3s... ({_db_err.__class__.__name__})")
+            _time.sleep(3)
+        else:
+            print(f"⚠️ Database unavailable after 3 attempts — server will start without PostgreSQL. Interview sessions may not persist.")
+            print(f"   Error: {_db_err}")
 
 # --- DEPENDENCY INJECTION ---
 def get_db():

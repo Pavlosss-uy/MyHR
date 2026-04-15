@@ -14,6 +14,12 @@ import VerifyEmail from "./pages/VerifyEmail";
 import Landing from "./pages/Landing";
 import NotFound from "./pages/NotFound";
 
+// B2B pages
+import RequestAccess from "./pages/RequestAccess";
+import AcceptInvitation from "./pages/AcceptInvitation";
+import AdminPendingRequests from "./pages/AdminPendingRequests";
+import CandidateInterviewPortal from "./pages/CandidateInterviewPortal";
+
 /**
  * Wraps the landing page so authenticated users are redirected to their
  * dashboard immediately — they should never see the marketing page again
@@ -80,6 +86,12 @@ const App = () => (
                         <Route path="/landing"      element={<SmartLanding />} />
                         <Route path="/auth"         element={<Auth />} />
                         <Route path="/verify-email" element={<VerifyEmail />} />
+
+                        {/* B2B public routes */}
+                        <Route path="/request-access"            element={<RequestAccess />} />
+                        <Route path="/invite/:token"             element={<AcceptInvitation />} />
+                        <Route path="/candidate-interview/:token" element={<CandidateInterviewPortal />} />
+                        <Route path="/admin/requests"            element={<AdminPendingRequests />} />
 
                         {/* OAuth callbacks (public — must complete before auth state settles) */}
                         <Route path="/auth/callback/google"   element={<GoogleAuthCallback />} />

@@ -326,8 +326,8 @@ const Landing = () => {
                                 className="bg-card text-primary hover:bg-card/90 shadow-lg font-semibold"
                                 asChild
                             >
-                                <Link to="/choose">
-                                    Get Started Free
+                                <Link to="/request-access">
+                                    Request Access
                                     <ArrowRight className="w-4 h-4 ml-1" />
                                 </Link>
                             </Button>
@@ -359,7 +359,7 @@ const Landing = () => {
                     <nav className="flex flex-wrap gap-6 text-sm text-muted-foreground">
                         <a href="#features" className="hover:text-foreground transition-colors">Features</a>
                         <Link to="/choose" className="hover:text-foreground transition-colors">Get Started</Link>
-                        <Link to="/auth"   className="hover:text-foreground transition-colors">Sign In</Link>
+                        <Link to="/choose?mode=signin" className="hover:text-foreground transition-colors">Sign In</Link>
                     </nav>
 
                     <p className="text-sm text-muted-foreground">

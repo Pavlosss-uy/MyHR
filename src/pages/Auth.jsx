@@ -5,6 +5,7 @@ import {
     createUserWithEmailAndPassword,
     signInWithEmailAndPassword,
     signInWithPopup,
+    signOut,
     sendEmailVerification,
     sendPasswordResetEmail,
     GoogleAuthProvider,
@@ -18,6 +19,9 @@ import { Label } from "@/components/ui/label";
 import { Brain, Chrome, Mail, Lock, User, ArrowRight, ArrowLeft, Eye, EyeOff, KeyRound } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
+import { registerUserRole, getUserRole } from "@/lib/interviewApi";
+
+const ROLE_KEY = "myhr_role";
 
 // Human-readable Firebase error messages
 const FIREBASE_ERRORS = {
@@ -96,13 +100,33 @@ const Auth = () => {
         try {
             if (isSignUp) {
                 const credential = await createUserWithEmailAndPassword(auth, email, password);
-                // Set display name immediately
                 const { updateProfile } = await import("firebase/auth");
                 await updateProfile(credential.user, { displayName: name || email.split("@")[0] });
+                // Register role so future sign-ins can enforce portal access
+                if (role) await registerUserRole(credential.user.uid, role);
                 await sendEmailVerification(credential.user);
                 navigate("/verify-email", { replace: true });
             } else {
-                await signInWithEmailAndPassword(auth, email, password);
+                const credential = await signInWithEmailAndPassword(auth, email, password);
+                // Enforce portal — block cross-portal sign-ins
+                if (role) {
+                    const roleData = await getUserRole(credential.user.uid);
+                    const storedRole = roleData?.role;
+                    if (storedRole && storedRole !== role) {
+                        await signOut(auth);
+                        const portalName = role === "hr" ? "Enterprise" : "Personal Training";
+                        const correctPortal = storedRole === "hr" ? "Enterprise" : "Personal Training";
+                        setFormError(
+                            `This account is registered as ${correctPortal}. Please sign in through the ${correctPortal} portal.`
+                        );
+                        setIsLoading(false);
+                        return;
+                    }
+                    if (storedRole) {
+                        sessionStorage.setItem(ROLE_KEY, storedRole);
+                        localStorage.setItem(ROLE_KEY, storedRole);
+                    }
+                }
                 // onAuthStateChanged in AuthContext will update `user`;
                 // the useEffect above will redirect once isAuthenticated flips.
             }

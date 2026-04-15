@@ -45,7 +45,12 @@ const CircularProgress = ({
                     />
                 </svg>
                 <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="text-2xl font-bold text-foreground">{value}%</span>
+                    <span
+                        className="font-bold text-foreground leading-none"
+                        style={{ fontSize: size <= 80 ? `${Math.max(Math.floor(size * 0.19), 10)}px` : "1.5rem" }}
+                    >
+                        {value}%
+                    </span>
                 </div>
             </div>
             {label && <span className="text-sm font-medium text-foreground">{label}</span>}

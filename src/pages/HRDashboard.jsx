@@ -1,25 +1,12 @@
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import Navbar from "@/components/Navbar";
 import StatCard from "@/components/StatCard";
 import CircularProgress from "@/components/CircularProgress";
-import { Users, Briefcase, Clock, TrendingUp, Star, MoreHorizontal, Play, BarChart3, Plus } from "lucide-react";
+import { Users, Briefcase, Clock, TrendingUp, Star, MoreHorizontal, Play, BarChart3, Plus, Loader2, Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
-
-const leaderboard = [
-    { rank: 1, id: "1", name: "Sarah Chen", role: "Senior Engineer", score: 94, status: "Recommended" },
-    { rank: 2, id: "2", name: "Marcus Johnson", role: "Product Manager", score: 89, status: "Recommended" },
-    { rank: 3, id: "3", name: "Priya Sharma", role: "Data Scientist", score: 86, status: "Under Review" },
-    { rank: 4, id: "4", name: "Alex Rivera", role: "UX Designer", score: 82, status: "Under Review" },
-    { rank: 5, id: "5", name: "Jordan Lee", role: "Frontend Dev", score: 78, status: "Needs Improvement" },
-];
-
-const recentInterviews = [
-    { candidate: "Sarah Chen", role: "Senior Engineer", time: "2 hours ago", score: 94 },
-    { candidate: "Marcus Johnson", role: "Product Manager", time: "5 hours ago", score: 89 },
-    { candidate: "Priya Sharma", role: "Data Scientist", time: "1 day ago", score: 86 },
-    { candidate: "David Kim", role: "Backend Dev", time: "1 day ago", score: 71 },
-];
+import { getJobs } from "@/lib/interviewApi";
 
 const statusColors = {
     Recommended: "bg-mint-light text-mint-dark",
@@ -27,7 +14,37 @@ const statusColors = {
     "Needs Improvement": "bg-destructive/10 text-destructive",
 };
 
+const getStatus = (score) => {
+    if (score >= 85) return "Recommended";
+    if (score >= 60) return "Under Review";
+    return "Needs Improvement";
+};
+
 const HRDashboard = () => {
+    const [jobs, setJobs] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const data = await getJobs();
+                setJobs(data.jobs || []);
+            } catch (err) {
+                console.error("Failed to load jobs:", err);
+            } finally {
+                setLoading(false);
+            }
+        })();
+    }, []);
+
+    // Aggregate stats from jobs
+    const totalCandidates = jobs.reduce((sum, j) => sum + (j.stats?.totalCandidates || 0), 0);
+    const openPositions = jobs.filter((j) => j.status === "active").length;
+    const totalInterviewed = jobs.reduce((sum, j) => sum + (j.stats?.interviewed || 0), 0);
+    const avgMatch = jobs.length > 0
+        ? Math.round(jobs.reduce((sum, j) => sum + (j.stats?.avgMatchScore || 0), 0) / jobs.length)
+        : 0;
+
     return (
         <div className="min-h-screen bg-background">
             <Navbar />
@@ -42,6 +59,12 @@ const HRDashboard = () => {
                         <p className="text-muted-foreground mt-1">Overview of your hiring pipeline and candidate performance.</p>
                     </div>
                     <div className="flex gap-3">
+                        <Button variant="outline" size="sm" asChild>
+                            <Link to="/admin/requests">
+                                <Shield className="w-4 h-4 mr-1.5" />
+                                Access Requests
+                            </Link>
+                        </Button>
                         <Button variant="outline" size="sm" asChild>
                             <Link to="/hr/analytics">
                                 <BarChart3 className="w-4 h-4 mr-1.5" />
@@ -59,110 +82,123 @@ const HRDashboard = () => {
 
                 {/* Stats Row */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                    <StatCard icon={Users} label="Total Candidates" value="247" change="+12%" changeType="positive" />
-                    <StatCard icon={Briefcase} label="Open Positions" value="18" change="+3" changeType="positive" />
-                    <StatCard icon={Clock} label="Avg Interview Time" value="24m" change="-2m" changeType="positive" />
-                    <StatCard icon={TrendingUp} label="Hire Rate" value="34%" change="+5%" changeType="positive" />
+                    <StatCard icon={Users} label="Total Candidates" value={loading ? "—" : totalCandidates.toString()} change={totalCandidates > 0 ? `${totalCandidates} total` : ""} changeType="positive" />
+                    <StatCard icon={Briefcase} label="Open Positions" value={loading ? "—" : openPositions.toString()} change={openPositions > 0 ? "active" : ""} changeType="positive" />
+                    <StatCard icon={Clock} label="Interviewed" value={loading ? "—" : totalInterviewed.toString()} change={totalInterviewed > 0 ? "completed" : ""} changeType="positive" />
+                    <StatCard icon={TrendingUp} label="Avg Match Score" value={loading ? "—" : `${avgMatch}%`} change={avgMatch > 70 ? "above threshold" : ""} changeType={avgMatch > 70 ? "positive" : "neutral"} />
                 </div>
 
-                <div className="grid lg:grid-cols-3 gap-6">
-                    {/* Leaderboard */}
-                    <div className="lg:col-span-2 bg-card rounded-xl border border-border shadow-sm">
-                        <div className="p-5 border-b border-border flex items-center justify-between">
-                            <div>
-                                <h2 className="font-semibold text-foreground">Candidate Leaderboard</h2>
-                                <p className="text-sm text-muted-foreground mt-0.5">Top performers from recent interviews</p>
+                {loading ? (
+                    <div className="flex items-center justify-center py-20">
+                        <Loader2 className="w-8 h-8 animate-spin text-cobalt" />
+                    </div>
+                ) : (
+                    <div className="grid lg:grid-cols-3 gap-6">
+                        {/* Jobs overview */}
+                        <div className="lg:col-span-2 bg-card rounded-xl border border-border shadow-sm">
+                            <div className="p-5 border-b border-border flex items-center justify-between">
+                                <div>
+                                    <h2 className="font-semibold text-foreground">Active Jobs</h2>
+                                    <p className="text-sm text-muted-foreground mt-0.5">Your open positions and candidate pipelines</p>
+                                </div>
+                                <Button variant="ghost" size="sm" asChild>
+                                    <Link to="/hr/jobs">View All</Link>
+                                </Button>
                             </div>
-                            <Button variant="ghost" size="icon">
-                                <MoreHorizontal className="w-4 h-4" />
-                            </Button>
-                        </div>
-                        <div className="overflow-x-auto">
-                            <table className="w-full">
-                                <thead>
-                                    <tr className="border-b border-border">
-                                        <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Rank</th>
-                                        <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Candidate</th>
-                                        <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Score</th>
-                                        <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Status</th>
-                                        <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {leaderboard.map((candidate) => (
-                                        <tr key={candidate.rank} className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors">
-                                            <td className="px-5 py-3.5">
-                                                <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${candidate.rank <= 3 ? "gradient-cobalt text-primary-foreground" : "bg-muted text-muted-foreground"
-                                                    }`}>
-                                                    {candidate.rank}
-                                                </span>
-                                            </td>
-                                            <td className="px-5 py-3.5">
+
+                            {jobs.length === 0 ? (
+                                <div className="p-8 text-center">
+                                    <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-3">
+                                        <Briefcase className="w-7 h-7 text-muted-foreground" />
+                                    </div>
+                                    <p className="text-sm text-muted-foreground mb-3">No jobs yet. Create your first job posting.</p>
+                                    <Button variant="hero" size="sm" asChild>
+                                        <Link to="/hr/jobs">
+                                            <Plus className="w-4 h-4 mr-1" />
+                                            Create Job
+                                        </Link>
+                                    </Button>
+                                </div>
+                            ) : (
+                                <div className="divide-y divide-border">
+                                    {jobs.slice(0, 5).map((job) => (
+                                        <Link
+                                            key={job.id}
+                                            to="/hr/jobs"
+                                            className="block px-5 py-4 flex items-center justify-between hover:bg-muted/30 transition-colors"
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-10 h-10 rounded-lg gradient-cobalt flex items-center justify-center">
+                                                    <Briefcase className="w-4 h-4 text-primary-foreground" />
+                                                </div>
                                                 <div>
-                                                    <Link to={`/hr/candidate/${candidate.id}`} className="text-sm font-medium text-foreground hover:text-primary transition-colors">
-                                                        {candidate.name}
-                                                    </Link>
-                                                    <p className="text-xs text-muted-foreground">{candidate.role}</p>
+                                                    <p className="text-sm font-medium text-foreground">{job.title}</p>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        {job.stats?.totalCandidates || 0} candidates · {job.stats?.interviewed || 0} interviewed
+                                                    </p>
                                                 </div>
-                                            </td>
-                                            <td className="px-5 py-3.5">
-                                                <div className="flex items-center gap-1.5">
-                                                    <Star className="w-3.5 h-3.5 text-warning fill-warning" />
-                                                    <span className="text-sm font-semibold text-foreground">{candidate.score}</span>
-                                                </div>
-                                            </td>
-                                            <td className="px-5 py-3.5">
-                                                <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${statusColors[candidate.status]}`}>
-                                                    {candidate.status}
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                {job.stats?.avgMatchScore > 0 && (
+                                                    <div className="flex items-center gap-1.5">
+                                                        <Star className="w-3.5 h-3.5 text-warning fill-warning" />
+                                                        <span className="text-sm font-semibold text-foreground">
+                                                            {Math.round(job.stats.avgMatchScore)}%
+                                                        </span>
+                                                    </div>
+                                                )}
+                                                <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                                                    job.status === "active"
+                                                        ? "bg-mint/10 text-mint-dark"
+                                                        : "bg-muted text-muted-foreground"
+                                                }`}>
+                                                    {job.status || "active"}
                                                 </span>
-                                            </td>
-                                            <td className="px-5 py-3.5 text-right">
-                                                <Button variant="ghost" size="sm" asChild>
-                                                    <Link to="/feedback">View Report</Link>
-                                                </Button>
-                                            </td>
-                                        </tr>
+                                            </div>
+                                        </Link>
                                     ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    {/* Right Column */}
-                    <div className="space-y-6">
-                        {/* Hiring Health */}
-                        <div className="bg-card rounded-xl border border-border shadow-sm p-5">
-                            <h3 className="font-semibold text-foreground mb-4">Hiring Health</h3>
-                            <div className="grid grid-cols-2 gap-4">
-                                <CircularProgress value={87} size={100} label="Pipeline" color="cobalt" />
-                                <CircularProgress value={72} size={100} label="Quality" color="mint" />
-                            </div>
+                                </div>
+                            )}
                         </div>
 
-                        {/* Latest Interviews */}
-                        <div className="bg-card rounded-xl border border-border shadow-sm">
-                            <div className="p-5 border-b border-border">
-                                <h3 className="font-semibold text-foreground">Latest Interviews</h3>
+                        {/* Right Column */}
+                        <div className="space-y-6">
+                            {/* Hiring Health */}
+                            <div className="bg-card rounded-xl border border-border shadow-sm p-5">
+                                <h3 className="font-semibold text-foreground mb-4">Hiring Health</h3>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <CircularProgress value={totalCandidates > 0 ? Math.min(100, Math.round(totalInterviewed / Math.max(totalCandidates, 1) * 100)) : 0} size={100} label="Pipeline" color="cobalt" />
+                                    <CircularProgress value={avgMatch || 0} size={100} label="Quality" color="mint" />
+                                </div>
                             </div>
-                            <div className="divide-y divide-border">
-                                {recentInterviews.map((interview, i) => (
-                                    <Link key={i} to="/feedback" className="block px-5 py-3.5 flex items-center justify-between hover:bg-muted/30 transition-colors cursor-pointer">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-8 h-8 rounded-full gradient-cobalt flex items-center justify-center">
-                                                <Play className="w-3 h-3 text-primary-foreground" />
-                                            </div>
-                                            <div>
-                                                <p className="text-sm font-medium text-foreground">{interview.candidate}</p>
-                                                <p className="text-xs text-muted-foreground">{interview.time}</p>
-                                            </div>
-                                        </div>
-                                        <span className="text-sm font-semibold text-foreground">{interview.score}%</span>
-                                    </Link>
-                                ))}
+
+                            {/* Quick actions */}
+                            <div className="bg-card rounded-xl border border-border shadow-sm p-5 space-y-3">
+                                <h3 className="font-semibold text-foreground">Quick Actions</h3>
+                                <div className="space-y-2">
+                                    <Button variant="outline" className="w-full justify-start" size="sm" asChild>
+                                        <Link to="/hr/jobs">
+                                            <Plus className="w-4 h-4 mr-2" />
+                                            Create New Job
+                                        </Link>
+                                    </Button>
+                                    <Button variant="outline" className="w-full justify-start" size="sm" asChild>
+                                        <Link to="/admin/requests">
+                                            <Shield className="w-4 h-4 mr-2" />
+                                            Review Access Requests
+                                        </Link>
+                                    </Button>
+                                    <Button variant="outline" className="w-full justify-start" size="sm" asChild>
+                                        <Link to="/hr/analytics">
+                                            <BarChart3 className="w-4 h-4 mr-2" />
+                                            View Analytics
+                                        </Link>
+                                    </Button>
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
+                )}
             </main>
         </div>
     );
