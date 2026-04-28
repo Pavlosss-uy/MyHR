@@ -17,12 +17,6 @@ Before building MyHR, we conducted a **user research survey** to validate the ne
 - **ChatGPT dominates** current AI tool usage, but lacks structured interview simulation, scoring, and behavioral feedback
 - **90%+** interest in AI-generated questions, scoring, and feedback features
 
-These insights directly shaped MyHR's feature set: adaptive questioning, structured scoring rubrics, and real-time behavioral analysis.
-
-| Interview Insights | AI Tool Adoption |
-|---|---|
-| ![Interview Insights](docs/interviews_insights.png) | ![AI Tool Adoption](docs/ai_tool_adoption.png) |
-
 ---
 
 ## Architecture
