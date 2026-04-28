@@ -1,21 +1,36 @@
 import { motion } from "framer-motion";
 import CircularProgress from "@/components/CircularProgress";
 import { Button } from "@/components/ui/button";
-import { Mail, CheckCircle2, XCircle, ArrowRight, Send, Eye, Loader2 } from "lucide-react";
+import { Mail, CheckCircle2, XCircle, ArrowRight, Send, Eye, Loader2, Trash2, ThumbsDown } from "lucide-react";
 
 const statusBadge = {
     not_invited: { label: "Not Invited", style: "bg-muted text-muted-foreground" },
-    invited: { label: "Invited", style: "bg-warning/10 text-warning" },
-    completed: { label: "Completed", style: "bg-mint/10 text-mint-dark" },
+    invited:     { label: "Invited",     style: "bg-warning/10 text-warning" },
+    completed:   { label: "Completed",   style: "bg-mint/10 text-mint-dark" },
+    declined:    { label: "Declined",    style: "bg-destructive/10 text-destructive" },
+    shortlisted: { label: "Shortlisted", style: "bg-cobalt/10 text-cobalt" },
+    hired:       { label: "Hired",       style: "bg-mint/20 text-mint-dark font-semibold" },
+    rejected:    { label: "Rejected",    style: "bg-destructive/10 text-destructive" },
 };
 
-const CandidateCard = ({ candidate, index = 0, inviting = false, onViewDetails, onInvite }) => {
+const CandidateCard = ({
+    candidate,
+    index = 0,
+    inviting = false,
+    declining = false,
+    deleting = false,
+    onViewDetails,
+    onInvite,
+    onDecline,
+    onDelete,
+}) => {
     const { name, email, matchScore, matchDetails, interviewStatus, totalScore } = candidate;
     const badge = statusBadge[interviewStatus] || statusBadge.not_invited;
     const matched = matchDetails?.matched || [];
     const missing = matchDetails?.missing || [];
 
     const scoreColor = matchScore >= 75 ? "mint" : matchScore >= 50 ? "cobalt" : "destructive";
+    const isTerminal = interviewStatus === "declined" || interviewStatus === "hired" || interviewStatus === "rejected";
 
     return (
         <motion.div
@@ -93,29 +108,66 @@ const CandidateCard = ({ candidate, index = 0, inviting = false, onViewDetails, 
             </div>
 
             {/* Actions */}
-            <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border">
+            <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border flex-wrap">
                 <Button variant="outline" size="sm" className="flex-1" onClick={() => onViewDetails?.(candidate)}>
                     <Eye className="w-3.5 h-3.5 mr-1" />
-                    View Details
+                    {interviewStatus === "completed" ? "View Report" : "View Details"}
                 </Button>
+
                 {interviewStatus === "not_invited" && (
                     <Button variant="hero" size="sm" className="flex-1" onClick={() => onInvite?.(candidate)} disabled={inviting}>
                         {inviting
                             ? <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />Sending…</>
-                            : <><Send className="w-3.5 h-3.5 mr-1" />Invite to Interview</>
+                            : <><Send className="w-3.5 h-3.5 mr-1" />Invite</>
                         }
                     </Button>
                 )}
+
                 {interviewStatus === "invited" && (
                     <Button variant="outline" size="sm" className="flex-1" disabled>
                         <Send className="w-3.5 h-3.5 mr-1" />
-                        Invitation Sent
+                        Invited
                     </Button>
                 )}
+
                 {interviewStatus === "completed" && (
                     <Button variant="outline" size="sm" className="flex-1" onClick={() => onViewDetails?.(candidate)}>
                         <ArrowRight className="w-3.5 h-3.5 mr-1" />
-                        View Report
+                        Full Report
+                    </Button>
+                )}
+
+                {/* Decline — available for not_invited and invited candidates */}
+                {(interviewStatus === "not_invited" || interviewStatus === "invited") && (
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-warning border-warning/30 hover:bg-warning/10"
+                        onClick={() => onDecline?.(candidate)}
+                        disabled={declining}
+                        title="Decline candidate"
+                    >
+                        {declining
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <ThumbsDown className="w-3.5 h-3.5" />
+                        }
+                    </Button>
+                )}
+
+                {/* Delete — always available */}
+                {!isTerminal && (
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-destructive border-destructive/30 hover:bg-destructive/10"
+                        onClick={() => onDelete?.(candidate)}
+                        disabled={deleting}
+                        title="Delete candidate"
+                    >
+                        {deleting
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <Trash2 className="w-3.5 h-3.5" />
+                        }
                     </Button>
                 )}
             </div>

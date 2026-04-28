@@ -15,7 +15,7 @@ from fastapi import (
     Form,
     HTTPException,
     Depends,
-    BackgroundTasks,
+    Query,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -28,6 +28,7 @@ from database import get_db, SessionRecord
 from ingest import create_session_index, save_interview_report, save_rich_report
 from s3_utils import upload_file_to_s3
 from models.registry import registry
+from auth_middleware import get_current_user
 from services import (
     transcribe_audio,
     transcribe_audio_bytes,
@@ -377,6 +378,7 @@ async def start_interview(
     cv: UploadFile = File(...),
     jd: str = Form(...),
     db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
 ):
     session_id = str(uuid.uuid4())
 
@@ -529,6 +531,7 @@ async def start_interview_from_token(
 async def live_interview_websocket(
     websocket: WebSocket,
     session_id: str,
+    token: str = Query(None),
     db: Session = Depends(get_db),
 ):
     """
@@ -552,6 +555,18 @@ async def live_interview_websocket(
       {"type": "error", "message": "..."}        — something went wrong
     """
     await websocket.accept()
+
+    # Validate Firebase token when provided (H4: WebSocket session auth).
+    # Candidate sessions started via /candidate-interview/{token}/start have no
+    # Firebase token, so we allow those through — the session UUID is sufficient.
+    if token:
+        try:
+            from firebase_admin import auth as fb_auth
+            fb_auth.verify_id_token(token)
+        except Exception:
+            await websocket.send_json({"type": "error", "message": "Invalid token"})
+            await websocket.close(code=4001)
+            return
 
     record = db.query(SessionRecord).filter(SessionRecord.session_id == session_id).first()
     if not record:
@@ -703,7 +718,11 @@ MIN_REPORT_QUESTIONS = 2  # need at least this many answered questions for a val
 
 
 @app.get("/end_interview/{session_id}")
-async def end_interview(session_id: str, db: Session = Depends(get_db)):
+async def end_interview(
+    session_id: str,
+    db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
+):
     """
     Called when the user clicks 'End Interview' early OR when the frontend needs
     the report for an already-completed session.
@@ -779,10 +798,10 @@ async def end_interview(session_id: str, db: Session = Depends(get_db)):
 
 @app.post("/submit_answer")
 async def submit_answer(
-    background_tasks: BackgroundTasks,
     session_id: str = Form(...),
     audio: UploadFile = File(...),
     db: Session = Depends(get_db),
+    _user: dict = Depends(get_current_user),
 ):
     record = db.query(SessionRecord).filter(SessionRecord.session_id == session_id).first()
     if not record:

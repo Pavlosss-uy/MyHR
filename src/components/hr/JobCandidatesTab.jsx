@@ -1,9 +1,8 @@
 import { useState, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import CandidateCard from "@/components/hr/CandidateCard";
 import MatchAnalysisDrawer from "@/components/hr/MatchAnalysisDrawer";
-import { uploadCVs, getCandidates, inviteToInterview } from "@/lib/interviewApi";
+import { uploadCVs, getCandidates, inviteToInterview, deleteCandidate, updateCandidateStatus } from "@/lib/interviewApi";
 import { useToast } from "@/hooks/use-toast";
 import {
     Upload,
@@ -29,15 +28,13 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
     const [sortBy, setSortBy] = useState("matchScore");
     const [statusFilter, setStatusFilter] = useState("");
 
-    // Track which candidate is being invited + last generated link
     const [invitingId, setInvitingId] = useState("");
+    const [decliningId, setDecliningId] = useState("");
+    const [deletingId, setDeletingId] = useState("");
     const [lastInviteLink, setLastInviteLink] = useState({ name: "", link: "" });
 
-    // Drawer state
     const [drawerCandidate, setDrawerCandidate] = useState(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
-
-    // Drag-and-drop state
     const [isDragging, setIsDragging] = useState(false);
 
     const fetchCandidates = useCallback(async () => {
@@ -53,15 +50,12 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
         }
     }, [jobId, sortBy, statusFilter, toast]);
 
-    // Load on first render or when sort/filter changes
     useState(() => { fetchCandidates(); }, [fetchCandidates]);
 
     const handleUpload = async (files) => {
         if (!files || files.length === 0) return;
-
         setUploading(true);
         setUploadProgress(`Processing ${files.length} file(s)...`);
-
         try {
             const result = await uploadCVs(jobId, files);
             const msg = `${result.processed} CV(s) processed` + (result.failed > 0 ? `, ${result.failed} failed` : "");
@@ -76,9 +70,7 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
         }
     };
 
-    const handleFileInput = (e) => {
-        handleUpload(Array.from(e.target.files));
-    };
+    const handleFileInput = (e) => handleUpload(Array.from(e.target.files));
 
     const handleDrop = (e) => {
         e.preventDefault();
@@ -105,6 +97,39 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
             toast({ title: "Invitation Failed", description: err.message, variant: "destructive" });
         } finally {
             setInvitingId("");
+        }
+    };
+
+    const handleDecline = async (candidate) => {
+        setDecliningId(candidate.id);
+        try {
+            await updateCandidateStatus(jobId, candidate.id, "declined");
+            toast({ title: "Candidate Declined", description: `${candidate.name} has been marked as declined.` });
+            fetchCandidates();
+            if (drawerCandidate?.id === candidate.id) setDrawerOpen(false);
+        } catch (err) {
+            toast({ title: "Decline Failed", description: err.message, variant: "destructive" });
+        } finally {
+            setDecliningId("");
+        }
+    };
+
+    const handleDelete = async (candidate) => {
+        const confirmed = window.confirm(
+            `Permanently delete ${candidate.name}? This will remove their CV and any pending invitation. This cannot be undone.`
+        );
+        if (!confirmed) return;
+
+        setDeletingId(candidate.id);
+        try {
+            await deleteCandidate(jobId, candidate.id);
+            toast({ title: "Candidate Deleted", description: `${candidate.name} has been removed.` });
+            setCandidates((prev) => prev.filter((c) => c.id !== candidate.id));
+            if (drawerCandidate?.id === candidate.id) setDrawerOpen(false);
+        } catch (err) {
+            toast({ title: "Delete Failed", description: err.message, variant: "destructive" });
+        } finally {
+            setDeletingId("");
         }
     };
 
@@ -172,7 +197,6 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
                     </div>
 
                     <div className="flex items-center gap-2">
-                        {/* Sort */}
                         <div className="flex items-center gap-1.5">
                             <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" />
                             <select
@@ -186,7 +210,6 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
                             </select>
                         </div>
 
-                        {/* Filter */}
                         <div className="flex items-center gap-1.5">
                             <Filter className="w-3.5 h-3.5 text-muted-foreground" />
                             <select
@@ -198,6 +221,8 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
                                 <option value="not_invited">Not Invited</option>
                                 <option value="invited">Invited</option>
                                 <option value="completed">Completed</option>
+                                <option value="declined">Declined</option>
+                                <option value="shortlisted">Shortlisted</option>
                             </select>
                         </div>
 
@@ -208,7 +233,7 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
                 </div>
             )}
 
-            {/* Interview link banner — shown after invite */}
+            {/* Interview link banner */}
             {lastInviteLink.link && (
                 <div className="bg-mint/10 border border-mint/20 rounded-xl p-4 flex items-center gap-3">
                     <ExternalLink className="w-5 h-5 text-mint shrink-0" />
@@ -256,11 +281,12 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
                             candidate={candidate}
                             index={i}
                             inviting={invitingId === candidate.id}
-                            onViewDetails={(c) => {
-                                setDrawerCandidate(c);
-                                setDrawerOpen(true);
-                            }}
+                            declining={decliningId === candidate.id}
+                            deleting={deletingId === candidate.id}
+                            onViewDetails={(c) => { setDrawerCandidate(c); setDrawerOpen(true); }}
                             onInvite={handleInvite}
+                            onDecline={handleDecline}
+                            onDelete={handleDelete}
                         />
                     ))}
                 </div>
@@ -273,6 +299,8 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
                 isOpen={drawerOpen}
                 onClose={() => setDrawerOpen(false)}
                 onInvite={handleInvite}
+                onDecline={handleDecline}
+                declining={decliningId === drawerCandidate?.id}
             />
         </div>
     );

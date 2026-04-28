@@ -91,7 +91,7 @@ const App = () => (
                         <Route path="/request-access"            element={<RequestAccess />} />
                         <Route path="/invite/:token"             element={<AcceptInvitation />} />
                         <Route path="/candidate-interview/:token" element={<CandidateInterviewPortal />} />
-                        <Route path="/admin/requests"            element={<AdminPendingRequests />} />
+                        <Route path="/admin/requests"            element={<ProtectedRoute><AdminPendingRequests /></ProtectedRoute>} />
 
                         {/* OAuth callbacks (public — must complete before auth state settles) */}
                         <Route path="/auth/callback/google"   element={<GoogleAuthCallback />} />

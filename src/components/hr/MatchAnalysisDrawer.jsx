@@ -7,33 +7,58 @@ import {
     XCircle,
     AlertCircle,
     Send,
-    FileText,
     Brain,
     Star,
     Mic,
     BarChart3,
+    ThumbsDown,
+    Loader2,
 } from "lucide-react";
 
-const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite }) => {
+const statusBadge = {
+    not_invited: null,
+    invited:     { label: "Invitation Sent",  style: "bg-warning/10 text-warning border-warning/20" },
+    completed:   { label: "Interview Done",   style: "bg-mint/10 text-mint-dark border-mint/20" },
+    declined:    { label: "Declined",         style: "bg-destructive/10 text-destructive border-destructive/20" },
+    shortlisted: { label: "Shortlisted",      style: "bg-cobalt/10 text-cobalt border-cobalt/20" },
+    hired:       { label: "Hired",            style: "bg-mint/20 text-mint-dark border-mint/30" },
+    rejected:    { label: "Rejected",         style: "bg-destructive/10 text-destructive border-destructive/20" },
+};
+
+const MatchAnalysisDrawer = ({
+    candidate,
+    jobTitle,
+    isOpen,
+    onClose,
+    onInvite,
+    onDecline,
+    declining = false,
+}) => {
     if (!candidate) return null;
 
-    const { name, email, matchScore, matchDetails, cvSkills, interviewStatus, interviewScore, totalScore, interviewReport } = candidate;
+    const {
+        name, email, matchScore, matchDetails, interviewStatus,
+        interviewScore, totalScore, interviewReport,
+    } = candidate;
+
     const matched = matchDetails?.matched || [];
     const missing = matchDetails?.missing || [];
-    const extra = matchDetails?.extra || [];
+    const extra   = matchDetails?.extra   || [];
 
     const scoreColor = matchScore >= 75 ? "mint" : matchScore >= 50 ? "cobalt" : "destructive";
 
-    // Determine recommendation level
     const getRecommendation = () => {
         const score = totalScore || matchScore;
         if (score >= 85) return { label: "Strong Hire", color: "text-mint-dark bg-mint/10 border-mint/20" };
-        if (score >= 70) return { label: "Hire", color: "text-cobalt bg-cobalt/10 border-cobalt/20" };
-        if (score >= 55) return { label: "Consider", color: "text-warning bg-warning/10 border-warning/20" };
-        return { label: "No Hire", color: "text-destructive bg-destructive/10 border-destructive/20" };
+        if (score >= 70) return { label: "Hire",        color: "text-cobalt bg-cobalt/10 border-cobalt/20" };
+        if (score >= 55) return { label: "Consider",    color: "text-warning bg-warning/10 border-warning/20" };
+        return               { label: "No Hire",        color: "text-destructive bg-destructive/10 border-destructive/20" };
     };
 
     const rec = getRecommendation();
+    const statusInfo = statusBadge[interviewStatus];
+    const canDecline = interviewStatus === "not_invited" || interviewStatus === "invited";
+    const canInvite  = interviewStatus === "not_invited";
 
     return (
         <AnimatePresence>
@@ -59,13 +84,17 @@ const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite })
                         {/* Header */}
                         <div className="sticky top-0 bg-card/95 backdrop-blur-sm z-10 border-b border-border px-6 py-4 flex items-center justify-between">
                             <div>
-                                <h2 className="font-bold text-foreground text-lg">{name}</h2>
+                                <div className="flex items-center gap-2">
+                                    <h2 className="font-bold text-foreground text-lg">{name}</h2>
+                                    {statusInfo && (
+                                        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${statusInfo.style}`}>
+                                            {statusInfo.label}
+                                        </span>
+                                    )}
+                                </div>
                                 <p className="text-sm text-muted-foreground">{jobTitle || "Position"}</p>
                             </div>
-                            <button
-                                onClick={onClose}
-                                className="p-2 rounded-lg hover:bg-muted transition-colors"
-                            >
+                            <button onClick={onClose} className="p-2 rounded-lg hover:bg-muted transition-colors">
                                 <X className="w-5 h-5 text-muted-foreground" />
                             </button>
                         </div>
@@ -94,26 +123,19 @@ const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite })
 
                             {/* Contact */}
                             {email && (
-                                <div className="text-sm text-muted-foreground">
-                                    📧 {email}
-                                </div>
+                                <div className="text-sm text-muted-foreground">📧 {email}</div>
                             )}
 
                             {/* Matched Skills */}
                             <div>
                                 <div className="flex items-center gap-2 mb-3">
                                     <CheckCircle2 className="w-4 h-4 text-mint" />
-                                    <h3 className="text-sm font-semibold text-foreground">
-                                        Matched Skills ({matched.length})
-                                    </h3>
+                                    <h3 className="text-sm font-semibold text-foreground">Matched Skills ({matched.length})</h3>
                                 </div>
                                 {matched.length > 0 ? (
                                     <div className="flex flex-wrap gap-2">
                                         {matched.map((skill) => (
-                                            <span
-                                                key={skill}
-                                                className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-mint/10 text-mint-dark border border-mint/20"
-                                            >
+                                            <span key={skill} className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-mint/10 text-mint-dark border border-mint/20">
                                                 <CheckCircle2 className="w-3 h-3" />
                                                 {skill}
                                             </span>
@@ -128,17 +150,12 @@ const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite })
                             <div>
                                 <div className="flex items-center gap-2 mb-3">
                                     <XCircle className="w-4 h-4 text-destructive" />
-                                    <h3 className="text-sm font-semibold text-foreground">
-                                        Missing Skills ({missing.length})
-                                    </h3>
+                                    <h3 className="text-sm font-semibold text-foreground">Missing Skills ({missing.length})</h3>
                                 </div>
                                 {missing.length > 0 ? (
                                     <div className="flex flex-wrap gap-2">
                                         {missing.map((skill) => (
-                                            <span
-                                                key={skill}
-                                                className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive border border-destructive/20"
-                                            >
+                                            <span key={skill} className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-destructive/10 text-destructive border border-destructive/20">
                                                 <XCircle className="w-3 h-3" />
                                                 {skill}
                                             </span>
@@ -154,16 +171,11 @@ const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite })
                                 <div>
                                     <div className="flex items-center gap-2 mb-3">
                                         <Star className="w-4 h-4 text-cobalt-light" />
-                                        <h3 className="text-sm font-semibold text-foreground">
-                                            Bonus Skills ({extra.length})
-                                        </h3>
+                                        <h3 className="text-sm font-semibold text-foreground">Bonus Skills ({extra.length})</h3>
                                     </div>
                                     <div className="flex flex-wrap gap-2">
                                         {extra.map((skill) => (
-                                            <span
-                                                key={skill}
-                                                className="text-sm px-3 py-1.5 rounded-lg bg-cobalt/10 text-cobalt border border-cobalt/20"
-                                            >
+                                            <span key={skill} className="text-sm px-3 py-1.5 rounded-lg bg-cobalt/10 text-cobalt border border-cobalt/20">
                                                 {skill}
                                             </span>
                                         ))}
@@ -171,7 +183,7 @@ const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite })
                                 </div>
                             )}
 
-                            {/* Interview Report (if completed) */}
+                            {/* Interview Report */}
                             {interviewStatus === "completed" && interviewReport && Object.keys(interviewReport).length > 0 && (
                                 <div className="space-y-3">
                                     <div className="flex items-center gap-2">
@@ -180,9 +192,7 @@ const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite })
                                     </div>
 
                                     {interviewReport.summary && (
-                                        <p className="text-sm text-muted-foreground leading-relaxed">
-                                            {interviewReport.summary}
-                                        </p>
+                                        <p className="text-sm text-muted-foreground leading-relaxed">{interviewReport.summary}</p>
                                     )}
 
                                     {interviewReport.strengths?.length > 0 && (
@@ -233,24 +243,36 @@ const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite })
                             )}
 
                             {/* Actions */}
-                            <div className="pt-2 border-t border-border">
-                                {interviewStatus === "not_invited" && (
+                            <div className="pt-2 border-t border-border space-y-2">
+                                {canInvite && (
                                     <Button
                                         variant="hero"
                                         className="w-full h-11"
-                                        onClick={() => {
-                                            onInvite?.(candidate);
-                                            onClose();
-                                        }}
+                                        onClick={() => { onInvite?.(candidate); onClose(); }}
                                     >
                                         <Send className="w-4 h-4 mr-2" />
                                         Invite to AI Interview
                                     </Button>
                                 )}
+
                                 {interviewStatus === "invited" && (
                                     <Button variant="outline" className="w-full h-11" disabled>
                                         <Send className="w-4 h-4 mr-2" />
                                         Interview Invitation Sent
+                                    </Button>
+                                )}
+
+                                {canDecline && (
+                                    <Button
+                                        variant="outline"
+                                        className="w-full h-11 text-warning border-warning/30 hover:bg-warning/10"
+                                        onClick={() => { onDecline?.(candidate); onClose(); }}
+                                        disabled={declining}
+                                    >
+                                        {declining
+                                            ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Declining…</>
+                                            : <><ThumbsDown className="w-4 h-4 mr-2" />Decline Candidate</>
+                                        }
                                     </Button>
                                 )}
                             </div>

@@ -275,14 +275,47 @@ export async function inviteToInterview(jobId, candidateId) {
     return apiFetch(`/jobs/${jobId}/invite-interview/${candidateId}`, { method: "POST" });
 }
 
+/** Permanently delete a candidate and their CV file */
+export async function deleteCandidate(jobId, candidateId) {
+    return apiFetch(`/jobs/${jobId}/candidates/${candidateId}`, { method: "DELETE" });
+}
+
+/**
+ * Update a candidate's interview status.
+ * @param {string} status - one of: declined | shortlisted | hired | rejected | not_invited
+ */
+export async function updateCandidateStatus(jobId, candidateId, status) {
+    const form = new FormData();
+    form.append("status", status);
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/jobs/${jobId}/candidates/${candidateId}/status`, {
+        method: "PATCH",
+        body: form,
+        headers: authHeaders,
+    });
+    if (!res.ok) {
+        const text = await res.text();
+        try {
+            const body = JSON.parse(text);
+            throw new Error(body.detail ?? "Status update failed");
+        } catch (e) {
+            if (e instanceof Error) throw e;
+            throw new Error(text || "Status update failed");
+        }
+    }
+    return res.json();
+}
+
 // ─── User Role ───────────────────────────────────────────────────────────────
 
 /** Register a user's portal role (candidate | hr) in Firestore */
-export async function registerUserRole(uid, role) {
+export async function registerUserRole(uid, role, idToken = null) {
     const form = new FormData();
     form.append("uid", uid);
     form.append("role", role);
-    const authHeaders = await getAuthHeaders();
+    const authHeaders = idToken
+        ? { Authorization: `Bearer ${idToken}` }
+        : await getAuthHeaders();
     const res = await fetch(`${API_BASE}/user/role`, {
         method: "POST",
         body: form,

@@ -3,15 +3,16 @@ FastAPI router for all B2B / HR-facing endpoints.
 Covers: Request Access, Admin Actions, Job Management,
 Batch CV Upload, Candidate Ranking, Interview Invitations.
 """
+import hashlib
+import io
 import os
 import re
-import io
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import PyPDF2
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from firestore_client import (
     db,
@@ -19,7 +20,6 @@ from firestore_client import (
     get_doc,
     set_doc,
     query_collection,
-    add_subcollection_doc,
     get_subcollection_docs,
     set_subcollection_doc,
 )
@@ -33,22 +33,24 @@ from cv_parser import (
 )
 from s3_utils import upload_file_to_s3
 from models.registry import registry
+from auth_middleware import get_current_user, require_admin, ADMIN_UIDS
 
 from firebase_admin import firestore as fs_admin
 
 hr_router = APIRouter(tags=["HR / B2B"])
 
-# ── Admin notification email ─────────────────────────────────────────────────
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "myhr2026@gmail.com")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Email helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _send_email(to: str, subject: str, html: str):
-    """Send an email via Resend. Fails silently if not configured."""
+    """Send an email via Resend. Raises RuntimeError if not configured or on failure."""
     api_key = os.getenv("RESEND_API_KEY", "")
     if not api_key:
-        print(f"⚠️  RESEND_API_KEY not set — email NOT sent to {to}")
-        print(f"   Subject: {subject}")
-        return
+        raise RuntimeError(f"RESEND_API_KEY not set — cannot send email to {to}")
     try:
         import resend
         resend.api_key = api_key
@@ -60,11 +62,19 @@ def _send_email(to: str, subject: str, html: str):
         })
         print(f"✅ Email sent to {to}: {subject}")
     except Exception as e:
-        print(f"❌ Email send failed to {to}: {e}")
+        raise RuntimeError(f"Email delivery failed to {to}: {e}") from e
+
+
+def _try_send_email(to: str, subject: str, html: str):
+    """Non-critical email send — logs failure but does not raise."""
+    try:
+        _send_email(to, subject, html)
+    except RuntimeError as e:
+        print(f"⚠️  {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Helpers
+#  General helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 FREE_EMAIL_DOMAINS = {
@@ -75,7 +85,6 @@ FREE_EMAIL_DOMAINS = {
 
 
 def _is_corporate_email(email: str) -> bool:
-    """Reject free email providers — require corporate domain."""
     domain = email.split("@")[-1].lower()
     return domain not in FREE_EMAIL_DOMAINS
 
@@ -85,10 +94,8 @@ def _generate_token() -> str:
 
 
 def _is_valid_cv_text(text: str) -> bool:
-    """Rule-based CV/resume content validation (from server.py)."""
     if not text or len(text.strip()) < 100:
         return False
-
     text_lower = text.lower()
     cv_sections = [
         "education", "experience", "work experience", "employment history",
@@ -97,7 +104,6 @@ def _is_valid_cv_text(text: str) -> bool:
         "internship", "volunteer", "languages", "awards",
     ]
     section_hits = sum(1 for kw in cv_sections if kw in text_lower)
-
     negative_keywords = [
         "invoice", "purchase order", "receipt", "payment due", "tax return",
         "table of contents", "bibliography", "dear sir", "dear madam",
@@ -106,9 +112,66 @@ def _is_valid_cv_text(text: str) -> bool:
     negative_hits = sum(1 for kw in negative_keywords if kw in text_lower)
     if negative_hits >= 2:
         return False
-
     date_hits = len(re.findall(r'\b(19|20)\d{2}\b', text))
     return section_hits >= 2 or (section_hits >= 1 and date_hits >= 2)
+
+
+def _get_base_url() -> str:
+    """Return MYHR_BASE_URL or raise HTTP 503 if not set."""
+    url = os.getenv("MYHR_BASE_URL", "")
+    if not url:
+        raise HTTPException(
+            status_code=503,
+            detail="MYHR_BASE_URL is not configured. Cannot generate invitation links.",
+        )
+    return url
+
+
+def _get_user_company_id(user_uid: str) -> Optional[str]:
+    """Return the companyId the user is an admin of, or None."""
+    if user_uid in ADMIN_UIDS:
+        return None  # Platform admins are not scoped to a single company
+    companies = query_collection(
+        "Companies",
+        filters=[("adminUIDs", "array-contains", user_uid)],
+        limit=1,
+    )
+    return companies[0]["id"] if companies else None
+
+
+def _verify_job_ownership(job: dict, user_uid: str):
+    """Raise HTTP 403 if the user doesn't belong to the job's company."""
+    if user_uid in ADMIN_UIDS:
+        return  # Platform admins bypass ownership checks
+    company_id = _get_user_company_id(user_uid)
+    if not company_id or company_id != job.get("companyId"):
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+
+def _read_local_cv(cv_url: str) -> str:
+    """Read and extract full CV text from a local file path. Returns '' on failure."""
+    if not cv_url:
+        return ""
+    local_path = cv_url.lstrip("/")
+    if not os.path.exists(local_path):
+        return ""
+    try:
+        with open(local_path, "rb") as f:
+            content = f.read()
+        try:
+            reader = PyPDF2.PdfReader(io.BytesIO(content))
+            text = ""
+            for page in reader.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    text += extracted + "\n"
+            if text.strip():
+                return text
+        except Exception:
+            pass
+        return content.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -122,24 +185,12 @@ async def request_access(
     contactName: str = Form(...),
     contactEmail: str = Form(...),
 ):
-    """
-    Submit a request for enterprise access.
-    Stores in Firestore PendingRequests collection.
-    """
+    """Submit a request for enterprise access. Public endpoint."""
     email = contactEmail.strip().lower()
 
     if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email):
         raise HTTPException(status_code=422, detail="Invalid email address.")
 
-    # NOTE: Corporate email validation disabled for testing.
-    # Uncomment for production:
-    # if not _is_corporate_email(email):
-    #     raise HTTPException(
-    #         status_code=422,
-    #         detail="Please use your corporate email address. Free email providers are not accepted.",
-    #     )
-
-    # Check for duplicate pending requests
     existing = query_collection(
         "PendingRequests",
         filters=[("contactEmail", "==", email), ("status", "==", "pending")],
@@ -162,9 +213,8 @@ async def request_access(
         "notes": "",
     })
 
-    # Notify admin about new request
-    base = os.getenv("MYHR_BASE_URL", "http://localhost:8080")
-    _send_email(
+    base = os.getenv("MYHR_BASE_URL", "http://localhost:5173")
+    _try_send_email(
         to=ADMIN_EMAIL,
         subject=f"🏢 New Access Request: {companyName.strip()}",
         html=f"""
@@ -185,33 +235,25 @@ async def request_access(
 
 
 @hr_router.get("/admin/pending-requests")
-async def list_pending_requests():
-    """List all pending access requests (admin only)."""
+async def list_pending_requests(_user: dict = Depends(require_admin)):
+    """List all pending access requests. Requires platform admin."""
     requests = query_collection(
         "PendingRequests",
         filters=[("status", "==", "pending")],
     )
-    # Sort client-side to avoid requiring a Firestore composite index
     requests.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
     return {"requests": requests}
 
 
 @hr_router.post("/admin/accept-request/{request_id}")
-async def accept_request(request_id: str):
-    """
-    Accept a pending request:
-    1. Update status to 'accepted'
-    2. Create a Company document
-    3. Generate a time-limited invitation token
-    4. Return the invitation link
-    """
+async def accept_request(request_id: str, _user: dict = Depends(require_admin)):
+    """Accept a pending access request and send invitation email. Requires platform admin."""
     req = get_doc("PendingRequests", request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Request not found.")
     if req.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Request already processed.")
 
-    # Create company
     company_id = add_doc("Companies", {
         "name": req["companyName"],
         "size": req["companySize"],
@@ -221,7 +263,6 @@ async def accept_request(request_id: str):
         "settings": {"maxJobs": 10, "maxCandidatesPerJob": 100},
     })
 
-    # Generate invitation token (72h expiry)
     token = _generate_token()
     set_doc("InvitationTokens", token, {
         "companyId": company_id,
@@ -234,17 +275,15 @@ async def accept_request(request_id: str):
         "createdAt": fs_admin.SERVER_TIMESTAMP,
     })
 
-    # Update the request
     set_doc("PendingRequests", request_id, {
         "status": "accepted",
         "reviewedAt": fs_admin.SERVER_TIMESTAMP,
     })
 
-    base_url = os.getenv("MYHR_BASE_URL", "http://localhost:5173")
+    base_url = _get_base_url()
     invitation_link = f"{base_url}/invite/{token}"
 
-    # Send invitation email to the requester
-    _send_email(
+    _try_send_email(
         to=req["contactEmail"],
         subject="🎉 Welcome to MyHR Enterprise — Your Invitation",
         html=f"""
@@ -275,8 +314,12 @@ async def accept_request(request_id: str):
 
 
 @hr_router.post("/admin/reject-request/{request_id}")
-async def reject_request(request_id: str, notes: str = Form("")):
-    """Reject a pending access request."""
+async def reject_request(
+    request_id: str,
+    notes: str = Form(""),
+    _user: dict = Depends(require_admin),
+):
+    """Reject a pending access request. Requires platform admin."""
     req = get_doc("PendingRequests", request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Request not found.")
@@ -292,7 +335,7 @@ async def reject_request(request_id: str, notes: str = Form("")):
 
 @hr_router.get("/invite/{token}/validate")
 async def validate_invitation(token: str):
-    """Validate an invitation token. Used by the AcceptInvitation page."""
+    """Validate an invitation token. Public — used by AcceptInvitation page."""
     doc = get_doc("InvitationTokens", token)
     if not doc:
         raise HTTPException(status_code=404, detail="Invalid invitation link.")
@@ -302,11 +345,7 @@ async def validate_invitation(token: str):
 
     expires_at = doc.get("expiresAt")
     if expires_at:
-        # Handle both datetime objects and Firestore timestamps
-        if hasattr(expires_at, 'timestamp'):
-            exp_ts = expires_at.timestamp()
-        else:
-            exp_ts = expires_at
+        exp_ts = expires_at.timestamp() if hasattr(expires_at, "timestamp") else expires_at
         if datetime.now(timezone.utc).timestamp() > exp_ts:
             raise HTTPException(status_code=410, detail="This invitation has expired.")
 
@@ -325,7 +364,7 @@ async def validate_invitation(token: str):
 async def accept_invitation(token: str, uid: str = Form(...)):
     """
     Mark an invitation as used and link the user to the company.
-    Called after the user creates their Firebase account.
+    Public — called immediately after Firebase account creation before auth token is available.
     """
     doc = get_doc("InvitationTokens", token)
     if not doc:
@@ -334,17 +373,11 @@ async def accept_invitation(token: str, uid: str = Form(...)):
     if doc.get("usedAt"):
         raise HTTPException(status_code=410, detail="Already used.")
 
-    # Mark as used
-    set_doc("InvitationTokens", token, {
-        "usedAt": fs_admin.SERVER_TIMESTAMP,
-    })
+    set_doc("InvitationTokens", token, {"usedAt": fs_admin.SERVER_TIMESTAMP})
 
-    # Add user to company admins
     if doc.get("companyId"):
         company_ref = db.collection("Companies").document(doc["companyId"])
-        company_ref.update({
-            "adminUIDs": fs_admin.ArrayUnion([uid]),
-        })
+        company_ref.update({"adminUIDs": fs_admin.ArrayUnion([uid])})
 
     return {"status": "accepted", "companyId": doc.get("companyId")}
 
@@ -358,17 +391,21 @@ async def create_job(
     title: str = Form(...),
     description: str = Form(...),
     companyId: str = Form(""),
+    user: dict = Depends(get_current_user),
 ):
     """Create a new job posting. Extracts skills from the JD."""
+    user_company_id = _get_user_company_id(user["uid"])
+    effective_company_id = user_company_id or companyId
+
     jd_skills = extract_skills_keyword(description)
 
     job_id = add_doc("Jobs", {
-        "companyId": companyId,
+        "companyId": effective_company_id,
         "title": title.strip(),
         "description": description.strip(),
         "extractedSkills": jd_skills,
         "status": "active",
-        "createdBy": "",
+        "createdBy": user["uid"],
         "updatedAt": fs_admin.SERVER_TIMESTAMP,
         "stats": {
             "totalCandidates": 0,
@@ -385,15 +422,22 @@ async def create_job(
 
 
 @hr_router.get("/jobs")
-async def list_jobs(companyId: str = Query("")):
-    """List all jobs, optionally filtered by company."""
-    filters = []
-    if companyId:
-        filters.append(("companyId", "==", companyId))
+async def list_jobs(
+    companyId: str = Query(""),
+    user: dict = Depends(get_current_user),
+):
+    """List jobs scoped to the authenticated user's company."""
+    if user["uid"] in ADMIN_UIDS:
+        filters = [("companyId", "==", companyId)] if companyId else None
+    else:
+        user_company_id = _get_user_company_id(user["uid"])
+        if not user_company_id:
+            return {"jobs": []}
+        filters = [("companyId", "==", user_company_id)]
 
     jobs = query_collection(
         "Jobs",
-        filters=filters if filters else None,
+        filters=filters,
         order_by="createdAt",
         order_dir="DESCENDING",
     )
@@ -401,11 +445,12 @@ async def list_jobs(companyId: str = Query("")):
 
 
 @hr_router.get("/jobs/{job_id}")
-async def get_job(job_id: str):
+async def get_job(job_id: str, user: dict = Depends(get_current_user)):
     """Get a single job with all details."""
     job = get_doc("Jobs", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
+    _verify_job_ownership(job, user["uid"])
     return job
 
 
@@ -413,20 +458,16 @@ async def get_job(job_id: str):
 async def upload_cvs(
     job_id: str,
     files: list[UploadFile] = File(...),
+    user: dict = Depends(get_current_user),
 ):
     """
     Batch upload CVs for a specific job.
-    For each file:
-      1. Extract text (PDF/DOCX)
-      2. Validate as a CV
-      3. Upload to S3
-      4. Extract candidate info
-      5. Calculate match score
-      6. Create Candidate document
+    Deduplicates by SHA-256 file hash and extracted email before creating new candidates.
     """
     job = get_doc("Jobs", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
+    _verify_job_ownership(job, user["uid"])
 
     jd_text = job.get("description", "")
     jd_skills = job.get("extractedSkills", [])
@@ -434,12 +475,16 @@ async def upload_cvs(
     processed = []
     failed = []
 
-    # Load skill matcher once for all CVs
     try:
         skill_matcher = registry.load_skill_matcher()
     except Exception as e:
         print(f"Skill matcher load warning: {e}")
         skill_matcher = None
+
+    # Pre-load existing candidates for deduplication
+    existing_candidates = get_subcollection_docs("Jobs", job_id, "Candidates")
+    existing_hashes: dict = {c.get("cvHash"): c["id"] for c in existing_candidates if c.get("cvHash")}
+    existing_emails: dict = {c.get("email"): c["id"] for c in existing_candidates if c.get("email")}
 
     for file in files:
         try:
@@ -447,18 +492,63 @@ async def upload_cvs(
             content_type = file.content_type or "application/pdf"
             filename = file.filename or "unnamed.pdf"
 
-            # 1. Extract text
+            cv_hash = hashlib.sha256(file_bytes).hexdigest()
             cv_text = extract_text(file_bytes, content_type)
 
-            # 2. Validate
             if not _is_valid_cv_text(cv_text):
                 failed.append({"filename": filename, "reason": "Not a valid CV"})
                 continue
 
-            # 3. Generate candidate ID
-            candidate_id = uuid.uuid4().hex[:16]
+            email = extract_email(cv_text) or ""
 
-            # 4. Upload to S3
+            # Deduplication: update existing candidate instead of creating a new one
+            existing_id = existing_hashes.get(cv_hash) or (existing_emails.get(email) if email else None)
+            if existing_id:
+                name = extract_candidate_name(cv_text, filename)
+                cv_skills = extract_skills_keyword(cv_text)
+                match_score = 50.0
+                if skill_matcher and jd_text and cv_text:
+                    try:
+                        raw = skill_matcher.calculate_match_score(cv_text, jd_text)
+                        if isinstance(raw, (int, float)):
+                            match_score = float(raw)
+                            match_score = match_score if match_score <= 1.0 else match_score / 100.0
+                            match_score = round(match_score * 100, 1)
+                    except Exception as e:
+                        print(f"Match score warning for {filename}: {e}")
+
+                match_details = compute_match_details(cv_skills, jd_skills)
+                await file.seek(0)
+                try:
+                    s3_url = upload_file_to_s3(file, prefix=f"cvs/{job_id}/{existing_id}")
+                except Exception:
+                    s3_url = ""
+
+                set_subcollection_doc("Jobs", job_id, "Candidates", existing_id, {
+                    "name": name,
+                    "email": email,
+                    "cvUrl": s3_url or "",
+                    "cvText": cv_text[:10000],
+                    "cvHash": cv_hash,
+                    "cvSkills": cv_skills,
+                    "matchScore": match_score,
+                    "matchDetails": match_details,
+                    "totalScore": match_score,
+                    "updatedAt": fs_admin.SERVER_TIMESTAMP,
+                })
+                processed.append({
+                    "candidateId": existing_id,
+                    "name": name,
+                    "email": email,
+                    "matchScore": match_score,
+                    "matchDetails": match_details,
+                    "cvSkills": cv_skills,
+                    "updated": True,
+                })
+                continue
+
+            # New candidate
+            candidate_id = uuid.uuid4().hex[:16]
             await file.seek(0)
             try:
                 s3_url = upload_file_to_s3(file, prefix=f"cvs/{job_id}/{candidate_id}")
@@ -466,34 +556,30 @@ async def upload_cvs(
                 print(f"S3 upload warning for {filename}: {e}")
                 s3_url = ""
 
-            # 5. Extract candidate info
             name = extract_candidate_name(cv_text, filename)
-            email = extract_email(cv_text) or ""
             phone = extract_phone(cv_text) or ""
             cv_skills = extract_skills_keyword(cv_text)
 
-            # 6. Calculate match score
-            match_score = 50.0  # default
+            match_score = 50.0
             if skill_matcher and jd_text and cv_text:
                 try:
-                    raw_score = skill_matcher.calculate_match_score(cv_text, jd_text)
-                    if isinstance(raw_score, (int, float)):
-                        match_score = float(raw_score)
+                    raw = skill_matcher.calculate_match_score(cv_text, jd_text)
+                    if isinstance(raw, (int, float)):
+                        match_score = float(raw)
                         match_score = match_score if match_score <= 1.0 else match_score / 100.0
                         match_score = round(match_score * 100, 1)
                 except Exception as e:
                     print(f"Match score warning for {filename}: {e}")
 
-            # 7. Compute match details
             match_details = compute_match_details(cv_skills, jd_skills)
 
-            # 8. Create candidate document
-            candidate_data = {
+            set_subcollection_doc("Jobs", job_id, "Candidates", candidate_id, {
                 "name": name,
                 "email": email,
                 "phone": phone,
                 "cvUrl": s3_url,
-                "cvText": cv_text[:5000],  # truncate for storage
+                "cvText": cv_text[:10000],
+                "cvHash": cv_hash,
                 "cvSkills": cv_skills,
                 "matchScore": match_score,
                 "matchDetails": match_details,
@@ -501,13 +587,17 @@ async def upload_cvs(
                 "interviewSessionId": "",
                 "interviewScore": 0,
                 "interviewReport": {},
-                "totalScore": match_score,  # initially same as matchScore
+                "totalScore": match_score,
                 "invitationToken": "",
                 "invitationSentAt": None,
                 "updatedAt": fs_admin.SERVER_TIMESTAMP,
-            }
+            })
 
-            set_subcollection_doc("Jobs", job_id, "Candidates", candidate_id, candidate_data)
+            # Track for dedup within the same batch
+            if cv_hash:
+                existing_hashes[cv_hash] = candidate_id
+            if email:
+                existing_emails[email] = candidate_id
 
             processed.append({
                 "candidateId": candidate_id,
@@ -519,10 +609,7 @@ async def upload_cvs(
             })
 
         except Exception as e:
-            failed.append({
-                "filename": file.filename or "unknown",
-                "reason": str(e),
-            })
+            failed.append({"filename": file.filename or "unknown", "reason": str(e)})
 
     # Update job stats
     total = len(processed) + job.get("stats", {}).get("totalCandidates", 0)
@@ -552,11 +639,14 @@ async def list_candidates(
     job_id: str,
     sort_by: str = Query("matchScore"),
     status: str = Query(""),
+    user: dict = Depends(get_current_user),
 ):
-    """
-    List candidates for a job, sorted by match score.
-    Optional status filter: not_invited, invited, completed
-    """
+    """List candidates for a job, sorted and optionally filtered by status."""
+    job = get_doc("Jobs", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    _verify_job_ownership(job, user["uid"])
+
     candidates = get_subcollection_docs(
         "Jobs", job_id, "Candidates",
         order_by="matchScore",
@@ -566,7 +656,6 @@ async def list_candidates(
     if status:
         candidates = [c for c in candidates if c.get("interviewStatus") == status]
 
-    # Re-sort if different sort requested
     if sort_by == "totalScore":
         candidates.sort(key=lambda c: c.get("totalScore", 0), reverse=True)
     elif sort_by == "name":
@@ -576,12 +665,18 @@ async def list_candidates(
 
 
 @hr_router.get("/jobs/{job_id}/candidates/{candidate_id}")
-async def get_candidate(job_id: str, candidate_id: str):
+async def get_candidate(
+    job_id: str,
+    candidate_id: str,
+    user: dict = Depends(get_current_user),
+):
     """Get full candidate details including interview report."""
-    ref = (
-        db.collection("Jobs").document(job_id)
-        .collection("Candidates").document(candidate_id)
-    )
+    job = get_doc("Jobs", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    _verify_job_ownership(job, user["uid"])
+
+    ref = db.collection("Jobs").document(job_id).collection("Candidates").document(candidate_id)
     snap = ref.get()
     if not snap.exists:
         raise HTTPException(status_code=404, detail="Candidate not found.")
@@ -591,15 +686,113 @@ async def get_candidate(job_id: str, candidate_id: str):
     return data
 
 
+@hr_router.delete("/jobs/{job_id}/candidates/{candidate_id}")
+async def delete_candidate(
+    job_id: str,
+    candidate_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Permanently delete a candidate.
+    Removes the Firestore doc, local CV file, and invalidates any outstanding invitation token.
+    """
+    job = get_doc("Jobs", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    _verify_job_ownership(job, user["uid"])
+
+    ref = db.collection("Jobs").document(job_id).collection("Candidates").document(candidate_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+
+    candidate = snap.to_dict()
+
+    # Delete local CV file
+    cv_url = candidate.get("cvUrl", "")
+    if cv_url:
+        local_path = cv_url.lstrip("/")
+        if os.path.exists(local_path):
+            try:
+                os.remove(local_path)
+            except OSError as e:
+                print(f"Warning: could not delete CV file {local_path}: {e}")
+
+    # Invalidate outstanding invitation token
+    invitation_token = candidate.get("invitationToken", "")
+    if invitation_token:
+        token_doc = get_doc("InvitationTokens", invitation_token)
+        if token_doc and not token_doc.get("usedAt"):
+            set_doc("InvitationTokens", invitation_token, {
+                "usedAt": fs_admin.SERVER_TIMESTAMP,
+                "invalidatedReason": "candidate_deleted",
+            })
+
+    ref.delete()
+
+    # Decrement job stats
+    stats = job.get("stats", {})
+    set_doc("Jobs", job_id, {
+        "stats": {
+            **stats,
+            "totalCandidates": max(0, stats.get("totalCandidates", 1) - 1),
+        },
+        "updatedAt": fs_admin.SERVER_TIMESTAMP,
+    })
+
+    return {"status": "deleted", "candidateId": candidate_id}
+
+
+@hr_router.patch("/jobs/{job_id}/candidates/{candidate_id}/status")
+async def update_candidate_status(
+    job_id: str,
+    candidate_id: str,
+    status: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    """
+    Update a candidate's interview status.
+    Valid values: declined | shortlisted | hired | rejected | not_invited | invited | completed
+    """
+    valid_statuses = {"declined", "shortlisted", "hired", "rejected", "not_invited", "invited", "completed"}
+    if status not in valid_statuses:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid status. Must be one of: {', '.join(sorted(valid_statuses))}",
+        )
+
+    job = get_doc("Jobs", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    _verify_job_ownership(job, user["uid"])
+
+    ref = db.collection("Jobs").document(job_id).collection("Candidates").document(candidate_id)
+    if not ref.get().exists:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+
+    ref.update({
+        "interviewStatus": status,
+        "updatedAt": fs_admin.SERVER_TIMESTAMP,
+    })
+
+    return {"status": "updated", "candidateId": candidate_id, "interviewStatus": status}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  MODULE: User Roles
 # ─────────────────────────────────────────────────────────────────────────────
 
 @hr_router.post("/user/role")
-async def register_user_role(uid: str = Form(...), role: str = Form(...)):
-    """Register a user's portal role (candidate | hr) in Firestore Users collection."""
+async def register_user_role(
+    uid: str = Form(...),
+    role: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    """Register a user's portal role in Firestore Users collection."""
     if role not in ("hr", "candidate"):
         raise HTTPException(status_code=422, detail="Invalid role. Must be 'hr' or 'candidate'.")
+    if user["uid"] != uid and user["uid"] not in ADMIN_UIDS:
+        raise HTTPException(status_code=403, detail="Cannot set role for another user.")
     set_doc("Users", uid, {"role": role, "uid": uid})
     return {"status": "ok", "role": role}
 
@@ -607,12 +800,9 @@ async def register_user_role(uid: str = Form(...), role: str = Form(...)):
 @hr_router.get("/user/role/{uid}")
 async def get_user_role(uid: str):
     """
-    Return a user's portal role.
-    HR: UID appears in at least one Company's adminUIDs.
-    Candidate: registered in Users collection with role=candidate.
-    Fallback: 'candidate'.
+    Return a user's portal role. Public — needed during the auth flow
+    before the client has a chance to register the role.
     """
-    # HR check — UID in any company's adminUIDs array
     companies = query_collection(
         "Companies",
         filters=[("adminUIDs", "array-contains", uid)],
@@ -621,7 +811,6 @@ async def get_user_role(uid: str):
     if companies:
         return {"role": "hr"}
 
-    # Explicit Users doc
     user_doc = get_doc("Users", uid)
     if user_doc:
         return {"role": user_doc.get("role", "candidate")}
@@ -634,19 +823,21 @@ async def get_user_role(uid: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @hr_router.post("/jobs/{job_id}/invite-interview/{candidate_id}")
-async def invite_to_interview(job_id: str, candidate_id: str):
+async def invite_to_interview(
+    job_id: str,
+    candidate_id: str,
+    user: dict = Depends(get_current_user),
+):
     """
     Invite a candidate to an AI interview.
-    Generates a unique token and (conceptually) sends an email.
+    Returns HTTP 503 if email delivery fails so the caller knows the invite was not sent.
     """
     job = get_doc("Jobs", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
+    _verify_job_ownership(job, user["uid"])
 
-    ref = (
-        db.collection("Jobs").document(job_id)
-        .collection("Candidates").document(candidate_id)
-    )
+    ref = db.collection("Jobs").document(job_id).collection("Candidates").document(candidate_id)
     snap = ref.get()
     if not snap.exists:
         raise HTTPException(status_code=404, detail="Candidate not found.")
@@ -656,7 +847,6 @@ async def invite_to_interview(job_id: str, candidate_id: str):
     if candidate.get("interviewStatus") == "completed":
         raise HTTPException(status_code=400, detail="Interview already completed.")
 
-    # Generate interview token (7 day expiry)
     token = _generate_token()
     set_doc("InvitationTokens", token, {
         "companyId": job.get("companyId", ""),
@@ -669,7 +859,6 @@ async def invite_to_interview(job_id: str, candidate_id: str):
         "createdAt": fs_admin.SERVER_TIMESTAMP,
     })
 
-    # Update candidate status
     ref.update({
         "interviewStatus": "invited",
         "invitationToken": token,
@@ -677,33 +866,34 @@ async def invite_to_interview(job_id: str, candidate_id: str):
         "updatedAt": fs_admin.SERVER_TIMESTAMP,
     })
 
-    base_url = os.getenv("MYHR_BASE_URL", "http://localhost:5173")
+    base_url = _get_base_url()
     interview_link = f"{base_url}/candidate-interview/{token}"
-
     print(f"📧 Interview invitation for {candidate.get('name', 'Candidate')}: {interview_link}")
 
-    # Send invitation email to candidate
     if candidate.get("email"):
-        _send_email(
-            to=candidate["email"],
-            subject=f"You've been invited to interview — {job.get('title', 'Position')}",
-            html=f"""
-            <div style="font-family:sans-serif; max-width:480px; margin:0 auto; padding:24px;">
-                <h2 style="color:#1a1a2e;">Interview Invitation</h2>
-                <p style="color:#444; line-height:1.6;">Hi {candidate.get('name', 'there')},</p>
-                <p style="color:#444; line-height:1.6;">
-                    You have been invited to complete an AI-powered interview for the
-                    <strong>{job.get('title', 'position')}</strong> role.
-                </p>
-                <div style="text-align:center; margin:24px 0;">
-                    <a href="{interview_link}" style="display:inline-block; background:#3b82f6; color:white; padding:12px 32px; border-radius:8px; text-decoration:none; font-weight:600;">
-                        Start Your Interview
-                    </a>
+        try:
+            _send_email(
+                to=candidate["email"],
+                subject=f"You've been invited to interview — {job.get('title', 'Position')}",
+                html=f"""
+                <div style="font-family:sans-serif; max-width:480px; margin:0 auto; padding:24px;">
+                    <h2 style="color:#1a1a2e;">Interview Invitation</h2>
+                    <p style="color:#444; line-height:1.6;">Hi {candidate.get('name', 'there')},</p>
+                    <p style="color:#444; line-height:1.6;">
+                        You have been invited to complete an AI-powered interview for the
+                        <strong>{job.get('title', 'position')}</strong> role.
+                    </p>
+                    <div style="text-align:center; margin:24px 0;">
+                        <a href="{interview_link}" style="display:inline-block; background:#3b82f6; color:white; padding:12px 32px; border-radius:8px; text-decoration:none; font-weight:600;">
+                            Start Your Interview
+                        </a>
+                    </div>
+                    <p style="color:#999; font-size:12px;">This link expires in 7 days. The interview typically takes 10–15 minutes.</p>
                 </div>
-                <p style="color:#999; font-size:12px;">This link expires in 7 days. The interview typically takes 10–15 minutes.</p>
-            </div>
-            """,
-        )
+                """,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
     return {
         "status": "invited",
@@ -715,7 +905,7 @@ async def invite_to_interview(job_id: str, candidate_id: str):
 
 @hr_router.get("/candidate-interview/{token}/validate")
 async def validate_interview_token(token: str):
-    """Validate a candidate interview token. Called by the portal page."""
+    """Validate a candidate interview token. Public — called by the portal page."""
     doc = get_doc("InvitationTokens", token)
     if not doc:
         raise HTTPException(status_code=404, detail="Invalid interview link.")
@@ -728,14 +918,10 @@ async def validate_interview_token(token: str):
 
     expires_at = doc.get("expiresAt")
     if expires_at:
-        if hasattr(expires_at, 'timestamp'):
-            exp_ts = expires_at.timestamp()
-        else:
-            exp_ts = expires_at
+        exp_ts = expires_at.timestamp() if hasattr(expires_at, "timestamp") else expires_at
         if datetime.now(timezone.utc).timestamp() > exp_ts:
             raise HTTPException(status_code=410, detail="This interview invitation has expired.")
 
-    # Fetch job and candidate names for the welcome screen
     job = get_doc("Jobs", doc["jobId"]) if doc.get("jobId") else None
     company = get_doc("Companies", doc["companyId"]) if doc.get("companyId") else None
 
@@ -768,7 +954,7 @@ async def complete_candidate_interview(
 ):
     """
     Called when a candidate's AI interview finishes.
-    Saves the results back to the HR dashboard (Firestore), NO report to candidate.
+    Public endpoint — the token is the auth mechanism.
     """
     import json
 
@@ -782,25 +968,18 @@ async def complete_candidate_interview(
     if not job_id or not candidate_id:
         raise HTTPException(status_code=400, detail="Token missing job/candidate reference.")
 
-    # Parse report
     try:
         report_data = json.loads(interviewReport) if isinstance(interviewReport, str) else interviewReport
     except Exception:
         report_data = {}
 
-    # Update candidate with interview results
-    ref = (
-        db.collection("Jobs").document(job_id)
-        .collection("Candidates").document(candidate_id)
-    )
+    ref = db.collection("Jobs").document(job_id).collection("Candidates").document(candidate_id)
     snap = ref.get()
     if not snap.exists:
         raise HTTPException(status_code=404, detail="Candidate not found.")
 
     candidate = snap.to_dict()
     match_score = candidate.get("matchScore", 50)
-
-    # Compute total score: 40% CV match + 60% interview performance
     total_score = round(0.4 * match_score + 0.6 * interviewScore, 1)
 
     ref.update({
@@ -812,18 +991,13 @@ async def complete_candidate_interview(
         "updatedAt": fs_admin.SERVER_TIMESTAMP,
     })
 
-    # Mark token as used
     set_doc("InvitationTokens", token, {"usedAt": fs_admin.SERVER_TIMESTAMP})
 
-    # Update job stats
     job = get_doc("Jobs", job_id)
     if job:
         stats = job.get("stats", {})
         set_doc("Jobs", job_id, {
-            "stats": {
-                **stats,
-                "interviewed": stats.get("interviewed", 0) + 1,
-            },
+            "stats": {**stats, "interviewed": stats.get("interviewed", 0) + 1},
             "updatedAt": fs_admin.SERVER_TIMESTAMP,
         })
 
@@ -843,6 +1017,7 @@ def get_interview_context_for_token(token: str) -> dict:
     """
     Returns {"jd", "cv_text", "candidate_name", "job_title"} for a valid
     candidate_interview token.  Raises HTTPException on any error.
+    Fetches the full CV from disk when the stored text is near the storage limit.
     """
     doc = get_doc("InvitationTokens", token)
     if not doc or doc.get("type") != "candidate_interview":
@@ -853,7 +1028,6 @@ def get_interview_context_for_token(token: str) -> dict:
 
     expires_at = doc.get("expiresAt")
     if expires_at:
-        from datetime import datetime, timezone
         exp_ts = expires_at.timestamp() if hasattr(expires_at, "timestamp") else expires_at
         if datetime.now(timezone.utc).timestamp() > exp_ts:
             raise HTTPException(status_code=410, detail="This interview invitation has expired.")
@@ -873,9 +1047,17 @@ def get_interview_context_for_token(token: str) -> dict:
         if csnap.exists:
             candidate = csnap.to_dict()
 
+    cv_text = candidate.get("cvText", "") if candidate else ""
+
+    # If stored text is near the 10000-char limit, try fetching the full version from disk
+    if candidate and len(cv_text) >= 9900:
+        full_text = _read_local_cv(candidate.get("cvUrl", ""))
+        if full_text and len(full_text) > len(cv_text):
+            cv_text = full_text
+
     return {
         "jd": job["description"] if job else "",
-        "cv_text": candidate.get("cvText", "") if candidate else "",
+        "cv_text": cv_text,
         "candidate_name": candidate.get("name", "Candidate") if candidate else "Candidate",
         "job_title": job["title"] if job else "Position",
     }

@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import {
     createUserWithEmailAndPassword,
     updateProfile,
+    sendEmailVerification,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { validateInvitation, acceptInvitation, registerUserRole } from "@/lib/interviewApi";
@@ -53,14 +54,23 @@ const AcceptInvitation = () => {
             const credential = await createUserWithEmailAndPassword(auth, email, password);
             await updateProfile(credential.user, { displayName: name || email.split("@")[0] });
 
+            // Get token directly from the new credential before auth state settles
+            const idToken = await credential.user.getIdToken();
+
             // Link user to company and register role
             await acceptInvitation(token, credential.user.uid);
-            await registerUserRole(credential.user.uid, "hr");
+            await registerUserRole(credential.user.uid, "hr", idToken);
 
-            // Store role and redirect
+            // Send verification email — HR accounts must verify before accessing the dashboard
+            try {
+                await sendEmailVerification(credential.user);
+            } catch {
+                // Verification email is best-effort; don't block account creation
+            }
+
             sessionStorage.setItem("myhr_role", "hr");
             localStorage.setItem("myhr_role", "hr");
-            navigate("/hr/dashboard", { replace: true });
+            navigate("/verify-email", { replace: true });
         } catch (err) {
             const messages = {
                 "auth/email-already-in-use": "An account with this email already exists. Try signing in.",
@@ -167,9 +177,9 @@ const AcceptInvitation = () => {
                                     id="email"
                                     name="email"
                                     type="email"
-                                    placeholder="jane@company.com"
-                                    className="pl-10 h-11"
+                                    className="pl-10 h-11 cursor-not-allowed opacity-70"
                                     defaultValue={invitation?.email || ""}
+                                    readOnly
                                     required
                                 />
                             </div>
