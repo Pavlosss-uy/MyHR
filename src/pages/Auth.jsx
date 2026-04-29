@@ -102,9 +102,23 @@ const Auth = () => {
                 const credential = await createUserWithEmailAndPassword(auth, email, password);
                 const { updateProfile } = await import("firebase/auth");
                 await updateProfile(credential.user, { displayName: name || email.split("@")[0] });
-                // Register role so future sign-ins can enforce portal access
-                if (role) await registerUserRole(credential.user.uid, role);
+
+                // Dispatch the verification email before any other async work.
+                // Doing it after registerUserRole was the bug: if that call failed
+                // (or a route guard redirected first), the email was never sent.
                 await sendEmailVerification(credential.user);
+
+                // Register role after the email is out — a backend failure here
+                // won't prevent the user from verifying their address.
+                if (role) {
+                    try {
+                        await registerUserRole(credential.user.uid, role);
+                    } catch {
+                        // Non-fatal: the account exists and the email was sent.
+                        // Role registration can be retried on next sign-in.
+                    }
+                }
+
                 navigate("/verify-email", { replace: true });
             } else {
                 const credential = await signInWithEmailAndPassword(auth, email, password);

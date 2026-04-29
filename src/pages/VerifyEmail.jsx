@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { sendEmailVerification } from "firebase/auth";
@@ -14,6 +14,22 @@ const VerifyEmail = () => {
     const [checking,  setChecking]      = useState(false);
     const [resent,    setResent]        = useState(false);
     const [error,     setError]         = useState("");
+    // Prevents double-send in React StrictMode (double effect invocation in dev)
+    const sentRef = useRef(false);
+
+    // Safety net: if a route guard redirected here before Auth.jsx could call
+    // sendEmailVerification (e.g. registerUserRole threw), dispatch the email now.
+    useEffect(() => {
+        const cu = auth.currentUser;
+        if (!cu || cu.emailVerified || sentRef.current) return;
+        sentRef.current = true;
+        sendEmailVerification(cu).catch((err) => {
+            // too-many-requests means Auth.jsx already sent one — that's fine.
+            if (err.code !== "auth/too-many-requests") {
+                setError("Could not send a verification email automatically. Use the button below.");
+            }
+        });
+    }, []);
 
     const role = sessionStorage.getItem("myhr_role") || "";
     const dest  = role === "hr" ? "/hr/dashboard" : "/candidate";
