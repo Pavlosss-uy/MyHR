@@ -8,7 +8,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, Header
+from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, HTTPException, Query, Depends, Header
 
 from firestore_client import (
     db,
@@ -29,6 +29,12 @@ from cv_parser import (
 )
 from s3_utils import upload_file_to_s3
 from models.registry import registry
+from email_service import (
+    send_in_background,
+    hr_invitation_html,
+    candidate_interview_html,
+    admin_new_request_html,
+)
 
 from firebase_admin import firestore as fs_admin
 
@@ -80,27 +86,6 @@ def _get_authorized_job(job_id: str, company_id: str) -> dict:
     if job.get("companyId") != company_id:
         raise HTTPException(status_code=403, detail="Access denied.")
     return job
-
-
-def _send_email(to: str, subject: str, html: str):
-    """Send an email via Resend. Fails silently if not configured."""
-    api_key = os.getenv("RESEND_API_KEY", "")
-    if not api_key:
-        print(f"⚠️  RESEND_API_KEY not set — email NOT sent to {to}")
-        print(f"   Subject: {subject}")
-        return
-    try:
-        import resend
-        resend.api_key = api_key
-        resend.Emails.send({
-            "from": "MyHR <onboarding@resend.dev>",
-            "to": [to],
-            "subject": subject,
-            "html": html,
-        })
-        print(f"✅ Email sent to {to}: {subject}")
-    except Exception as e:
-        print(f"❌ Email send failed to {to}: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +142,7 @@ def _is_valid_cv_text(text: str) -> bool:
 
 @hr_router.post("/request-access")
 async def request_access(
+    background_tasks: BackgroundTasks,
     companyName: str = Form(...),
     companySize: str = Form(...),
     contactName: str = Form(...),
@@ -204,21 +190,17 @@ async def request_access(
 
     # Notify admin about new request
     base = os.getenv("MYHR_BASE_URL", "http://localhost:8080")
-    _send_email(
-        to=ADMIN_EMAIL,
-        subject=f"🏢 New Access Request: {companyName.strip()}",
-        html=f"""
-        <div style="font-family:sans-serif; max-width:480px; margin:0 auto; padding:24px;">
-            <h2 style="color:#1a1a2e;">New Enterprise Access Request</h2>
-            <table style="width:100%; border-collapse:collapse; margin:16px 0;">
-                <tr><td style="padding:8px 0; color:#666;">Company</td><td style="padding:8px 0; font-weight:600;">{companyName.strip()}</td></tr>
-                <tr><td style="padding:8px 0; color:#666;">Size</td><td style="padding:8px 0;">{companySize}</td></tr>
-                <tr><td style="padding:8px 0; color:#666;">Contact</td><td style="padding:8px 0;">{contactName.strip()}</td></tr>
-                <tr><td style="padding:8px 0; color:#666;">Email</td><td style="padding:8px 0;">{email}</td></tr>
-            </table>
-            <p style="color:#666; font-size:14px;">Review this request in your <a href="{base}/admin/requests" style="color:#3b82f6;">Admin Panel</a>.</p>
-        </div>
-        """,
+    background_tasks.add_task(
+        send_in_background,
+        ADMIN_EMAIL,
+        f"New Access Request: {companyName.strip()}",
+        admin_new_request_html(
+            company_name=companyName.strip(),
+            company_size=companySize,
+            contact_name=contactName.strip(),
+            contact_email=email,
+            admin_url=f"{base}/admin/requests",
+        ),
     )
 
     return {"status": "submitted", "requestId": request_id}
@@ -237,7 +219,7 @@ async def list_pending_requests():
 
 
 @hr_router.post("/admin/accept-request/{request_id}")
-async def accept_request(request_id: str):
+async def accept_request(request_id: str, background_tasks: BackgroundTasks):
     """
     Accept a pending request:
     1. Update status to 'accepted'
@@ -283,28 +265,16 @@ async def accept_request(request_id: str):
     base_url = os.getenv("MYHR_BASE_URL", "http://localhost:5173")
     invitation_link = f"{base_url}/invite/{token}"
 
-    # Send invitation email to the requester
-    _send_email(
-        to=req["contactEmail"],
-        subject="🎉 Welcome to MyHR Enterprise — Your Invitation",
-        html=f"""
-        <div style="font-family:sans-serif; max-width:480px; margin:0 auto; padding:24px;">
-            <h2 style="color:#1a1a2e;">Your access has been approved!</h2>
-            <p style="color:#444; line-height:1.6;">Hi {req['contactName']},</p>
-            <p style="color:#444; line-height:1.6;">
-                Great news — your request for <strong>{req['companyName']}</strong> has been approved.
-                Click the button below to create your MyHR Enterprise account.
-            </p>
-            <div style="text-align:center; margin:24px 0;">
-                <a href="{invitation_link}" style="display:inline-block; background:#3b82f6; color:white; padding:12px 32px; border-radius:8px; text-decoration:none; font-weight:600;">
-                    Create Your Account
-                </a>
-            </div>
-            <p style="color:#999; font-size:12px;">This link expires in 72 hours. If you didn't request this, please ignore this email.</p>
-        </div>
-        """,
+    background_tasks.add_task(
+        send_in_background,
+        req["contactEmail"],
+        "Your MyHR Enterprise access is approved",
+        hr_invitation_html(
+            contact_name=req["contactName"],
+            company_name=req["companyName"],
+            link=invitation_link,
+        ),
     )
-    print(f"📧 Invitation link for {req['contactEmail']}: {invitation_link}")
 
     return {
         "status": "accepted",
@@ -677,12 +647,10 @@ async def get_user_role(uid: str):
 async def invite_to_interview(
     job_id: str,
     candidate_id: str,
+    background_tasks: BackgroundTasks,
     company_id: str = Depends(get_current_company_id),
 ):
-    """
-    Invite a candidate to an AI interview.
-    Generates a unique token and (conceptually) sends an email.
-    """
+    """Invite a candidate to an AI interview and email them the link."""
     job = _get_authorized_job(job_id, company_id)
 
     ref = (
@@ -722,29 +690,18 @@ async def invite_to_interview(
     base_url = os.getenv("MYHR_BASE_URL", "http://localhost:5173")
     interview_link = f"{base_url}/candidate-interview/{token}"
 
-    print(f"📧 Interview invitation for {candidate.get('name', 'Candidate')}: {interview_link}")
-
-    # Send invitation email to candidate
     if candidate.get("email"):
-        _send_email(
-            to=candidate["email"],
-            subject=f"You've been invited to interview — {job.get('title', 'Position')}",
-            html=f"""
-            <div style="font-family:sans-serif; max-width:480px; margin:0 auto; padding:24px;">
-                <h2 style="color:#1a1a2e;">Interview Invitation</h2>
-                <p style="color:#444; line-height:1.6;">Hi {candidate.get('name', 'there')},</p>
-                <p style="color:#444; line-height:1.6;">
-                    You have been invited to complete an AI-powered interview for the
-                    <strong>{job.get('title', 'position')}</strong> role.
-                </p>
-                <div style="text-align:center; margin:24px 0;">
-                    <a href="{interview_link}" style="display:inline-block; background:#3b82f6; color:white; padding:12px 32px; border-radius:8px; text-decoration:none; font-weight:600;">
-                        Start Your Interview
-                    </a>
-                </div>
-                <p style="color:#999; font-size:12px;">This link expires in 7 days. The interview typically takes 10–15 minutes.</p>
-            </div>
-            """,
+        company = get_doc("Companies", company_id)
+        background_tasks.add_task(
+            send_in_background,
+            candidate["email"],
+            f"Interview invitation — {job.get('title', 'Position')}",
+            candidate_interview_html(
+                candidate_name=candidate.get("name", "there"),
+                job_title=job.get("title", "Position"),
+                company_name=company["name"] if company else "MyHR",
+                link=interview_link,
+            ),
         )
 
     return {
