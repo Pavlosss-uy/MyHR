@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import CircularProgress from "@/components/CircularProgress";
 import { Button } from "@/components/ui/button";
-import { Mail, CheckCircle2, XCircle, ArrowRight, Send, Eye, Loader2 } from "lucide-react";
+import { Mail, CheckCircle2, XCircle, ArrowRight, Send, Eye, Loader2, Trash2 } from "lucide-react";
 
 const statusBadge = {
     not_invited: { label: "Not Invited", style: "bg-muted text-muted-foreground" },
@@ -9,7 +9,7 @@ const statusBadge = {
     completed: { label: "Completed", style: "bg-mint/10 text-mint-dark" },
 };
 
-const CandidateCard = ({ candidate, index = 0, inviting = false, onViewDetails, onInvite }) => {
+const CandidateCard = ({ candidate, index = 0, inviting = false, ignoring = false, onViewDetails, onInvite, onIgnore }) => {
     const { name, email, matchScore, matchDetails, interviewStatus, totalScore } = candidate;
     const badge = statusBadge[interviewStatus] || statusBadge.not_invited;
     const matched = matchDetails?.matched || [];
@@ -90,6 +90,19 @@ const CandidateCard = ({ candidate, index = 0, inviting = false, onViewDetails, 
                         </div>
                     )}
                 </div>
+
+                {/* Ignore button — subtle, appears on card hover */}
+                <button
+                    onClick={() => onIgnore?.(candidate)}
+                    disabled={ignoring}
+                    title="Remove candidate"
+                    className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                >
+                    {ignoring
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <Trash2 className="w-4 h-4" />
+                    }
+                </button>
             </div>
 
             {/* Actions */}

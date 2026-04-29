@@ -275,6 +275,11 @@ export async function inviteToInterview(jobId, candidateId) {
     return apiFetch(`/jobs/${jobId}/invite-interview/${candidateId}`, { method: "POST" });
 }
 
+/** Soft-delete a candidate (sets status to 'ignored', hides from all lists) */
+export async function ignoreCandidate(jobId, candidateId) {
+    return apiFetch(`/jobs/${jobId}/candidates/${candidateId}`, { method: "DELETE" });
+}
+
 // ─── User Role ───────────────────────────────────────────────────────────────
 
 /** Register a user's portal role (candidate | hr) in Firestore */

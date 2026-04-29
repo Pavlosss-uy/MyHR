@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import CandidateCard from "@/components/hr/CandidateCard";
 import MatchAnalysisDrawer from "@/components/hr/MatchAnalysisDrawer";
-import { uploadCVs, getCandidates, inviteToInterview } from "@/lib/interviewApi";
+import { uploadCVs, getCandidates, inviteToInterview, ignoreCandidate } from "@/lib/interviewApi";
 import { useToast } from "@/hooks/use-toast";
 import {
     Upload,
@@ -29,8 +29,9 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
     const [sortBy, setSortBy] = useState("matchScore");
     const [statusFilter, setStatusFilter] = useState("");
 
-    // Track which candidate is being invited + last generated link
+    // Track which candidate is being invited / ignored + last generated link
     const [invitingId, setInvitingId] = useState("");
+    const [ignoringId, setIgnoringId] = useState("");
     const [lastInviteLink, setLastInviteLink] = useState({ name: "", link: "" });
 
     // Drawer state
@@ -87,6 +88,19 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
             (f) => f.type === "application/pdf" || f.name.endsWith(".docx") || f.name.endsWith(".doc")
         );
         if (files.length > 0) handleUpload(files);
+    };
+
+    const handleIgnore = async (candidate) => {
+        setIgnoringId(candidate.id);
+        try {
+            await ignoreCandidate(jobId, candidate.id);
+            setCandidates((prev) => prev.filter((c) => c.id !== candidate.id));
+            toast({ title: "Candidate removed", description: `${candidate.name} has been removed from this job.` });
+        } catch (err) {
+            toast({ title: "Failed to remove candidate", description: err.message, variant: "destructive" });
+        } finally {
+            setIgnoringId("");
+        }
     };
 
     const handleInvite = async (candidate) => {
@@ -256,11 +270,13 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
                             candidate={candidate}
                             index={i}
                             inviting={invitingId === candidate.id}
+                            ignoring={ignoringId === candidate.id}
                             onViewDetails={(c) => {
                                 setDrawerCandidate(c);
                                 setDrawerOpen(true);
                             }}
                             onInvite={handleInvite}
+                            onIgnore={handleIgnore}
                         />
                     ))}
                 </div>

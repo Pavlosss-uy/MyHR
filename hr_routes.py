@@ -3,6 +3,7 @@ FastAPI router for all B2B / HR-facing endpoints.
 Covers: Request Access, Admin Actions, Job Management,
 Batch CV Upload, Candidate Ranking, Interview Invitations.
 """
+import hashlib
 import os
 import re
 import uuid
@@ -443,11 +444,25 @@ async def upload_cvs(
         print(f"Skill matcher load warning: {e}")
         skill_matcher = None
 
+    # Pre-load existing candidates to power both duplicate checks.
+    # seen_hashes  — catches an identical binary file re-uploaded under any name.
+    # seen_emails  — catches the same person uploaded as a different file.
+    existing_candidates = get_subcollection_docs("Jobs", job_id, "Candidates")
+    seen_hashes: set[str] = {c["cvHash"] for c in existing_candidates if c.get("cvHash")}
+    seen_emails: set[str] = {c["email"].lower() for c in existing_candidates if c.get("email")}
+
     for file in files:
         try:
             file_bytes = await file.read()
             content_type = file.content_type or "application/pdf"
             filename = file.filename or "unnamed.pdf"
+
+            # 0. Hash the raw bytes — done before text extraction so we skip
+            #    all heavy processing for exact duplicates immediately.
+            cv_hash = hashlib.sha256(file_bytes).hexdigest()
+            if cv_hash in seen_hashes:
+                failed.append({"filename": filename, "reason": "Duplicate CV — identical file already uploaded for this job."})
+                continue
 
             # 1. Extract text
             cv_text = extract_text(file_bytes, content_type)
@@ -474,6 +489,11 @@ async def upload_cvs(
             phone = extract_phone(cv_text) or ""
             cv_skills = extract_skills_keyword(cv_text)
 
+            # Email duplicate check — same person re-uploaded as a different file.
+            if email and email.lower() in seen_emails:
+                failed.append({"filename": filename, "reason": f"Duplicate candidate — {email} already exists in this job."})
+                continue
+
             # 6. Calculate match score
             match_score = 50.0  # default
             if skill_matcher and jd_text and cv_text:
@@ -497,19 +517,25 @@ async def upload_cvs(
                 "cvUrl": s3_url,
                 "cvText": cv_text[:5000],  # truncate for storage
                 "cvSkills": cv_skills,
+                "cvHash": cv_hash,
                 "matchScore": match_score,
                 "matchDetails": match_details,
                 "interviewStatus": "not_invited",
                 "interviewSessionId": "",
                 "interviewScore": 0,
                 "interviewReport": {},
-                "totalScore": match_score,  # initially same as matchScore
+                "totalScore": match_score,
                 "invitationToken": "",
                 "invitationSentAt": None,
                 "updatedAt": fs_admin.SERVER_TIMESTAMP,
             }
 
             set_subcollection_doc("Jobs", job_id, "Candidates", candidate_id, candidate_data)
+
+            # Track for within-batch deduplication
+            seen_hashes.add(cv_hash)
+            if email:
+                seen_emails.add(email.lower())
 
             processed.append({
                 "candidateId": candidate_id,
@@ -569,6 +595,9 @@ async def list_candidates(
 
     if status:
         candidates = [c for c in candidates if c.get("interviewStatus") == status]
+    else:
+        # Never surface ignored candidates in the default "All" view
+        candidates = [c for c in candidates if c.get("interviewStatus") != "ignored"]
 
     # Re-sort if different sort requested
     if sort_by == "totalScore":
@@ -599,6 +628,33 @@ async def get_candidate(
     data = snap.to_dict()
     data["id"] = snap.id
     return data
+
+
+@hr_router.delete("/jobs/{job_id}/candidates/{candidate_id}")
+async def ignore_candidate(
+    job_id: str,
+    candidate_id: str,
+    company_id: str = Depends(get_current_company_id),
+):
+    """
+    Soft-delete a candidate by setting interviewStatus to 'ignored'.
+    Preserves the document for audit purposes; the candidate will no longer
+    appear in any list_candidates response.
+    """
+    _get_authorized_job(job_id, company_id)
+
+    ref = (
+        db.collection("Jobs").document(job_id)
+        .collection("Candidates").document(candidate_id)
+    )
+    if not ref.get().exists:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+
+    ref.update({
+        "interviewStatus": "ignored",
+        "updatedAt": fs_admin.SERVER_TIMESTAMP,
+    })
+    return {"status": "ignored"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
