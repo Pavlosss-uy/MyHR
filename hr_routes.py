@@ -5,13 +5,10 @@ Batch CV Upload, Candidate Ranking, Interview Invitations.
 """
 import os
 import re
-import io
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
-import PyPDF2
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Depends, Header
 
 from firestore_client import (
     db,
@@ -19,7 +16,6 @@ from firestore_client import (
     get_doc,
     set_doc,
     query_collection,
-    add_subcollection_doc,
     get_subcollection_docs,
     set_subcollection_doc,
 )
@@ -40,6 +36,50 @@ hr_router = APIRouter(tags=["HR / B2B"])
 
 # ── Admin notification email ─────────────────────────────────────────────────
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "myhr2026@gmail.com")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Auth dependency
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_current_company_id(authorization: str = Header(...)) -> str:
+    """
+    Verify the Firebase ID token from the Authorization: Bearer <token> header,
+    then look up which Company the authenticated user administers.
+    Returns the companyId on success; raises 401/403 on failure.
+    """
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
+
+    token = authorization.removeprefix("Bearer ").strip()
+
+    try:
+        from firebase_admin import auth as fb_auth
+        decoded = fb_auth.verify_id_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired Firebase ID token.")
+
+    uid = decoded["uid"]
+
+    companies = query_collection(
+        "Companies",
+        filters=[("adminUIDs", "array_contains", uid)],
+        limit=1,
+    )
+    if not companies:
+        raise HTTPException(status_code=403, detail="User is not associated with any company.")
+
+    return companies[0]["id"]
+
+
+def _get_authorized_job(job_id: str, company_id: str) -> dict:
+    """Fetch a job and verify ownership. Raises 404/403 on failure."""
+    job = get_doc("Jobs", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.get("companyId") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied.")
+    return job
 
 
 def _send_email(to: str, subject: str, html: str):
@@ -357,13 +397,13 @@ async def accept_invitation(token: str, uid: str = Form(...)):
 async def create_job(
     title: str = Form(...),
     description: str = Form(...),
-    companyId: str = Form(""),
+    company_id: str = Depends(get_current_company_id),
 ):
     """Create a new job posting. Extracts skills from the JD."""
     jd_skills = extract_skills_keyword(description)
 
     job_id = add_doc("Jobs", {
-        "companyId": companyId,
+        "companyId": company_id,
         "title": title.strip(),
         "description": description.strip(),
         "extractedSkills": jd_skills,
@@ -385,34 +425,28 @@ async def create_job(
 
 
 @hr_router.get("/jobs")
-async def list_jobs(companyId: str = Query("")):
-    """List all jobs, optionally filtered by company."""
-    filters = []
-    if companyId:
-        filters.append(("companyId", "==", companyId))
-
+async def list_jobs(company_id: str = Depends(get_current_company_id)):
+    """List all jobs belonging to the authenticated user's company."""
     jobs = query_collection(
         "Jobs",
-        filters=filters if filters else None,
-        order_by="createdAt",
-        order_dir="DESCENDING",
+        filters=[("companyId", "==", company_id)],
     )
+    # Sort client-side to avoid requiring a composite Firestore index
+    jobs.sort(key=lambda j: j.get("createdAt") or "", reverse=True)
     return {"jobs": jobs}
 
 
 @hr_router.get("/jobs/{job_id}")
-async def get_job(job_id: str):
-    """Get a single job with all details."""
-    job = get_doc("Jobs", job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    return job
+async def get_job(job_id: str, company_id: str = Depends(get_current_company_id)):
+    """Get a single job — only if it belongs to the authenticated company."""
+    return _get_authorized_job(job_id, company_id)
 
 
 @hr_router.post("/jobs/{job_id}/upload-cvs")
 async def upload_cvs(
     job_id: str,
     files: list[UploadFile] = File(...),
+    company_id: str = Depends(get_current_company_id),
 ):
     """
     Batch upload CVs for a specific job.
@@ -424,9 +458,7 @@ async def upload_cvs(
       5. Calculate match score
       6. Create Candidate document
     """
-    job = get_doc("Jobs", job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
+    job = _get_authorized_job(job_id, company_id)
 
     jd_text = job.get("description", "")
     jd_skills = job.get("extractedSkills", [])
@@ -552,11 +584,13 @@ async def list_candidates(
     job_id: str,
     sort_by: str = Query("matchScore"),
     status: str = Query(""),
+    company_id: str = Depends(get_current_company_id),
 ):
     """
     List candidates for a job, sorted by match score.
     Optional status filter: not_invited, invited, completed
     """
+    _get_authorized_job(job_id, company_id)
     candidates = get_subcollection_docs(
         "Jobs", job_id, "Candidates",
         order_by="matchScore",
@@ -576,8 +610,14 @@ async def list_candidates(
 
 
 @hr_router.get("/jobs/{job_id}/candidates/{candidate_id}")
-async def get_candidate(job_id: str, candidate_id: str):
-    """Get full candidate details including interview report."""
+async def get_candidate(
+    job_id: str,
+    candidate_id: str,
+    company_id: str = Depends(get_current_company_id),
+):
+    """Get full candidate details — only if the job belongs to the authenticated company."""
+    _get_authorized_job(job_id, company_id)
+
     ref = (
         db.collection("Jobs").document(job_id)
         .collection("Candidates").document(candidate_id)
@@ -615,7 +655,7 @@ async def get_user_role(uid: str):
     # HR check — UID in any company's adminUIDs array
     companies = query_collection(
         "Companies",
-        filters=[("adminUIDs", "array-contains", uid)],
+        filters=[("adminUIDs", "array_contains", uid)],
         limit=1,
     )
     if companies:
@@ -634,14 +674,16 @@ async def get_user_role(uid: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @hr_router.post("/jobs/{job_id}/invite-interview/{candidate_id}")
-async def invite_to_interview(job_id: str, candidate_id: str):
+async def invite_to_interview(
+    job_id: str,
+    candidate_id: str,
+    company_id: str = Depends(get_current_company_id),
+):
     """
     Invite a candidate to an AI interview.
     Generates a unique token and (conceptually) sends an email.
     """
-    job = get_doc("Jobs", job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
+    job = _get_authorized_job(job_id, company_id)
 
     ref = (
         db.collection("Jobs").document(job_id)

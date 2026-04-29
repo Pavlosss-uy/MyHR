@@ -6,6 +6,9 @@ import uuid
 import tempfile
 from typing import Tuple, Dict, Any
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import PyPDF2
 import uvicorn
 from fastapi import (
@@ -24,7 +27,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from langgraph.graph import END
 
-from database import get_db, SessionRecord
+from firestore_client import create_session, get_session, update_session_state
 from ingest import create_session_index, save_interview_report, save_rich_report
 from s3_utils import upload_file_to_s3
 from models.registry import registry
@@ -376,7 +379,6 @@ def _run_interview_turn(
 async def start_interview(
     cv: UploadFile = File(...),
     jd: str = Form(...),
-    db: Session = Depends(get_db),
 ):
     session_id = str(uuid.uuid4())
 
@@ -433,9 +435,7 @@ async def start_interview(
 
     # Do NOT append the first AI question to history here — _run_interview_turn does it
     # on the first submit so we avoid duplicating it.
-    db_record = SessionRecord(session_id=session_id, state_data=result)
-    db.add(db_record)
-    db.commit()
+    create_session(session_id, result)
 
     job_title = initial_state["initial_job_context"]["job_title"]
     first_question = result["last_question"]
@@ -460,7 +460,6 @@ async def start_interview(
 @app.post("/candidate-interview/{token}/start")
 async def start_interview_from_token(
     token: str,
-    db: Session = Depends(get_db),
 ):
     """
     Start an AI interview session for a candidate using their invitation token.
@@ -503,9 +502,7 @@ async def start_interview_from_token(
     result = app_graph.invoke(initial_state)
     result["question_number"] = 1
 
-    db_record = SessionRecord(session_id=session_id, state_data=result)
-    db.add(db_record)
-    db.commit()
+    create_session(session_id, result)
 
     job_title = ctx["job_title"]
     first_question = result["last_question"]
@@ -529,7 +526,6 @@ async def start_interview_from_token(
 async def live_interview_websocket(
     websocket: WebSocket,
     session_id: str,
-    db: Session = Depends(get_db),
 ):
     """
     Utterance-based WebSocket protocol.
@@ -553,7 +549,7 @@ async def live_interview_websocket(
     """
     await websocket.accept()
 
-    record = db.query(SessionRecord).filter(SessionRecord.session_id == session_id).first()
+    record = get_session(session_id)
     if not record:
         await websocket.send_json({"type": "error", "message": "Session not found"})
         await websocket.close(code=1008)
@@ -601,7 +597,7 @@ async def live_interview_websocket(
                 await websocket.send_json({"type": "retry", "message": "No audio received. Please answer again."})
                 continue
 
-            current_state = record.state_data
+            current_state = record["state_data"]
             temp_path = None
 
             try:
@@ -625,9 +621,8 @@ async def live_interview_websocket(
 
                 current_state, outcome = _run_interview_turn(current_state, transcription)
 
-                record.state_data = current_state
-                flag_modified(record, "state_data")
-                db.commit()
+                update_session_state(session_id, current_state)
+                record["state_data"] = current_state
 
                 if outcome["status"] == "completed":
                     closing = outcome.get("closing_message", "Thank you for your time today. Goodbye!")
@@ -703,17 +698,17 @@ MIN_REPORT_QUESTIONS = 2  # need at least this many answered questions for a val
 
 
 @app.get("/end_interview/{session_id}")
-async def end_interview(session_id: str, db: Session = Depends(get_db)):
+async def end_interview(session_id: str):
     """
     Called when the user clicks 'End Interview' early OR when the frontend needs
     the report for an already-completed session.
     Returns status='incomplete' when fewer than MIN_REPORT_QUESTIONS were answered.
     """
-    record = db.query(SessionRecord).filter(SessionRecord.session_id == session_id).first()
+    record = get_session(session_id)
     if not record:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    current_state = record.state_data
+    current_state = record["state_data"]
     evaluations = current_state.get("evaluations", [])
     job_ctx = current_state.get("initial_job_context", {})
     candidate_name = job_ctx.get("candidate_name", "Candidate")
@@ -782,13 +777,12 @@ async def submit_answer(
     background_tasks: BackgroundTasks,
     session_id: str = Form(...),
     audio: UploadFile = File(...),
-    db: Session = Depends(get_db),
 ):
-    record = db.query(SessionRecord).filter(SessionRecord.session_id == session_id).first()
+    record = get_session(session_id)
     if not record:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    current_state = record.state_data
+    current_state = record["state_data"]
 
     audio_bytes = await audio.read()
     content_type = audio.content_type or "audio/webm"
@@ -821,9 +815,7 @@ async def submit_answer(
     try:
         current_state, outcome = _run_interview_turn(current_state, transcription)
 
-        record.state_data = current_state
-        flag_modified(record, "state_data")   # force SQLAlchemy to detect JSON changes
-        db.commit()
+        update_session_state(session_id, current_state)
 
         if outcome["status"] == "completed":
             closing = outcome.get("closing_message", "Thank you for your time today. Goodbye!")

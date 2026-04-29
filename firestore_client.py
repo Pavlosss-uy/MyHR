@@ -1,6 +1,13 @@
 """
 Firebase Admin SDK initialization for the MyHR backend.
 Provides a Firestore client and helper functions used by all B2B routes.
+
+Interview session state lives in the `interview_sessions` collection.
+Use the session helpers at the bottom of this module instead of
+reading, mutating in Python, and re-saving the whole document —
+that pattern loses concurrent updates. The helpers here use Firestore
+atomic field transforms (Increment, dot-notation partial updates) so
+each WebSocket worker only touches the field it owns.
 """
 import os
 import json
@@ -175,3 +182,89 @@ def add_subcollection_doc(
 def now_utc():
     """Return current UTC datetime (timezone-aware)."""
     return datetime.now(timezone.utc)
+
+
+# ---------- Interview session helpers ----------
+# These replace the PostgreSQL SessionRecord + MutableDict pattern.
+# All writes use Firestore's server-side transforms so concurrent WebSocket
+# workers never overwrite each other's field.
+
+_SESSIONS = "interview_sessions"
+
+
+def create_session(session_id: str, state_data: dict) -> str:
+    """Create a new interview session. Raises if the document already exists."""
+    ref = db.collection(_SESSIONS).document(session_id)
+    # Use create() (not set()) so a duplicate session_id fails loudly rather
+    # than silently overwriting an in-progress interview.
+    ref.create({
+        "session_id": session_id,
+        "state_data": state_data,
+        "created_at": firestore.SERVER_TIMESTAMP,
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    })
+    return session_id
+
+
+def get_session(session_id: str) -> dict | None:
+    """Fetch a session by ID. Returns None if not found."""
+    snap = db.collection(_SESSIONS).document(session_id).get()
+    if not snap.exists:
+        return None
+    data = snap.to_dict()
+    data["id"] = snap.id
+    return data
+
+
+def update_session_state(session_id: str, partial_state: dict) -> None:
+    """
+    Atomically patch a subset of state_data fields.
+
+    Uses Firestore dot-notation so only the named keys are touched on the
+    server — other concurrent workers updating different keys will not collide.
+
+    Example:
+        update_session_state(sid, {"status": "completed", "score": 87})
+        # Only state_data.status and state_data.score are written.
+    """
+    updates = {f"state_data.{k}": v for k, v in partial_state.items()}
+    updates["updated_at"] = firestore.SERVER_TIMESTAMP
+    db.collection(_SESSIONS).document(session_id).update(updates)
+
+
+def increment_question_number(session_id: str, delta: int = 1) -> None:
+    """
+    Atomically increment (or decrement) question_number by delta.
+
+    Uses firestore.Increment so the server applies the delta to whatever
+    the current value is — no read-modify-write round-trip required.
+    """
+    db.collection(_SESSIONS).document(session_id).update({
+        "state_data.question_number": firestore.Increment(delta),
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    })
+
+
+def update_consecutive_fails(session_id: str, delta: int) -> None:
+    """
+    Atomically update the consecutive_fails counter.
+
+    Pass a positive delta to increment (e.g. +1 on a bad answer).
+    Pass 0 to reset the counter to zero after a successful answer.
+    """
+    ref = db.collection(_SESSIONS).document(session_id)
+    if delta == 0:
+        ref.update({
+            "state_data.consecutive_fails": 0,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+    else:
+        ref.update({
+            "state_data.consecutive_fails": firestore.Increment(delta),
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+
+
+def delete_session(session_id: str) -> None:
+    """Hard-delete a session document (e.g. after interview cleanup)."""
+    db.collection(_SESSIONS).document(session_id).delete()

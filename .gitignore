@@ -32,3 +32,5 @@ models/checkpoints/
 divergence_output.txt
 node_modules
 node_modules
+
+firebase-key.json
