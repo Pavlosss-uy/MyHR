@@ -268,3 +268,69 @@ def update_consecutive_fails(session_id: str, delta: int) -> None:
 def delete_session(session_id: str) -> None:
     """Hard-delete a session document (e.g. after interview cleanup)."""
     db.collection(_SESSIONS).document(session_id).delete()
+
+
+# ---------- Email sync helper ----------
+
+_BATCH_SIZE = 499  # Firestore hard limit is 500; leave one slot for safety
+
+
+def sync_user_email(uid: str, old_email: str, new_email: str) -> int:
+    """
+    Back-fill Firestore documents that still reference old_email after a
+    Firebase Auth email change.
+
+    Covers:
+      - InvitationTokens.targetEmail
+      - Jobs/{jobId}/Candidates.email  (matched by uid OR old email)
+
+    Returns the total number of documents updated.
+
+    Use this when the syncEmailUpdate Cloud Function is unavailable — e.g.
+    local development, manual recovery after a missed event.
+    """
+    if old_email == new_email:
+        return 0
+
+    ops: list[tuple] = []  # (DocumentReference, update_dict)
+    timestamp = firestore.SERVER_TIMESTAMP
+
+    # ── 1. InvitationTokens.targetEmail ──────────────────────────────────────
+    for snap in (
+        db.collection("InvitationTokens")
+        .where("targetEmail", "==", old_email)
+        .stream()
+    ):
+        ops.append((
+            snap.reference,
+            {"targetEmail": new_email, "emailUpdatedAt": timestamp},
+        ))
+
+    # ── 2. Jobs/*/Candidates ──────────────────────────────────────────────────
+    for job_snap in db.collection("Jobs").stream():
+        cand_ref = job_snap.reference.collection("Candidates")
+        seen: set[str] = set()
+
+        # Query by UID first (authoritative — survives prior email changes),
+        # then by old email (catches records created before UID was stored).
+        for stream in (
+            cand_ref.where("uid", "==", uid).stream(),
+            cand_ref.where("email", "==", old_email).stream(),
+        ):
+            for snap in stream:
+                if snap.id in seen:
+                    continue
+                seen.add(snap.id)
+                ops.append((
+                    snap.reference,
+                    {"email": new_email, "emailUpdatedAt": timestamp},
+                ))
+
+    # ── 3. Commit in chunks ───────────────────────────────────────────────────
+    for i in range(0, len(ops), _BATCH_SIZE):
+        batch = db.batch()
+        for ref, data in ops[i : i + _BATCH_SIZE]:
+            batch.update(ref, data)
+        batch.commit()
+
+    return len(ops)

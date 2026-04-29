@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { updateProfile, updateEmail, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { auth } from "@/lib/firebase";
 import Navbar from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,7 @@ const Settings = () => {
     const [isSaving,     setIsSaving]     = useState(false);
     const [successMsg,   setSuccessMsg]   = useState("");
     const [errorMsg,     setErrorMsg]     = useState("");
+    const [syncWarning,  setSyncWarning]  = useState("");
 
     // Change password state
     const [currentPw,    setCurrentPw]    = useState("");
@@ -78,6 +80,7 @@ const Settings = () => {
         }
 
         setIsSaving(true);
+        setSyncWarning("");
         try {
             const cu = auth.currentUser;
             if (!cu) throw new Error("Not signed in.");
@@ -85,11 +88,28 @@ const Settings = () => {
             // Update display name
             await updateProfile(cu, { displayName: newDisplayName });
 
-            // Changing email requires re-authentication
+            // Changing email: re-authenticate → update Auth → sync Firestore
             if (emailChanged) {
-                const credential = EmailAuthProvider.credential(cu.email, password);
+                const oldEmail = cu.email; // capture before Auth overwrites it
+                const credential = EmailAuthProvider.credential(oldEmail, password);
                 await reauthenticateWithCredential(cu, credential);
                 await updateEmail(cu, email.trim());
+
+                // Force-refresh the ID token so the callable receives the new email
+                // from the verified Auth token rather than the stale cached one.
+                await cu.getIdToken(/* forceRefresh */ true);
+
+                try {
+                    const syncEmailUpdate = httpsCallable(getFunctions(auth.app), "syncEmailUpdate");
+                    await syncEmailUpdate({ oldEmail });
+                } catch {
+                    // Cloud Function unavailable — a backend admin can call
+                    // firestore_client.sync_user_email() to back-fill manually.
+                    setSyncWarning(
+                        "Email updated, but Firestore records could not be synced automatically. " +
+                        "Contact support if you stop receiving interview invitations.",
+                    );
+                }
             }
 
             await refreshUser();
@@ -97,9 +117,9 @@ const Settings = () => {
             setSuccessMsg("Profile saved successfully.");
         } catch (err) {
             const map = {
-                "auth/wrong-password":     "Incorrect current password.",
-                "auth/email-already-in-use": "That email is already taken.",
-                "auth/invalid-email":      "Invalid email address.",
+                "auth/wrong-password":        "Incorrect current password.",
+                "auth/email-already-in-use":  "That email is already taken.",
+                "auth/invalid-email":         "Invalid email address.",
                 "auth/requires-recent-login": "Please sign out and sign back in, then try again.",
             };
             setErrorMsg(map[err.code] ?? err.message);
@@ -293,6 +313,17 @@ const Settings = () => {
                             >
                                 <CheckCircle2 className="w-4 h-4 shrink-0" />
                                 {successMsg}
+                            </motion.div>
+                        )}
+
+                        {syncWarning && (
+                            <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                className="flex items-start gap-2 text-sm text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg px-3 py-2"
+                            >
+                                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                                {syncWarning}
                             </motion.div>
                         )}
 

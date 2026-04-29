@@ -10,7 +10,7 @@ import { validateInvitation, acceptInvitation, registerUserRole } from "@/lib/in
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Brain, ArrowRight, Lock, Mail, User, Loader2, AlertCircle, CheckCircle2, Clock } from "lucide-react";
+import { Brain, ArrowRight, Lock, User, Loader2, AlertCircle, CheckCircle2, Clock } from "lucide-react";
 
 const AcceptInvitation = () => {
     const { token } = useParams();
@@ -45,7 +45,7 @@ const AcceptInvitation = () => {
 
         const data = new FormData(e.target);
         const name = (data.get("name") ?? "").trim();
-        const email = (data.get("email") ?? "").trim();
+        const email = invitation?.email ?? "";
         const password = (data.get("password") ?? "").trim();
 
         try {
@@ -156,22 +156,6 @@ const AcceptInvitation = () => {
                             <div className="relative">
                                 <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                                 <Input id="name" name="name" placeholder="Jane Smith" className="pl-10 h-11" required />
-                            </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <Label htmlFor="email">Email</Label>
-                            <div className="relative">
-                                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                                <Input
-                                    id="email"
-                                    name="email"
-                                    type="email"
-                                    placeholder="jane@company.com"
-                                    className="pl-10 h-11"
-                                    defaultValue={invitation?.email || ""}
-                                    required
-                                />
                             </div>
                         </div>
 
