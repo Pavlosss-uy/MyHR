@@ -627,6 +627,26 @@ async def get_candidate(
 
     data = snap.to_dict()
     data["id"] = snap.id
+
+    # Enrich interviewReport with rich_report from disk for existing/legacy records
+    session_id = data.get("interviewSessionId", "")
+    if session_id:
+        import os as _os_gc, json as _json_gc
+        _rich_path = _os_gc.path.join("storage", "reports", f"{session_id}_rich_report.json")
+        if _os_gc.path.exists(_rich_path):
+            try:
+                with open(_rich_path, "r", encoding="utf-8") as _f:
+                    _rich = _json_gc.load(_f)
+                existing = data.get("interviewReport") or {}
+                for _key in ("summary", "strengths", "weaknesses", "communication",
+                             "overall_score", "performance_level", "hiring_signal",
+                             "improvements", "tips", "recommended_topics"):
+                    if _key in _rich:
+                        existing[_key] = _rich[_key]
+                data["interviewReport"] = existing
+            except Exception:
+                pass
+
     return data
 
 
@@ -842,6 +862,21 @@ async def complete_candidate_interview(
         report_data = json.loads(interviewReport) if isinstance(interviewReport, str) else interviewReport
     except Exception:
         report_data = {}
+
+    # Merge rich_report from disk — overrides blank summary/strengths/weaknesses
+    import os as _os_c
+    _rich_path = _os_c.path.join("storage", "reports", f"{sessionId}_rich_report.json")
+    if _os_c.path.exists(_rich_path):
+        try:
+            with open(_rich_path, "r", encoding="utf-8") as _f:
+                _rich = json.load(_f)
+            for _key in ("summary", "strengths", "weaknesses", "communication",
+                         "overall_score", "performance_level", "hiring_signal",
+                         "improvements", "tips", "recommended_topics"):
+                if _key in _rich:
+                    report_data[_key] = _rich[_key]
+        except Exception:
+            pass
 
     # Update candidate with interview results
     ref = (

@@ -127,9 +127,9 @@ const CandidateInterviewPortal = () => {
                 try {
                     await completeCandidateInterview(token, sessionId, avgScore, {
                         evaluations: updatedEvals,
-                        summary: result.report?.summary || "",
-                        strengths: result.report?.strengths || [],
-                        weaknesses: result.report?.weaknesses || [],
+                        summary: result.rich_report?.summary || "",
+                        strengths: result.rich_report?.strengths || [],
+                        weaknesses: result.rich_report?.weaknesses || [],
                     });
                 } catch (completeErr) {
                     console.error("Failed to save interview results:", completeErr);

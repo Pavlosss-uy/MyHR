@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 import { motion, AnimatePresence } from "framer-motion";
 import Navbar from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ const TabButton = ({ active, onClick, children }) => (
 
 const JobManagement = () => {
     const { toast } = useToast();
+    const { user, loading: authLoading } = useAuth();
 
     // View state: "list" | "detail"
     const [view, setView] = useState("list");
@@ -61,7 +63,11 @@ const JobManagement = () => {
         }
     }, [toast]);
 
-    useEffect(() => { fetchJobs(); }, [fetchJobs]);
+    useEffect(() => {
+        if (authLoading) return;
+        if (!user) { setLoading(false); return; }
+        fetchJobs();
+    }, [fetchJobs, user, authLoading]);
 
     // Create job handler
     const handleCreateJob = async (e) => {

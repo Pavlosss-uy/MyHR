@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 import { motion } from "framer-motion";
 import Navbar from "@/components/Navbar";
 import StatCard from "@/components/StatCard";
@@ -21,10 +22,13 @@ const getStatus = (score) => {
 };
 
 const HRDashboard = () => {
+    const { user, loading: authLoading } = useAuth();
     const [jobs, setJobs] = useState([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
+        if (authLoading) return;
+        if (!user) { setLoading(false); return; }
         (async () => {
             try {
                 const data = await getJobs();
@@ -35,7 +39,7 @@ const HRDashboard = () => {
                 setLoading(false);
             }
         })();
-    }, []);
+    }, [user, authLoading]);
 
     // Aggregate stats from jobs
     const totalCandidates = jobs.reduce((sum, j) => sum + (j.stats?.totalCandidates || 0), 0);

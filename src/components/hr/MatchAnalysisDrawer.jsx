@@ -194,7 +194,7 @@ const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite })
                                                 {interviewReport.strengths.map((s, i) => (
                                                     <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
                                                         <span className="w-1 h-1 rounded-full bg-mint mt-2 shrink-0" />
-                                                        {s}
+                                                        {typeof s === "string" ? s : (s?.text || s?.description || JSON.stringify(s))}
                                                     </li>
                                                 ))}
                                             </ul>
@@ -210,7 +210,7 @@ const MatchAnalysisDrawer = ({ candidate, jobTitle, isOpen, onClose, onInvite })
                                                 {interviewReport.weaknesses.map((w, i) => (
                                                     <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
                                                         <span className="w-1 h-1 rounded-full bg-warning mt-2 shrink-0" />
-                                                        {w}
+                                                        {typeof w === "string" ? w : (w?.text || w?.description || JSON.stringify(w))}
                                                     </li>
                                                 ))}
                                             </ul>

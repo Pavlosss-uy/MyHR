@@ -9,7 +9,7 @@ const statusBadge = {
     completed: { label: "Completed", style: "bg-mint/10 text-mint-dark" },
 };
 
-const CandidateCard = ({ candidate, index = 0, inviting = false, ignoring = false, onViewDetails, onInvite, onIgnore }) => {
+const CandidateCard = ({ candidate, index = 0, inviting = false, ignoring = false, onViewDetails, onViewReport, onInvite, onIgnore }) => {
     const { name, email, matchScore, matchDetails, interviewStatus, totalScore } = candidate;
     const badge = statusBadge[interviewStatus] || statusBadge.not_invited;
     const matched = matchDetails?.matched || [];
@@ -126,7 +126,7 @@ const CandidateCard = ({ candidate, index = 0, inviting = false, ignoring = fals
                     </Button>
                 )}
                 {interviewStatus === "completed" && (
-                    <Button variant="outline" size="sm" className="flex-1" onClick={() => onViewDetails?.(candidate)}>
+                    <Button variant="outline" size="sm" className="flex-1" onClick={() => onViewReport?.(candidate)}>
                         <ArrowRight className="w-3.5 h-3.5 mr-1" />
                         View Report
                     </Button>

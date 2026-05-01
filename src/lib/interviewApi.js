@@ -1,13 +1,26 @@
 import { auth } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
 
 const API_BASE = "/api";
 
-/**
- * Returns an Authorization header containing the Firebase ID token for the
- * currently signed-in user.  Falls back to an empty object when no user is
- * present so unauthenticated requests still work during development.
- */
+// Resolves once Firebase has determined the initial auth state (fires exactly once).
+// This prevents the race where auth.currentUser is still null while Firebase
+// is restoring a session from storage — causing spurious 401s on first load.
+const _authReady = new Promise((resolve) => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+        unsub();
+        resolve(user);
+    });
+});
+
 async function getAuthHeaders() {
+    // Fast path: auth state already known
+    if (auth.currentUser) {
+        const token = await auth.currentUser.getIdToken();
+        return { Authorization: `Bearer ${token}` };
+    }
+    // Wait for Firebase to finish restoring the session
+    await _authReady;
     const user = auth.currentUser;
     if (!user) return {};
     const token = await user.getIdToken();

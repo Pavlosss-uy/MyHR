@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import CandidateCard from "@/components/hr/CandidateCard";
@@ -20,6 +21,7 @@ import {
 
 const JobCandidatesTab = ({ jobId, jobTitle }) => {
     const { toast } = useToast();
+    const navigate = useNavigate();
     const [candidates, setCandidates] = useState([]);
     const [loading, setLoading] = useState(false);
     const [uploading, setUploading] = useState(false);
@@ -274,6 +276,9 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
                             onViewDetails={(c) => {
                                 setDrawerCandidate(c);
                                 setDrawerOpen(true);
+                            }}
+                            onViewReport={(c) => {
+                                navigate(`/hr/candidate/${c.id}?jobId=${jobId}`);
                             }}
                             onInvite={handleInvite}
                             onIgnore={handleIgnore}

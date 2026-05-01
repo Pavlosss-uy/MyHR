@@ -363,7 +363,7 @@ def evaluate_answer_node(state: AgentState):
     ]
 
     shap_values_list = []
-    feature_values_list = features.detach().cpu().numpy().tolist()
+    feature_values_list = features.detach().cpu().numpy().flatten().tolist()
     shap_summary = {}
     expected_value = None
 
@@ -377,11 +377,8 @@ def evaluate_answer_node(state: AgentState):
         shap_values, expected_value = explainer.explain_prediction(features, background_data)
 
         shap_values_np = np.asarray(shap_values, dtype=np.float32)
-        if shap_values_np.ndim == 1:
-            shap_values_np = shap_values_np.reshape(1, -1)
-
-        shap_values_list = shap_values_np.tolist()
-        shap_summary = dict(zip(feature_names, shap_values_np[0].tolist()))
+        shap_values_list = shap_values_np.flatten().tolist()
+        shap_summary = dict(zip(feature_names, shap_values_np.flatten().tolist()))
 
         os.makedirs("reports", exist_ok=True)
         explainer.plot_waterfall(
@@ -600,6 +597,21 @@ def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
     raw.setdefault("how_to_improve", raw["improvements"])
     raw.setdefault("tips", [])
     raw.setdefault("recommended_topics", [])
+
+    # Ensure list fields contain only strings (LLM may return dicts)
+    def _to_str_list(items):
+        result = []
+        for item in (items or []):
+            if isinstance(item, str):
+                result.append(item)
+            elif isinstance(item, dict):
+                result.append(item.get("text") or item.get("description") or item.get("content") or str(item))
+            elif item is not None:
+                result.append(str(item))
+        return result
+
+    for _field in ("strengths", "weaknesses", "areas_to_improve", "improvements", "how_to_improve", "tips", "recommended_topics"):
+        raw[_field] = _to_str_list(raw.get(_field, []))
     raw.setdefault("performance_level", (
         "Excellent"        if avg_score >= 85 else
         "Good"             if avg_score >= 70 else
