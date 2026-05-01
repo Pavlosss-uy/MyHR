@@ -22,24 +22,26 @@ const getStatus = (score) => {
 };
 
 const HRDashboard = () => {
-    const { user, loading: authLoading } = useAuth();
+    const { user, loading: authLoading, isAdmin } = useAuth();
     const [jobs, setJobs] = useState([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         if (authLoading) return;
-        if (!user) { setLoading(false); return; }
+        if (!user?.accessToken) { setLoading(false); return; }
+        let cancelled = false;
         (async () => {
             try {
                 const data = await getJobs();
-                setJobs(data.jobs || []);
+                if (!cancelled) setJobs(data.jobs || []);
             } catch (err) {
                 console.error("Failed to load jobs:", err);
             } finally {
-                setLoading(false);
+                if (!cancelled) setLoading(false);
             }
         })();
-    }, [user, authLoading]);
+        return () => { cancelled = true; };
+    }, [user?.accessToken, authLoading]);
 
     // Aggregate stats from jobs
     const totalCandidates = jobs.reduce((sum, j) => sum + (j.stats?.totalCandidates || 0), 0);
@@ -63,12 +65,14 @@ const HRDashboard = () => {
                         <p className="text-muted-foreground mt-1">Overview of your hiring pipeline and candidate performance.</p>
                     </div>
                     <div className="flex gap-3">
-                        <Button variant="outline" size="sm" asChild>
-                            <Link to="/admin/requests">
-                                <Shield className="w-4 h-4 mr-1.5" />
-                                Access Requests
-                            </Link>
-                        </Button>
+                        {isAdmin && (
+                            <Button variant="outline" size="sm" asChild>
+                                <Link to="/admin/requests">
+                                    <Shield className="w-4 h-4 mr-1.5" />
+                                    Access Requests
+                                </Link>
+                            </Button>
+                        )}
                         <Button variant="outline" size="sm" asChild>
                             <Link to="/hr/analytics">
                                 <BarChart3 className="w-4 h-4 mr-1.5" />
@@ -186,12 +190,14 @@ const HRDashboard = () => {
                                             Create New Job
                                         </Link>
                                     </Button>
-                                    <Button variant="outline" className="w-full justify-start" size="sm" asChild>
-                                        <Link to="/admin/requests">
-                                            <Shield className="w-4 h-4 mr-2" />
-                                            Review Access Requests
-                                        </Link>
-                                    </Button>
+                                    {isAdmin && (
+                                        <Button variant="outline" className="w-full justify-start" size="sm" asChild>
+                                            <Link to="/admin/requests">
+                                                <Shield className="w-4 h-4 mr-2" />
+                                                Review Access Requests
+                                            </Link>
+                                        </Button>
+                                    )}
                                     <Button variant="outline" className="w-full justify-start" size="sm" asChild>
                                         <Link to="/hr/analytics">
                                             <BarChart3 className="w-4 h-4 mr-2" />

@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { Loader2 } from "lucide-react";
@@ -42,6 +42,33 @@ const SmartLanding = () => {
     }
 
     return <Landing />;
+};
+
+/**
+ * Restricts a route to the myhr admin account only.
+ * Any authenticated non-admin is sent back to the HR dashboard.
+ */
+const AdminRoute = ({ children }) => {
+    const { isAuthenticated, loading, isAdmin } = useAuth();
+    const location = useLocation();
+
+    if (loading) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-background">
+                <Loader2 className="w-8 h-8 animate-spin text-cobalt" />
+            </div>
+        );
+    }
+
+    if (!isAuthenticated) {
+        return <Navigate to="/auth" state={{ from: location }} replace />;
+    }
+
+    if (!isAdmin) {
+        return <Navigate to="/hr/dashboard" replace />;
+    }
+
+    return children;
 };
 
 // Auth callbacks
@@ -88,10 +115,15 @@ const App = () => (
                         <Route path="/verify-email" element={<VerifyEmail />} />
 
                         {/* B2B public routes */}
-                        <Route path="/request-access"            element={<RequestAccess />} />
-                        <Route path="/invite/:token"             element={<AcceptInvitation />} />
+                        <Route path="/request-access"             element={<RequestAccess />} />
+                        <Route path="/invite/:token"              element={<AcceptInvitation />} />
                         <Route path="/candidate-interview/:token" element={<CandidateInterviewPortal />} />
-                        <Route path="/admin/requests"            element={<AdminPendingRequests />} />
+
+                        {/* Admin-only — myhr account only */}
+                        <Route
+                            path="/admin/requests"
+                            element={<AdminRoute><AdminPendingRequests /></AdminRoute>}
+                        />
 
                         {/* OAuth callbacks (public — must complete before auth state settles) */}
                         <Route path="/auth/callback/google"   element={<GoogleAuthCallback />} />
@@ -100,37 +132,37 @@ const App = () => (
                         {/* ── Protected: Candidate ───────────────────────── */}
                         <Route
                             path="/candidate"
-                            element={<ProtectedRoute><CandidateHome /></ProtectedRoute>}
+                            element={<ProtectedRoute requireRole="candidate"><CandidateHome /></ProtectedRoute>}
                         />
                         <Route
                             path="/candidate/history"
-                            element={<ProtectedRoute><InterviewHistory /></ProtectedRoute>}
+                            element={<ProtectedRoute requireRole="candidate"><InterviewHistory /></ProtectedRoute>}
                         />
                         <Route
                             path="/interview"
-                            element={<ProtectedRoute><InterviewRoom /></ProtectedRoute>}
+                            element={<ProtectedRoute requireRole="candidate"><InterviewRoom /></ProtectedRoute>}
                         />
                         <Route
                             path="/feedback"
-                            element={<ProtectedRoute><FeedbackReport /></ProtectedRoute>}
+                            element={<ProtectedRoute requireRole="candidate"><FeedbackReport /></ProtectedRoute>}
                         />
 
                         {/* ── Protected: HR ──────────────────────────────── */}
                         <Route
                             path="/hr/dashboard"
-                            element={<ProtectedRoute><HRDashboard /></ProtectedRoute>}
+                            element={<ProtectedRoute requireRole="hr"><HRDashboard /></ProtectedRoute>}
                         />
                         <Route
                             path="/hr/jobs"
-                            element={<ProtectedRoute><JobManagement /></ProtectedRoute>}
+                            element={<ProtectedRoute requireRole="hr"><JobManagement /></ProtectedRoute>}
                         />
                         <Route
                             path="/hr/analytics"
-                            element={<ProtectedRoute><Analytics /></ProtectedRoute>}
+                            element={<ProtectedRoute requireRole="hr"><Analytics /></ProtectedRoute>}
                         />
                         <Route
                             path="/hr/candidate/:id"
-                            element={<ProtectedRoute><CandidateProfile /></ProtectedRoute>}
+                            element={<ProtectedRoute requireRole="hr"><CandidateProfile /></ProtectedRoute>}
                         />
 
                         {/* ── Shared protected ───────────────────────────── */}

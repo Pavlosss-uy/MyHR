@@ -926,6 +926,154 @@ async def complete_candidate_interview(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  MODULE: Analytics
+# ─────────────────────────────────────────────────────────────────────────────
+
+@hr_router.get("/analytics")
+async def get_analytics(company_id: str = Depends(get_current_company_id)):
+    """
+    Return real hiring analytics for the authenticated company.
+    Uses pre-computed job stats for the overview numbers, and scans candidates
+    for trends and recent activity.
+    """
+    from datetime import datetime as _dt
+
+    jobs = query_collection("Jobs", filters=[("companyId", "==", company_id)])
+    jobs.sort(key=lambda j: j.get("createdAt") or "", reverse=True)
+
+    total_candidates = 0
+    total_interviewed = 0
+    all_match_scores: list[float] = []
+    all_interview_scores: list[float] = []
+    monthly_buckets: dict[str, dict] = {}  # "YYYY-MM" → {candidates, interviewed}
+    jobs_breakdown: list[dict] = []
+    recent_completed: list[dict] = []
+
+    for job in jobs:
+        job_id = job["id"]
+        j_stats = job.get("stats", {})
+
+        total_candidates += j_stats.get("totalCandidates", 0)
+        total_interviewed += j_stats.get("interviewed", 0)
+        avg_match = j_stats.get("avgMatchScore", 0)
+        if avg_match:
+            all_match_scores.append(avg_match)
+
+        jobs_breakdown.append({
+            "title": job.get("title", "Unknown"),
+            "candidates": j_stats.get("totalCandidates", 0),
+            "avg_score": round(avg_match, 1),
+        })
+
+        # Scan candidates for trends + interview scores + recent activity
+        try:
+            candidates = get_subcollection_docs(
+                "Jobs", job_id, "Candidates",
+                order_by="matchScore", order_dir="DESCENDING",
+            )
+        except Exception:
+            candidates = []
+
+        for c in candidates:
+            if c.get("interviewStatus") == "ignored":
+                continue
+
+            # Collect interview scores
+            score = c.get("interviewScore", 0)
+            if score and c.get("interviewStatus") == "completed":
+                all_interview_scores.append(float(score))
+
+            # Monthly bucketing from uploadedAt / updatedAt / createdAt
+            ts = c.get("uploadedAt") or c.get("createdAt") or c.get("updatedAt")
+            if ts:
+                try:
+                    if hasattr(ts, "strftime"):
+                        key = ts.strftime("%Y-%m")
+                    else:
+                        key = _dt.fromisoformat(str(ts)).strftime("%Y-%m")
+                    if key not in monthly_buckets:
+                        monthly_buckets[key] = {"candidates": 0, "interviewed": 0}
+                    monthly_buckets[key]["candidates"] += 1
+                    if c.get("interviewStatus") == "completed":
+                        monthly_buckets[key]["interviewed"] += 1
+                except Exception:
+                    pass
+
+            # Recent completed interviews for the activity feed
+            if c.get("interviewStatus") == "completed":
+                updated = c.get("updatedAt") or c.get("invitationSentAt")
+                recent_completed.append({
+                    "action": "Interview completed",
+                    "candidate": c.get("name", "Unknown"),
+                    "job": job.get("title", "Position"),
+                    "raw_ts": updated,
+                })
+
+    # Build monthly trends — last 6 months that have data, sorted
+    sorted_months = sorted(monthly_buckets.keys())[-6:]
+    monthly_trends = []
+    for m in sorted_months:
+        label = m
+        try:
+            label = _dt.strptime(m, "%Y-%m").strftime("%b %Y")
+        except Exception:
+            pass
+        monthly_trends.append({
+            "month": label,
+            "candidates": monthly_buckets[m]["candidates"],
+            "interviewed": monthly_buckets[m]["interviewed"],
+        })
+
+    # Sort recent activity by timestamp desc, take top 5
+    def _ts_sort_key(item):
+        ts = item.get("raw_ts")
+        if not ts:
+            return ""
+        if hasattr(ts, "timestamp"):
+            return str(ts.timestamp())
+        return str(ts)
+
+    recent_activity_raw = sorted(recent_completed, key=_ts_sort_key, reverse=True)[:5]
+    recent_activity = []
+    _now = _dt.now(timezone.utc)
+    for item in recent_activity_raw:
+        ts = item.get("raw_ts")
+        time_ago = ""
+        try:
+            if ts and hasattr(ts, "timestamp"):
+                diff = _now.timestamp() - ts.timestamp()
+                if diff < 3600:
+                    time_ago = f"{int(diff // 60)} min ago"
+                elif diff < 86400:
+                    time_ago = f"{int(diff // 3600)} hr ago"
+                else:
+                    time_ago = f"{int(diff // 86400)} day{'s' if diff // 86400 > 1 else ''} ago"
+        except Exception:
+            pass
+        recent_activity.append({
+            "action": item["action"],
+            "candidate": item["candidate"],
+            "job": item["job"],
+            "time_ago": time_ago,
+        })
+
+    avg_match_score = round(sum(all_match_scores) / len(all_match_scores), 1) if all_match_scores else 0
+    avg_interview_score = round(sum(all_interview_scores) / len(all_interview_scores), 1) if all_interview_scores else 0
+
+    return {
+        "stats": {
+            "total_candidates": total_candidates,
+            "total_interviewed": total_interviewed,
+            "avg_match_score": avg_match_score,
+            "avg_interview_score": avg_interview_score,
+        },
+        "monthly_trends": monthly_trends,
+        "jobs_breakdown": jobs_breakdown[:8],
+        "recent_activity": recent_activity,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Helper: retrieve CV text + JD for token-based interview start (used by server.py)
 # ─────────────────────────────────────────────────────────────────────────────
 

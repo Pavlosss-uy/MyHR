@@ -1,12 +1,15 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
+import CameraFeed from "@/components/CameraFeed";
 import { validateInterviewToken, completeCandidateInterview, startInterviewFromToken, submitAnswer } from "@/lib/interviewApi";
 import {
     Brain,
     Mic,
     MicOff,
+    Camera,
+    CameraOff,
     CheckCircle2,
     Loader2,
     AlertCircle,
@@ -19,27 +22,38 @@ import {
  * Public candidate interview portal — no authentication required.
  * Token-based access from HR invitation email.
  * Key design constraint: NO report shown to candidate after completion.
+ *
+ * Camera is requested when the interview starts (not on the welcome screen)
+ * so the permission prompt doesn't surprise the candidate before they've read
+ * the instructions.
  */
 const CandidateInterviewPortal = () => {
     const { token } = useParams();
-    useNavigate(); // keep router context available
+    useNavigate();
 
     // State machine: "loading" → "welcome" → "interview" → "completed" | "error"
     const [phase, setPhase] = useState("loading");
     const [error, setError] = useState("");
 
     // Interview context
-    const [context, setContext] = useState(null);
-    const [sessionId, setSessionId] = useState(null);
+    const [context, setContext]             = useState(null);
+    const [sessionId, setSessionId]         = useState(null);
     const [currentQuestion, setCurrentQuestion] = useState("");
-    const [questionNumber, setQuestionNumber] = useState(0);
-    const [maxQuestions, setMaxQuestions] = useState(5);
-    const [audioUrl, setAudioUrl] = useState(null);
+    const [questionNumber, setQuestionNumber]   = useState(0);
+    const [maxQuestions, setMaxQuestions]       = useState(5);
+    const [audioUrl, setAudioUrl]               = useState(null);
 
     // Recording state
-    const [isRecording, setIsRecording] = useState(false);
+    const [isRecording, setIsRecording]     = useState(false);
     const [mediaRecorder, setMediaRecorder] = useState(null);
-    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [isSubmitting, setIsSubmitting]   = useState(false);
+
+    // Camera state (video-only stream, separate from the audio recording)
+    const videoRef        = useRef(null);
+    const [cameraStream, setCameraStream]   = useState(null);
+    const [isCameraOn, setIsCameraOn]       = useState(false);
+    const [cameraError, setCameraError]     = useState(null);
+    const [isMicOn, setIsMicOn]             = useState(true);
 
     // Collected evaluations for the final report
     const [evaluations, setEvaluations] = useState([]);
@@ -58,9 +72,40 @@ const CandidateInterviewPortal = () => {
         })();
     }, [token]);
 
+    // Bind video element whenever the camera stream changes
+    useEffect(() => {
+        if (videoRef.current && cameraStream) {
+            videoRef.current.srcObject = cameraStream;
+        }
+    }, [cameraStream]);
+
+    // Clean up camera tracks when interview ends
+    useEffect(() => {
+        if (phase === "completed" || phase === "error") {
+            if (cameraStream) {
+                cameraStream.getTracks().forEach((t) => t.stop());
+                setCameraStream(null);
+                setIsCameraOn(false);
+            }
+        }
+    }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
+
     // Start the interview using the candidate's stored CV + JD from Firestore
     const handleStart = async () => {
         setPhase("loading");
+
+        // Request camera access (video-only) — gracefully degrade if denied
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+            });
+            setCameraStream(stream);
+            setIsCameraOn(true);
+        } catch {
+            setCameraError("Camera permission denied. The interview will continue without video.");
+        }
+
+        // Start the interview session
         try {
             const startData = await startInterviewFromToken(token);
             setSessionId(startData.session_id);
@@ -75,7 +120,16 @@ const CandidateInterviewPortal = () => {
         }
     };
 
-    // Recording controls
+    // Toggle camera on/off
+    const toggleCamera = () => {
+        if (!cameraStream) return;
+        cameraStream.getVideoTracks().forEach((t) => {
+            t.enabled = !t.enabled;
+        });
+        setIsCameraOn((v) => !v);
+    };
+
+    // Recording controls — audio-only, separate from the video stream
     const startRecording = async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -92,7 +146,8 @@ const CandidateInterviewPortal = () => {
             recorder.start();
             setMediaRecorder(recorder);
             setIsRecording(true);
-        } catch (err) {
+            setIsMicOn(true);
+        } catch {
             setError("Microphone access is required for the interview.");
         }
     };
@@ -119,7 +174,6 @@ const CandidateInterviewPortal = () => {
             setEvaluations(updatedEvals);
 
             if (result.status === "completed" || questionNumber >= maxQuestions) {
-                // Compute avgScore from the fully updated list (not stale state)
                 const avgScore = updatedEvals.length > 0
                     ? updatedEvals.reduce((sum, e) => sum + (e.score || 0), 0) / updatedEvals.length
                     : 0;
@@ -127,8 +181,8 @@ const CandidateInterviewPortal = () => {
                 try {
                     await completeCandidateInterview(token, sessionId, avgScore, {
                         evaluations: updatedEvals,
-                        summary: result.rich_report?.summary || "",
-                        strengths: result.rich_report?.strengths || [],
+                        summary:    result.rich_report?.summary    || "",
+                        strengths:  result.rich_report?.strengths  || [],
                         weaknesses: result.rich_report?.weaknesses || [],
                     });
                 } catch (completeErr) {
@@ -149,19 +203,19 @@ const CandidateInterviewPortal = () => {
         }
     };
 
-    // ─── RENDER ────────────────────────────────────────────────────────────
+    // ─── RENDER ────────────────────────────────────────────────────────────────
 
-    // Error state
     if (phase === "error") {
         const isExpired = error.includes("expired");
         return (
             <div className="min-h-screen flex items-center justify-center p-6 bg-background">
                 <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-                    className="w-full max-w-sm text-center"
-                >
+                    className="w-full max-w-sm text-center">
                     <div className="bg-card rounded-2xl border border-border p-8 space-y-5 shadow-sm">
                         <div className="w-16 h-16 rounded-full bg-destructive/10 flex items-center justify-center mx-auto">
-                            {isExpired ? <Clock className="w-8 h-8 text-warning" /> : <AlertCircle className="w-8 h-8 text-destructive" />}
+                            {isExpired
+                                ? <Clock className="w-8 h-8 text-warning" />
+                                : <AlertCircle className="w-8 h-8 text-destructive" />}
                         </div>
                         <h2 className="text-xl font-bold text-foreground">
                             {isExpired ? "Link Expired" : "Invalid Link"}
@@ -173,7 +227,6 @@ const CandidateInterviewPortal = () => {
         );
     }
 
-    // Loading
     if (phase === "loading") {
         return (
             <div className="min-h-screen flex items-center justify-center bg-background">
@@ -182,7 +235,6 @@ const CandidateInterviewPortal = () => {
         );
     }
 
-    // Welcome screen
     if (phase === "welcome") {
         return (
             <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
@@ -196,7 +248,6 @@ const CandidateInterviewPortal = () => {
                     className="relative w-full max-w-lg"
                 >
                     <div className="bg-card rounded-2xl border border-border p-8 lg:p-10 space-y-6 shadow-cobalt">
-                        {/* Branding */}
                         <div className="text-center space-y-3">
                             <div className="flex items-center justify-center gap-2.5">
                                 <div className="w-10 h-10 rounded-xl gradient-cobalt flex items-center justify-center shadow-cobalt">
@@ -207,24 +258,20 @@ const CandidateInterviewPortal = () => {
                                 </span>
                             </div>
                             <h1 className="text-2xl font-bold text-foreground mt-4">AI Interview</h1>
-                            <p className="text-muted-foreground">
-                                You've been invited to interview for
-                            </p>
+                            <p className="text-muted-foreground">You've been invited to interview for</p>
                         </div>
 
-                        {/* Context card */}
                         <div className="bg-muted rounded-xl p-5 space-y-2">
                             <p className="font-semibold text-foreground text-lg">{context?.jobTitle || "Position"}</p>
                             <p className="text-sm text-muted-foreground">at {context?.companyName || "Company"}</p>
                         </div>
 
-                        {/* Instructions */}
                         <div className="space-y-3">
                             <p className="text-sm font-medium text-foreground">What to expect:</p>
                             <ul className="space-y-2 text-sm text-muted-foreground">
                                 {[
                                     "5–7 questions tailored to the job description",
-                                    "You'll answer using your microphone",
+                                    "Answer using your microphone — camera is optional",
                                     "AI evaluates your responses in real time",
                                     "Results are shared with the hiring team",
                                 ].map((item) => (
@@ -250,92 +297,135 @@ const CandidateInterviewPortal = () => {
         );
     }
 
-    // Interview in progress
     if (phase === "interview") {
-        return (
-            <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-background relative">
-                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,hsl(222_80%_6%/0.03),transparent_70%)]" />
+        const progressPct = Math.min(((questionNumber - 1) / maxQuestions) * 100, 100);
 
-                <div className="relative w-full max-w-2xl space-y-8">
-                    {/* Progress */}
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2.5">
-                            <div className="w-8 h-8 rounded-lg gradient-cobalt flex items-center justify-center">
-                                <Brain className="w-4 h-4 text-primary-foreground" />
+        return (
+            <div className="min-h-screen bg-background">
+                {/* Progress bar */}
+                <div className="fixed top-0 left-0 right-0 z-50 h-1 bg-muted">
+                    <motion.div
+                        className="h-full gradient-cobalt"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${progressPct}%` }}
+                        transition={{ duration: 0.5 }}
+                    />
+                </div>
+
+                <div className="pt-6 pb-12 min-h-screen flex flex-col items-center justify-center p-6 relative">
+                    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,hsl(222_80%_6%/0.03),transparent_70%)]" />
+
+                    <div className="relative w-full max-w-3xl space-y-4">
+                        {/* Header */}
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded-lg gradient-cobalt flex items-center justify-center">
+                                    <Brain className="w-4 h-4 text-primary-foreground" />
+                                </div>
+                                <span className="font-semibold text-foreground">
+                                    My<span className="text-gradient-cobalt">HR</span>
+                                </span>
                             </div>
-                            <span className="font-semibold text-foreground">
-                                My<span className="text-gradient-cobalt">HR</span>
+                            <span className="text-sm font-medium text-muted-foreground">
+                                Question {questionNumber} of {maxQuestions}
                             </span>
                         </div>
-                        <span className="text-sm font-medium text-muted-foreground">
-                            Question {questionNumber} of {maxQuestions}
-                        </span>
-                    </div>
 
-                    {/* Progress bar */}
-                    <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                        <motion.div
-                            className="h-full gradient-cobalt rounded-full"
-                            initial={{ width: 0 }}
-                            animate={{ width: `${(questionNumber / maxQuestions) * 100}%` }}
-                            transition={{ duration: 0.5 }}
-                        />
-                    </div>
+                        {/* Split layout: camera left, question right */}
+                        <div className="grid md:grid-cols-[2fr_3fr] gap-4">
 
-                    {/* Question card */}
-                    <motion.div
-                        key={questionNumber}
-                        initial={{ opacity: 0, y: 12 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="bg-card rounded-2xl border border-border p-8 space-y-6 shadow-sm"
-                    >
-                        <p className="text-lg font-medium text-foreground leading-relaxed">
-                            {currentQuestion}
-                        </p>
-
-                        {/* Audio playback */}
-                        {audioUrl && (
-                            <div className="flex items-center gap-2 text-sm text-cobalt-light">
-                                <Volume2 className="w-4 h-4" />
-                                <audio src={audioUrl} autoPlay controls className="h-8" />
-                            </div>
-                        )}
-
-                        {/* Recording controls */}
-                        <div className="flex items-center justify-center pt-4">
-                            {isSubmitting ? (
-                                <div className="flex flex-col items-center gap-2">
-                                    <Loader2 className="w-8 h-8 animate-spin text-cobalt" />
-                                    <p className="text-sm text-muted-foreground">Processing your answer...</p>
+                            {/* Camera panel */}
+                            <div className="flex flex-col gap-3">
+                                <div className="aspect-[4/3] rounded-xl overflow-hidden">
+                                    <CameraFeed
+                                        videoRef={videoRef}
+                                        isCameraOn={isCameraOn && !!cameraStream}
+                                        error={cameraError}
+                                    />
                                 </div>
-                            ) : isRecording ? (
-                                <button
-                                    onClick={stopRecording}
-                                    className="relative w-20 h-20 rounded-full bg-destructive flex items-center justify-center shadow-lg hover:bg-destructive/90 transition-colors group"
-                                >
-                                    <div className="absolute inset-0 rounded-full bg-destructive/30 animate-ping" />
-                                    <MicOff className="w-8 h-8 text-white relative z-10" />
-                                </button>
-                            ) : (
-                                <button
-                                    onClick={startRecording}
-                                    className="w-20 h-20 rounded-full gradient-cobalt flex items-center justify-center shadow-cobalt-lg hover:shadow-cobalt transition-shadow group"
-                                >
-                                    <Mic className="w-8 h-8 text-white group-hover:scale-110 transition-transform" />
-                                </button>
-                            )}
-                        </div>
 
-                        <p className="text-center text-xs text-muted-foreground">
-                            {isRecording ? "Click to stop recording" : "Click the mic to start answering"}
-                        </p>
-                    </motion.div>
+                                {/* Camera error notice */}
+                                {cameraError && (
+                                    <p className="text-[11px] text-muted-foreground text-center leading-snug">
+                                        {cameraError}
+                                    </p>
+                                )}
+
+                                {/* Camera toggle — only if we have a stream */}
+                                {cameraStream && (
+                                    <button
+                                        onClick={toggleCamera}
+                                        className={`w-full flex items-center justify-center gap-2 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                                            isCameraOn
+                                                ? "bg-muted border-border text-muted-foreground hover:bg-muted/80"
+                                                : "bg-destructive/10 border-destructive/20 text-destructive hover:bg-destructive/20"
+                                        }`}
+                                    >
+                                        {isCameraOn
+                                            ? <><Camera className="w-3.5 h-3.5" /> Camera on</>
+                                            : <><CameraOff className="w-3.5 h-3.5" /> Camera off</>}
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* Question + recording */}
+                            <motion.div
+                                key={questionNumber}
+                                initial={{ opacity: 0, y: 12 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="bg-card rounded-2xl border border-border p-6 space-y-6 shadow-sm flex flex-col"
+                            >
+                                <p className="text-base font-medium text-foreground leading-relaxed flex-1">
+                                    {currentQuestion}
+                                </p>
+
+                                {/* Audio playback */}
+                                {audioUrl && (
+                                    <div className="flex items-center gap-2 text-sm text-cobalt-light">
+                                        <Volume2 className="w-4 h-4" />
+                                        <audio src={audioUrl} autoPlay controls className="h-8 flex-1" />
+                                    </div>
+                                )}
+
+                                {/* Recording controls */}
+                                <div className="flex flex-col items-center gap-3 pt-2">
+                                    {isSubmitting ? (
+                                        <div className="flex flex-col items-center gap-2">
+                                            <Loader2 className="w-10 h-10 animate-spin text-cobalt" />
+                                            <p className="text-sm text-muted-foreground">Processing your answer…</p>
+                                        </div>
+                                    ) : isRecording ? (
+                                        <div className="flex flex-col items-center gap-2">
+                                            <button
+                                                onClick={stopRecording}
+                                                className="relative w-16 h-16 rounded-full bg-destructive flex items-center justify-center shadow-lg hover:bg-destructive/90 transition-colors"
+                                            >
+                                                <div className="absolute inset-0 rounded-full bg-destructive/30 animate-ping" />
+                                                <MicOff className="w-7 h-7 text-white relative z-10" />
+                                            </button>
+                                            <p className="text-xs text-destructive font-medium">Recording — tap to stop</p>
+                                        </div>
+                                    ) : (
+                                        <div className="flex flex-col items-center gap-2">
+                                            <button
+                                                onClick={startRecording}
+                                                className="w-16 h-16 rounded-full gradient-cobalt flex items-center justify-center shadow-cobalt-lg hover:shadow-cobalt transition-shadow"
+                                            >
+                                                <Mic className="w-7 h-7 text-white" />
+                                            </button>
+                                            <p className="text-xs text-muted-foreground">Tap the mic to answer</p>
+                                        </div>
+                                    )}
+                                </div>
+                            </motion.div>
+                        </div>
+                    </div>
                 </div>
             </div>
         );
     }
 
-    // Completed — NO report shown
+    // Completed — NO report shown to candidate
     if (phase === "completed") {
         return (
             <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
@@ -362,7 +452,8 @@ const CandidateInterviewPortal = () => {
                             <h2 className="text-2xl font-bold text-foreground">Interview Complete</h2>
                             <p className="text-muted-foreground leading-relaxed">
                                 Thank you for completing the interview. Your responses have been
-                                submitted to the hiring team at <span className="font-medium text-foreground">{context?.companyName}</span>.
+                                submitted to the hiring team at{" "}
+                                <span className="font-medium text-foreground">{context?.companyName}</span>.
                             </p>
                         </div>
 

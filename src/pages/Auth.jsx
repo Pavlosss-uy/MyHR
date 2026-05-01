@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Brain, Chrome, Mail, Lock, User, ArrowRight, ArrowLeft, Eye, EyeOff, KeyRound } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
+import { ADMIN_EMAIL, ADMIN_PASSWORD } from "@/contexts/AuthContext";
 import { registerUserRole, getUserRole } from "@/lib/interviewApi";
 
 const ROLE_KEY = "myhr_role";
@@ -121,28 +122,57 @@ const Auth = () => {
 
                 navigate("/verify-email", { replace: true });
             } else {
-                const credential = await signInWithEmailAndPassword(auth, email, password);
-                // Enforce portal — block cross-portal sign-ins
-                if (role) {
-                    const roleData = await getUserRole(credential.user.uid);
-                    const storedRole = roleData?.role;
-                    if (storedRole && storedRole !== role) {
-                        await signOut(auth);
-                        const portalName = role === "hr" ? "Enterprise" : "Personal Training";
-                        const correctPortal = storedRole === "hr" ? "Enterprise" : "Personal Training";
-                        setFormError(
-                            `This account is registered as ${correctPortal}. Please sign in through the ${correctPortal} portal.`
-                        );
+                // ── SIGN-IN LOGIC ────────────────────────────────────────
+                const normalizedEmail = email.toLowerCase();
+
+                // ▸ Super Admin fast-path
+                if (normalizedEmail === ADMIN_EMAIL) {
+                    // Admin must NOT sign in through the candidate/training portal
+                    if (role === "candidate") {
+                        setFormError("Invalid email or password.");
                         setIsLoading(false);
                         return;
                     }
-                    if (storedRole) {
-                        sessionStorage.setItem(ROLE_KEY, storedRole);
-                        localStorage.setItem(ROLE_KEY, storedRole);
+                    // Verify the hardcoded admin password before touching Firebase
+                    if (password !== ADMIN_PASSWORD) {
+                        setFormError("Invalid email or password.");
+                        setIsLoading(false);
+                        return;
                     }
+                    // Credentials match — create Firebase session
+                    await signInWithEmailAndPassword(auth, email, password);
+                    // AuthContext.onAuthStateChanged will auto-assign role="hr"
+                    sessionStorage.setItem(ROLE_KEY, "hr");
+                    localStorage.setItem(ROLE_KEY, "hr");
+                    // Redirect handled by the useEffect above
+
+                // ▸ Regular user — portal-match interception
+                } else {
+                    // Sign in first (we need the uid for role lookup)
+                    const credential = await signInWithEmailAndPassword(auth, email, password);
+
+                    // If a portal role is specified, verify it matches BEFORE the
+                    // UI has a chance to render the wrong dashboard (flicker fix)
+                    if (role) {
+                        const roleData = await getUserRole(credential.user.uid);
+                        const storedRole = roleData?.role;
+
+                        if (storedRole && storedRole !== role) {
+                            // Mismatch — tear down the session immediately
+                            await signOut(auth);
+                            setFormError("Invalid email or password.");
+                            setIsLoading(false);
+                            return;
+                        }
+                        // Match or first-time user — persist
+                        if (storedRole) {
+                            sessionStorage.setItem(ROLE_KEY, storedRole);
+                            localStorage.setItem(ROLE_KEY, storedRole);
+                        }
+                    }
+                    // onAuthStateChanged in AuthContext will update `user`;
+                    // the useEffect above will redirect once isAuthenticated flips.
                 }
-                // onAuthStateChanged in AuthContext will update `user`;
-                // the useEffect above will redirect once isAuthenticated flips.
             }
         } catch (err) {
             const msg = getErrorMessage(err.code);
@@ -182,7 +212,39 @@ const Auth = () => {
         setFormError("");
         setIsLoading(true);
         try {
-            await signInWithPopup(auth, googleProvider);
+            const result = await signInWithPopup(auth, googleProvider);
+            const googleEmail = result.user?.email?.toLowerCase();
+
+            // ▸ Admin via Google — auto-assign hr role, block on candidate portal
+            if (googleEmail === ADMIN_EMAIL) {
+                if (role === "candidate") {
+                    await signOut(auth);
+                    setFormError("Invalid email or password.");
+                    setIsLoading(false);
+                    return;
+                }
+                sessionStorage.setItem(ROLE_KEY, "hr");
+                localStorage.setItem(ROLE_KEY, "hr");
+                navigate("/hr/dashboard", { replace: true });
+                return;
+            }
+
+            // ▸ Regular Google user — portal-match check
+            if (role) {
+                const roleData = await getUserRole(result.user.uid);
+                const storedRole = roleData?.role;
+                if (storedRole && storedRole !== role) {
+                    await signOut(auth);
+                    setFormError("Invalid email or password.");
+                    setIsLoading(false);
+                    return;
+                }
+                if (storedRole) {
+                    sessionStorage.setItem(ROLE_KEY, storedRole);
+                    localStorage.setItem(ROLE_KEY, storedRole);
+                }
+            }
+
             redirectAfterAuth();
         } catch (err) {
             if (err.code === "auth/account-exists-with-different-credential") {

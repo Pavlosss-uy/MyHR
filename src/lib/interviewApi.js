@@ -293,6 +293,11 @@ export async function ignoreCandidate(jobId, candidateId) {
     return apiFetch(`/jobs/${jobId}/candidates/${candidateId}`, { method: "DELETE" });
 }
 
+/** Fetch real hiring analytics for the authenticated company */
+export async function getAnalytics() {
+    return apiFetch("/analytics");
+}
+
 // ─── User Role ───────────────────────────────────────────────────────────────
 
 /** Register a user's portal role (candidate | hr) in Firestore */
