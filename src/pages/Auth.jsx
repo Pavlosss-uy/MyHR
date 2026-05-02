@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -51,7 +51,7 @@ const Auth = () => {
     const navigate        = useNavigate();
     const location        = useLocation();
     const { toast }       = useToast();
-    const { isAuthenticated, emailVerified } = useAuth();
+    const { isAuthenticated, emailVerified, isAdmin } = useAuth();
 
     const [isSignUp,           setIsSignUp]           = useState(searchParams.get("mode") === "signup");
     const [isForgotPassword,   setIsForgotPassword]   = useState(false);
@@ -65,6 +65,11 @@ const Auth = () => {
     const [linkPassword,       setLinkPassword]        = useState("");
     const [isLinking,          setIsLinking]           = useState(false);
 
+    // Prevents the auto-redirect useEffect from firing while handleSubmit is
+    // mid-flight doing a role check — otherwise Firebase auth state update
+    // triggers navigation before getUserRole returns.
+    const skipAutoRedirect = useRef(false);
+
     // Role from URL param or previously persisted session
     const role = searchParams.get("role") || sessionStorage.getItem("myhr_role") || "";
     const copy = ROLE_COPY[role] ?? {};
@@ -74,16 +79,20 @@ const Auth = () => {
         if (role) sessionStorage.setItem("myhr_role", role);
     }, [role]);
 
-    // If already authenticated and verified, send them home
+    // If already authenticated and verified, send them home.
+    // Suppressed while handleSubmit is doing an async role check.
     useEffect(() => {
+        if (skipAutoRedirect.current) return;
         if (isAuthenticated && emailVerified) {
-            const dest = location.state?.from?.pathname ?? (role === "hr" ? "/hr/dashboard" : "/candidate");
+            const dest = location.state?.from?.pathname ??
+                (isAdmin ? "/admin/requests" : role === "hr" ? "/hr/dashboard" : "/candidate");
             navigate(dest, { replace: true });
         }
     }, [isAuthenticated, emailVerified]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const redirectAfterAuth = () => {
-        const dest = location.state?.from?.pathname ?? (role === "hr" ? "/hr/dashboard" : "/candidate");
+        const dest = location.state?.from?.pathname ??
+            (isAdmin ? "/admin/requests" : role === "hr" ? "/hr/dashboard" : "/candidate");
         navigate(dest, { replace: true });
     };
 
@@ -141,18 +150,20 @@ const Auth = () => {
                     }
                     // Credentials match — create Firebase session
                     await signInWithEmailAndPassword(auth, email, password);
-                    // AuthContext.onAuthStateChanged will auto-assign role="hr"
                     sessionStorage.setItem(ROLE_KEY, "hr");
                     localStorage.setItem(ROLE_KEY, "hr");
-                    // Redirect handled by the useEffect above
+                    navigate("/admin/requests", { replace: true });
+                    return;
 
                 // ▸ Regular user — portal-match interception
                 } else {
+                    // Block the auto-redirect useEffect until we've confirmed
+                    // the role matches the portal the user signed in from.
+                    skipAutoRedirect.current = true;
+
                     // Sign in first (we need the uid for role lookup)
                     const credential = await signInWithEmailAndPassword(auth, email, password);
 
-                    // If a portal role is specified, verify it matches BEFORE the
-                    // UI has a chance to render the wrong dashboard (flicker fix)
                     if (role) {
                         const roleData = await getUserRole(credential.user.uid);
                         const storedRole = roleData?.role;
@@ -160,21 +171,23 @@ const Auth = () => {
                         if (storedRole && storedRole !== role) {
                             // Mismatch — tear down the session immediately
                             await signOut(auth);
+                            skipAutoRedirect.current = false;
                             setFormError("Invalid email or password.");
                             setIsLoading(false);
                             return;
                         }
-                        // Match or first-time user — persist
                         if (storedRole) {
                             sessionStorage.setItem(ROLE_KEY, storedRole);
                             localStorage.setItem(ROLE_KEY, storedRole);
                         }
                     }
-                    // onAuthStateChanged in AuthContext will update `user`;
-                    // the useEffect above will redirect once isAuthenticated flips.
+                    // Role confirmed — navigate explicitly rather than relying on useEffect
+                    skipAutoRedirect.current = false;
+                    redirectAfterAuth();
                 }
             }
         } catch (err) {
+            skipAutoRedirect.current = false;
             const msg = getErrorMessage(err.code);
             if (msg) setFormError(msg);
         } finally {
@@ -225,7 +238,13 @@ const Auth = () => {
                 }
                 sessionStorage.setItem(ROLE_KEY, "hr");
                 localStorage.setItem(ROLE_KEY, "hr");
-                navigate("/hr/dashboard", { replace: true });
+                // Link email/password provider so admin can also sign in with credentials.
+                // Silently skipped if already linked (auth/provider-already-linked).
+                try {
+                    const emailCred = EmailAuthProvider.credential(ADMIN_EMAIL, ADMIN_PASSWORD);
+                    await linkWithCredential(result.user, emailCred);
+                } catch { /* non-fatal */ }
+                navigate("/admin/requests", { replace: true });
                 return;
             }
 

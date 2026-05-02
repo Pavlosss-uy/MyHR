@@ -26,7 +26,7 @@ import CandidateInterviewPortal from "./pages/CandidateInterviewPortal";
  * after signing in.
  */
 const SmartLanding = () => {
-    const { isAuthenticated, loading } = useAuth();
+    const { isAuthenticated, loading, isAdmin } = useAuth();
 
     if (loading) {
         return (
@@ -37,6 +37,7 @@ const SmartLanding = () => {
     }
 
     if (isAuthenticated) {
+        if (isAdmin) return <Navigate to="/admin/requests" replace />;
         const role = sessionStorage.getItem("myhr_role") || "candidate";
         return <Navigate to={role === "hr" ? "/hr/dashboard" : "/candidate"} replace />;
     }

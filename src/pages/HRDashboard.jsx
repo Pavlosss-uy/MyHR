@@ -6,7 +6,7 @@ import StatCard from "@/components/StatCard";
 import CircularProgress from "@/components/CircularProgress";
 import { Users, Briefcase, Clock, TrendingUp, Star, MoreHorizontal, Play, BarChart3, Plus, Loader2, Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { getJobs } from "@/lib/interviewApi";
 
 const statusColors = {
@@ -23,25 +23,37 @@ const getStatus = (score) => {
 
 const HRDashboard = () => {
     const { user, loading: authLoading, isAdmin } = useAuth();
+    const navigate = useNavigate();
     const [jobs, setJobs] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [fetchError, setFetchError] = useState(null);
+    const [retryTick, setRetryTick] = useState(0);
+
+    useEffect(() => {
+        if (!authLoading && isAdmin) {
+            navigate("/admin/requests", { replace: true });
+        }
+    }, [isAdmin, authLoading, navigate]);
 
     useEffect(() => {
         if (authLoading) return;
-        if (!user?.accessToken) { setLoading(false); return; }
+        if (!user?.uid) { setLoading(false); return; }
         let cancelled = false;
+        setFetchError(null);
+        setLoading(true);
         (async () => {
             try {
                 const data = await getJobs();
                 if (!cancelled) setJobs(data.jobs || []);
             } catch (err) {
                 console.error("Failed to load jobs:", err);
+                if (!cancelled) setFetchError("Failed to load jobs.");
             } finally {
                 if (!cancelled) setLoading(false);
             }
         })();
         return () => { cancelled = true; };
-    }, [user?.accessToken, authLoading]);
+    }, [user?.accessToken, authLoading, retryTick]);
 
     // Aggregate stats from jobs
     const totalCandidates = jobs.reduce((sum, j) => sum + (j.stats?.totalCandidates || 0), 0);
@@ -114,7 +126,14 @@ const HRDashboard = () => {
                                 </Button>
                             </div>
 
-                            {jobs.length === 0 ? (
+                            {fetchError ? (
+                                <div className="p-8 text-center">
+                                    <p className="text-sm text-destructive mb-3">{fetchError}</p>
+                                    <Button variant="outline" size="sm" onClick={() => setRetryTick((t) => t + 1)}>
+                                        Retry
+                                    </Button>
+                                </div>
+                            ) : jobs.length === 0 ? (
                                 <div className="p-8 text-center">
                                     <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-3">
                                         <Briefcase className="w-7 h-7 text-muted-foreground" />
