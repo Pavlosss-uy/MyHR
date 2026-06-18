@@ -33,14 +33,15 @@ class InterviewCrossEncoderScorer:
         "cross_encoder_scorer_v1",
     )
 
-    def __init__(self, model_name_or_path=None):
+    def __init__(self, model_path: str = None, base_model: str = None):
         """
         Initialize the cross-encoder scorer.
-        
+
         Args:
-            model_path: Path to fine-tuned model directory. If None, tries
-                        default checkpoint, then falls back to base model.
-            base_model: Base model name (default: ms-marco-MiniLM-L-12-v2)
+            model_path: Path to fine-tuned model directory. If None, tries the
+                        default checkpoint dir, then falls back to the base model.
+            base_model: HuggingFace model name to use as the base. Defaults to
+                        DEFAULT_BASE_MODEL (ms-marco-MiniLM-L-12-v2).
         """
         base = base_model or self.DEFAULT_BASE_MODEL
 

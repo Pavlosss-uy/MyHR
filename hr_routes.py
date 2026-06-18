@@ -27,6 +27,7 @@ from cv_parser import (
     extract_candidate_name,
     extract_skills_keyword,
     compute_match_details,
+    compute_rubric_score,
 )
 from s3_utils import upload_file_to_s3
 from models.registry import registry
@@ -494,19 +495,27 @@ async def upload_cvs(
                 failed.append({"filename": filename, "reason": f"Duplicate candidate — {email} already exists in this job."})
                 continue
 
-            # 6. Calculate match score
-            match_score = 50.0  # default
+            # 6. Calculate match scores
+            #    a) Semantic similarity via SentenceTransformer (0-100)
+            semantic_score = 50.0
             if skill_matcher and jd_text and cv_text:
                 try:
-                    raw_score = skill_matcher.calculate_match_score(cv_text, jd_text)
-                    if isinstance(raw_score, (int, float)):
-                        match_score = float(raw_score)
-                        match_score = match_score if match_score <= 1.0 else match_score / 100.0
-                        match_score = round(match_score * 100, 1)
+                    raw = skill_matcher.calculate_match_score(cv_text, jd_text)
+                    if isinstance(raw, (int, float)):
+                        semantic_score = round(
+                            (raw if raw <= 1.0 else raw / 100.0) * 100, 1
+                        )
                 except Exception as e:
-                    print(f"Match score warning for {filename}: {e}")
+                    print(f"Semantic match warning for {filename}: {e}")
 
-            # 7. Compute match details
+            #    b) Structured 100-point rubric (Tech 40 + Arch 25 + Exp 20 + Pref 15)
+            rubric = compute_rubric_score(cv_text, jd_text, jd_skills)
+
+            #    c) Equal blend: rubric gives structured explainability,
+            #       semantic captures nuance the keyword scorer misses
+            match_score = round(0.5 * rubric["total"] + 0.5 * semantic_score, 1)
+
+            # 7. Compute keyword match details
             match_details = compute_match_details(cv_skills, jd_skills)
 
             # 8. Create candidate document
@@ -515,11 +524,12 @@ async def upload_cvs(
                 "email": email,
                 "phone": phone,
                 "cvUrl": s3_url,
-                "cvText": cv_text[:5000],  # truncate for storage
+                "cvText": cv_text[:5000],
                 "cvSkills": cv_skills,
                 "cvHash": cv_hash,
                 "matchScore": match_score,
                 "matchDetails": match_details,
+                "rubricScore": rubric,
                 "interviewStatus": "not_invited",
                 "interviewSessionId": "",
                 "interviewScore": 0,
@@ -543,6 +553,7 @@ async def upload_cvs(
                 "email": email,
                 "matchScore": match_score,
                 "matchDetails": match_details,
+                "rubricScore": rubric,
                 "cvSkills": cv_skills,
             })
 

@@ -21,12 +21,7 @@ from models.multi_head_evaluator import MultiHeadEvaluator
 from models.difficulty_engine import AdaptiveDifficultyEngine
 from models.performance_predictor import PerformancePredictor
 
-# Import from the recommender folder
-try:
-    from recommender.candidate_ranker import NeuralCandidateRanker
-except ModuleNotFoundError:
-    # Backup in case the file was moved to models
-    from models.candidate_ranker import NeuralCandidateRanker
+from models.candidate_ranker import NeuralCandidateRanker
 
 
 class ModelRegistry:
@@ -67,8 +62,19 @@ class ModelRegistry:
     def load_skill_matcher(self):
         if "skill_matcher" not in self.loaded_models:
             print("Loading Skill Matcher...")
-            model = SkillMatchSiameseNet().to(self.device)
-            model.load_state_dict(torch.load(self._get_path("skill_matcher"), map_location=self.device))
+            model = SkillMatchSiameseNet()
+            checkpoint_path = self._get_path("skill_matcher")
+            if os.path.exists(checkpoint_path):
+                try:
+                    model.load_state_dict(
+                        torch.load(checkpoint_path, map_location=self.device, weights_only=True),
+                        strict=False,
+                    )
+                    print("[OK] Skill matcher checkpoint loaded.")
+                except Exception as e:
+                    print(f"[WARN] Skill matcher checkpoint skipped ({e}). Using pretrained embeddings directly.")
+            else:
+                print("[WARN] No skill matcher checkpoint found. Using pretrained SentenceTransformer embeddings.")
             model.eval()
             self.loaded_models["skill_matcher"] = model
         return self.loaded_models["skill_matcher"]
@@ -130,7 +136,17 @@ class ModelRegistry:
         if "ranker" not in self.loaded_models:
             print("Loading Candidate Ranker...")
             model = NeuralCandidateRanker(input_features=8, embedding_dim=32).to(self.device)
-            model.load_state_dict(torch.load(self._get_path("ranker"), map_location=self.device))
+            checkpoint_path = self._get_path("ranker")
+            if os.path.exists(checkpoint_path):
+                try:
+                    model.load_state_dict(
+                        torch.load(checkpoint_path, map_location=self.device, weights_only=True)
+                    )
+                    print("[OK] Candidate ranker checkpoint loaded.")
+                except Exception as e:
+                    print(f"[WARN] Candidate ranker checkpoint skipped ({e}). Rankings will use random projections until a checkpoint is trained.")
+            else:
+                print("[WARN] No candidate ranker checkpoint found. Train the ranker with training/train_ranker.py for meaningful rankings.")
             model.eval()
             self.loaded_models["ranker"] = model
         return self.loaded_models["ranker"]
