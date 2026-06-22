@@ -46,6 +46,12 @@ const HRDashboard = () => {
                 const data = await getJobs();
                 if (!cancelled) setJobs(data.jobs || []);
             } catch (err) {
+                if (!cancelled && retryTick === 0) {
+                    // Silent auto-retry: covers cold-start races where the auth
+                    // token isn't fully ready on the very first page load.
+                    setTimeout(() => { if (!cancelled) setRetryTick(1); }, 800);
+                    return;
+                }
                 console.error("Failed to load jobs:", err);
                 if (!cancelled) setFetchError("Failed to load jobs.");
             } finally {

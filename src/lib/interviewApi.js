@@ -19,9 +19,11 @@ async function getAuthHeaders() {
         const token = await auth.currentUser.getIdToken();
         return { Authorization: `Bearer ${token}` };
     }
-    // Wait for Firebase to finish restoring the session
-    await _authReady;
-    const user = auth.currentUser;
+    // Wait for Firebase to finish restoring the session from storage.
+    // Use the user the promise resolved with — don't re-check auth.currentUser,
+    // which can still be null in the brief window between promise resolution
+    // and the Firebase singleton being updated.
+    const user = await _authReady;
     if (!user) return {};
     const token = await user.getIdToken();
     return { Authorization: `Bearer ${token}` };
