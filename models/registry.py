@@ -7,33 +7,24 @@ import torch
 _ppo_available = importlib.util.find_spec("stable_baselines3") is not None
 
 # --- BULLETPROOF PATH FIX ---
-# This finds the 'MyHR' folder and tells Python to look there for modules
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Now standard imports will work
 from models.scoring_model import CandidateScoringMLP
 from models.emotion_model import InterviewEmotionModel
 from models.skill_matcher import SkillMatchSiameseNet
 from models.multi_head_evaluator import MultiHeadEvaluator
 from models.difficulty_engine import AdaptiveDifficultyEngine
 from models.performance_predictor import PerformancePredictor
-
-# Import from the recommender folder
-try:
-    from recommender.candidate_ranker import NeuralCandidateRanker
-except ModuleNotFoundError:
-    # Backup in case the file was moved to models
-    from models.candidate_ranker import NeuralCandidateRanker
+from models.candidate_ranker import NeuralCandidateRanker
 
 
 class ModelRegistry:
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.base_path = "models/checkpoints"
-        
         # Centralized version control
         self.versions = {
             "scorer": "scorer_v2.pt",           # v2: trained with SentenceTransformer embeddings
@@ -45,101 +36,115 @@ class ModelRegistry:
             "ranker": "candidate_ranker_v1.pt",
             "predictor": "performance_predictor_v1.pt"
         }
-        
-        # Cache to keep models loaded in memory so we don't reload them on every request
-        self.loaded_models = {}
 
-    def _get_path(self, model_name):
+        # Cache to keep models loaded in memory so we don't reload them on every request
+        # None means "failed to load" — callers must guard before use
+        self.loaded_models: dict = {}
+
+    def _get_path(self, model_name: str) -> str:
         filename = self.versions.get(model_name)
         if not filename:
-            raise ValueError(f"Model {model_name} not found in registry versions.")
+            raise ValueError(f"Model '{model_name}' not found in registry versions.")
         return os.path.join(self.base_path, filename)
 
+    def _load_state(self, model, model_name: str) -> bool:
+        """Load checkpoint into model in-place. Returns True on success."""
+        path = self._get_path(model_name)
+        if not os.path.exists(path):
+            print(f"[WARN] Registry: checkpoint not found — {path}")
+            return False
+        try:
+            state = torch.load(path, map_location=self.device, weights_only=True)
+            model.load_state_dict(state)
+            return True
+        except Exception as e:
+            print(f"[WARN] Registry: could not load '{model_name}' checkpoint ({e})")
+            return False
+
+    # ------------------------------------------------------------------
+    # Loaders — every method returns either a ready model or None.
+    # Callers must check for None before calling model methods.
+    # ------------------------------------------------------------------
+
     def load_emotion_model(self):
+        """Returns InterviewEmotionModel or None if checkpoint missing/corrupt."""
         if "emotion" not in self.loaded_models:
-            print("Loading Emotion Model...")
             model = InterviewEmotionModel().to(self.device)
-            try:
-                model.load_state_dict(torch.load(self._get_path("emotion"), map_location=self.device))
-                print("Emotion model checkpoint loaded.")
-            except Exception as e:
-                print(f"No weights found for emotion model ({e}), using HuggingFace pretrained backbone only.")
+            if self._load_state(model, "emotion"):
+                print("[OK]   Emotion model loaded.")
+            else:
+                print("[WARN] Emotion model unavailable — using HuggingFace pretrained backbone only.")
             model.eval()
             self.loaded_models["emotion"] = model
         return self.loaded_models["emotion"]
 
     def load_skill_matcher(self):
+        """Returns SkillMatchSiameseNet (always — falls back to pretrained embeddings)."""
         if "skill_matcher" not in self.loaded_models:
-            print("Loading Skill Matcher...")
-            model = SkillMatchSiameseNet().to(self.device)
-            model.load_state_dict(torch.load(self._get_path("skill_matcher"), map_location=self.device))
+            model = SkillMatchSiameseNet()
+            path = self._get_path("skill_matcher")
+            if os.path.exists(path):
+                try:
+                    model.load_state_dict(
+                        torch.load(path, map_location=self.device, weights_only=True),
+                        strict=False,
+                    )
+                    print("[OK]   Skill matcher checkpoint loaded.")
+                except Exception as e:
+                    print(f"[WARN] Skill matcher checkpoint skipped ({e}). Using pretrained embeddings.")
+            else:
+                print("[WARN] Skill matcher checkpoint missing — using pretrained SentenceTransformer embeddings.")
             model.eval()
             self.loaded_models["skill_matcher"] = model
         return self.loaded_models["skill_matcher"]
 
     def load_difficulty_engine(self, use_ppo: bool = False):
-        """Load difficulty engine.
-
-        Args:
-            use_ppo: If True, load the PPO model (78.6% in-zone).
-                     If False, load REINFORCE v2 6-D (70.8% in-zone).
-                     Defaults to False for compatibility; set True in production.
-        """
+        """Returns AdaptiveDifficultyEngine or freshly-initialised fallback (never None)."""
         if use_ppo:
             return self.load_difficulty_ppo()
 
         if "difficulty" not in self.loaded_models:
-            print("Loading Difficulty Engine (REINFORCE 3-D)...")
             model = AdaptiveDifficultyEngine(state_dim=3).to(self.device)
-            model.load_state_dict(
-                torch.load(self._get_path("difficulty"), map_location=self.device)
-            )
+            if self._load_state(model, "difficulty"):
+                print("[OK]   Difficulty engine loaded.")
+            else:
+                print("[WARN] Difficulty engine using random-init weights — difficulty adaptation disabled.")
             model.eval()
             self.loaded_models["difficulty"] = model
         return self.loaded_models["difficulty"]
 
     def load_difficulty_ppo(self):
-        """Load the PPO difficulty engine (best performer: 78.6% in-zone).
-
-        Falls back to REINFORCE instantly if stable_baselines3 is not installed.
-        """
+        """Returns PPO model, or falls back to REINFORCE if sb3 unavailable."""
         if not _ppo_available:
             return self.load_difficulty_engine(use_ppo=False)
 
         if "difficulty_ppo" not in self.loaded_models:
-            print("Loading PPO Difficulty Engine...")
             try:
                 from stable_baselines3 import PPO
                 ppo_path = os.path.join(self.base_path, self.versions["difficulty_ppo"])
                 model = PPO.load(ppo_path, device=self.device)
+                print("[OK]   PPO difficulty engine loaded.")
                 self.loaded_models["difficulty_ppo"] = model
             except Exception as e:
-                print(f"Could not load PPO model ({e}), falling back to REINFORCE.")
+                print(f"[WARN] PPO difficulty engine failed ({e}), falling back to REINFORCE.")
                 return self.load_difficulty_engine(use_ppo=False)
         return self.loaded_models["difficulty_ppo"]
 
     def load_scorer(self):
-        """Load CandidateScoringMLP (scorer_v2: SentenceTransformer-based)."""
+        """Returns CandidateScoringMLP or None if checkpoint missing/corrupt."""
         if "scorer" not in self.loaded_models:
-            print("Loading Candidate Scorer (v2)...")
             model = CandidateScoringMLP().to(self.device)
-            model.load_state_dict(
-                torch.load(self._get_path("scorer"), map_location=self.device)
-            )
-            model.eval()
-            self.loaded_models["scorer"] = model
+            if self._load_state(model, "scorer"):
+                print("[OK]   Candidate scorer (MOD-1) loaded.")
+                model.eval()
+                self.loaded_models["scorer"] = model
+            else:
+                print("[WARN] Candidate scorer unavailable — MOD-1 signal will be omitted.")
+                self.loaded_models["scorer"] = None
         return self.loaded_models["scorer"]
 
-    def load_candidate_ranker(self):
-        if "ranker" not in self.loaded_models:
-            print("Loading Candidate Ranker...")
-            model = NeuralCandidateRanker(input_features=8, embedding_dim=32).to(self.device)
-            model.load_state_dict(torch.load(self._get_path("ranker"), map_location=self.device))
-            model.eval()
-            self.loaded_models["ranker"] = model
-        return self.loaded_models["ranker"]
-        
     def load_evaluator(self):
+        """Returns MultiHeadEvaluator (always — falls back to random-init weights)."""
         if "evaluator" not in self.loaded_models:
             print("Loading Multi-Head Evaluator...")
             # input_dim=768: receives all-mpnet-base-v2 answer embedding, not the 8-D feature vector
@@ -156,22 +161,78 @@ class ModelRegistry:
                     )
                 state_dict = checkpoint.get("state_dict", checkpoint)
                 model.load_state_dict(state_dict)
-                print("Evaluator checkpoint loaded (input_dim=768).")
+                print("[OK]   Evaluator checkpoint loaded (input_dim=768).")
             except Exception as e:
-                print(f"No weights found for evaluator ({e}), using randomly initialised weights.")
-
+                print(f"[WARN] No weights found for evaluator ({e}), using randomly initialised weights.")
             model.eval()
             self.loaded_models["evaluator"] = model
         return self.loaded_models["evaluator"]
 
     def load_performance_predictor(self):
+        """Returns PerformancePredictor or None if checkpoint missing/corrupt."""
         if "predictor" not in self.loaded_models:
-            print("Loading Performance Predictor...")
             model = PerformancePredictor(input_dim=8).to(self.device)
-            model.load_state_dict(torch.load(self._get_path("predictor"), map_location=self.device))
-            model.eval()
-            self.loaded_models["predictor"] = model
+            if self._load_state(model, "predictor"):
+                print("[OK]   Performance predictor (MOD-6) loaded.")
+                model.eval()
+                self.loaded_models["predictor"] = model
+            else:
+                print("[WARN] Performance predictor checkpoint not found — omitting performance forecast from report.")
+                self.loaded_models["predictor"] = None
         return self.loaded_models["predictor"]
 
-# Create a global singleton instance to be imported across the app
+    def load_candidate_ranker(self):
+        """Returns NeuralCandidateRanker (always — falls back to random projections)."""
+        if "ranker" not in self.loaded_models:
+            model = NeuralCandidateRanker(input_features=8, embedding_dim=32).to(self.device)
+            path = self._get_path("ranker")
+            if os.path.exists(path):
+                try:
+                    model.load_state_dict(
+                        torch.load(path, map_location=self.device, weights_only=True)
+                    )
+                    print("[OK]   Candidate ranker loaded.")
+                except Exception as e:
+                    print(f"[WARN] Candidate ranker checkpoint skipped ({e}). Rankings use random projections.")
+            else:
+                print("[WARN] Candidate ranker checkpoint missing — train with training/train_ranker.py.")
+            model.eval()
+            self.loaded_models["ranker"] = model
+        return self.loaded_models["ranker"]
+
+    def health_check(self) -> dict[str, str]:
+        """
+        Log and return the load status of every registered model.
+        Call after startup to know the system's actual operating mode.
+        """
+        results = {}
+        checkpoints = {
+            "scorer":        self.versions["scorer"],
+            "emotion":       self.versions["emotion"],
+            "skill_matcher": self.versions["skill_matcher"],
+            "evaluator":     self.versions["evaluator"],
+            "difficulty":    self.versions["difficulty"],
+            "ranker":        self.versions["ranker"],
+            "predictor":     self.versions["predictor"],
+        }
+        print("\n" + "=" * 55)
+        print("  ModelRegistry — Startup Health Check")
+        print("=" * 55)
+        for name, filename in checkpoints.items():
+            path = os.path.join(self.base_path, filename)
+            if name in self.loaded_models:
+                status = "loaded" if self.loaded_models[name] is not None else "UNAVAILABLE"
+            elif os.path.exists(path):
+                status = "checkpoint present (not yet loaded)"
+            else:
+                status = "MISSING checkpoint"
+            tag = "[OK]  " if status == "loaded" or "present" in status else "[WARN]"
+            print(f"  {tag} {name:<16} {status}")
+            results[name] = status
+        print("=" * 55 + "\n")
+        return results
+
+
+# Global singleton
 registry = ModelRegistry()
+registry.health_check()

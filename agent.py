@@ -8,7 +8,17 @@ import torch
 from models.registry import registry
 from models.feature_extractor import extractor
 from models.explainer import ModelExplainer
+from models.scoring_model import EmbeddingExtractor
 import numpy as np
+
+# Lazy singleton — loaded once on first scored answer, not at import time
+_embedding_extractor: EmbeddingExtractor | None = None
+
+def _get_embedding_extractor() -> EmbeddingExtractor:
+    global _embedding_extractor
+    if _embedding_extractor is None:
+        _embedding_extractor = EmbeddingExtractor()
+    return _embedding_extractor
 
 # Import your custom modules
 from retriever import retrieve_context_split
@@ -331,7 +341,7 @@ def evaluate_answer_node(state: AgentState):
 
     # 1. Load Models from Registry
     evaluator = registry.load_evaluator()
-    predictor = registry.load_performance_predictor()
+    predictor = registry.load_performance_predictor()  # may be None if checkpoint missing
 
     # 2. Extract the 8 real features for the neural networks
     tone_data = state.get("multimodal_analysis", {})
@@ -361,10 +371,13 @@ def evaluate_answer_node(state: AgentState):
     answer_emb_tensor = answer_emb_tensor.to(next(evaluator.parameters()).device)
     neural_results = evaluator.evaluate_answer(answer_emb_tensor)
 
-    # 4. Performance Prediction (MOD-6)
-    job_prediction = predictor.predict_performance(features)
+    # 4. Performance Prediction (MOD-6) — gracefully omitted if predictor unavailable
+    if predictor is not None:
+        job_prediction = predictor.predict_performance(features)
+    else:
+        job_prediction = None
 
-    # 5. Explainability (SHAP)
+    # 5. Explainability (SHAP) — requires a working predictor as the explained model
     feature_names = [
         "skill_match", "relevance", "clarity", "depth",
         "confidence", "consistency", "gaps_inverted", "experience"
@@ -375,29 +388,32 @@ def evaluate_answer_node(state: AgentState):
     shap_summary = {}
     expected_value = None
 
-    try:
-        explainer = ModelExplainer(predictor, feature_names)
+    if predictor is not None:
+        try:
+            explainer = ModelExplainer(predictor, feature_names)
 
-        center = features.detach().cpu().numpy()[0]
-        noise = np.random.normal(loc=0.0, scale=0.05, size=(20, len(feature_names)))
-        background_data = np.clip(center + noise, 0.0, 1.0).astype(np.float32)
+            center = features.detach().cpu().numpy()[0]
+            noise = np.random.normal(loc=0.0, scale=0.05, size=(20, len(feature_names)))
+            background_data = np.clip(center + noise, 0.0, 1.0).astype(np.float32)
 
-        shap_values, expected_value = explainer.explain_prediction(features, background_data)
+            shap_values, expected_value = explainer.explain_prediction(features, background_data)
 
-        shap_values_np = np.asarray(shap_values, dtype=np.float32)
-        shap_values_list = shap_values_np.flatten().tolist()
-        shap_summary = dict(zip(feature_names, shap_values_np.flatten().tolist()))
+            shap_values_np = np.asarray(shap_values, dtype=np.float32)
+            shap_values_list = shap_values_np.flatten().tolist()
+            shap_summary = dict(zip(feature_names, shap_values_np.flatten().tolist()))
 
-        os.makedirs("reports", exist_ok=True)
-        explainer.plot_waterfall(
-            shap_values=shap_values_np,
-            features=features,
-            expected_value=expected_value,
-            save_path=f"reports/shap_{state['session_id']}.png"
-        )
+            os.makedirs("reports", exist_ok=True)
+            explainer.plot_waterfall(
+                shap_values=shap_values_np,
+                features=features,
+                expected_value=expected_value,
+                save_path=f"reports/shap_{state['session_id']}.png"
+            )
 
-    except Exception as e:
-        print(f"SHAP Error: {e}")
+        except Exception as e:
+            print(f"SHAP Error: {e}")
+    else:
+        print("SHAP skipped — performance predictor unavailable.")
 
     # 6. LLM generates feedback text — guard against placeholder tone data
     if not tone_data or tone_data.get("primary_emotion") == "Processing...":
@@ -420,20 +436,52 @@ def evaluate_answer_node(state: AgentState):
     llm_score = float(res.score)
     neural_score = float(neural_results["overall"])
 
+    # --- MOD-1: CandidateScoringMLP (semantic embedding scorer) ---
+    # Weights rationale:
+    #   LLM (0.75): primary judge — well-calibrated language understanding
+    #   Neural/MOD-4 (0.15): structural 8-feature signal
+    #   MOD-1 (0.10): independent semantic similarity signal via all-mpnet-base-v2
+    mod1_score = None
+    try:
+        scorer_model = registry.load_scorer()
+        emb_extractor = _get_embedding_extractor()
+        with torch.no_grad():
+            emb_features = emb_extractor.extract(
+                question=state.get("last_question", ""),
+                answer=state.get("last_answer", ""),
+                tone_data=tone_data,
+            )
+            mod1_score = float(scorer_model(emb_features).item())
+            mod1_score = max(0.0, min(mod1_score, 100.0))
+        print(f"MOD-1 Score: {mod1_score:.1f}/100")
+    except Exception as e:
+        print(f"MOD-1 scorer skipped ({e})")
+
     # Detect flat / undertrained neural model — use wide threshold (±15 of center)
     neural_is_flat = abs(neural_score - 50.0) < 15.0
     score_divergence = abs(llm_score - neural_score)
 
-    if neural_is_flat:
-        # Neural model outputting near-constant values — trust LLM almost exclusively
-        blended_score = round(0.93 * llm_score + 0.07 * neural_score, 1)
-        print(f"Neural flat ({neural_score:.1f}) — LLM-dominant blend (93/7)")
-    elif score_divergence > 20:
-        # Significant disagreement — LLM is calibrated, neural is likely undertrained
-        blended_score = round(0.88 * llm_score + 0.12 * neural_score, 1)
-        print(f"Score divergence {score_divergence:.1f} — LLM-weighted blend (88/12)")
+    if mod1_score is not None:
+        # Three-signal blend: LLM 75% | MOD-4 15% | MOD-1 10%
+        # Collapse to two-signal if neural is flat (MOD-1 picks up the slack)
+        if neural_is_flat:
+            blended_score = round(0.85 * llm_score + 0.15 * mod1_score, 1)
+            print(f"Neural flat ({neural_score:.1f}) — LLM+MOD1 blend (85/15)")
+        elif score_divergence > 20:
+            blended_score = round(0.80 * llm_score + 0.10 * neural_score + 0.10 * mod1_score, 1)
+            print(f"Score divergence {score_divergence:.1f} — LLM-weighted 3-signal blend (80/10/10)")
+        else:
+            blended_score = round(0.75 * llm_score + 0.15 * neural_score + 0.10 * mod1_score, 1)
     else:
-        blended_score = round(0.80 * llm_score + 0.20 * neural_score, 1)
+        # MOD-1 unavailable — fall back to original two-signal blend
+        if neural_is_flat:
+            blended_score = round(0.93 * llm_score + 0.07 * neural_score, 1)
+            print(f"Neural flat ({neural_score:.1f}) — LLM-dominant blend (93/7)")
+        elif score_divergence > 20:
+            blended_score = round(0.88 * llm_score + 0.12 * neural_score, 1)
+            print(f"Score divergence {score_divergence:.1f} — LLM-weighted blend (88/12)")
+        else:
+            blended_score = round(0.80 * llm_score + 0.20 * neural_score, 1)
 
     report_entry = {
         "question": state["last_question"],
@@ -441,6 +489,12 @@ def evaluate_answer_node(state: AgentState):
         "score": blended_score,
         "llm_score": llm_score,
         "neural_score": neural_score,
+        "mod1_score": mod1_score,
+        "score_weights": {
+            "llm": 0.75 if mod1_score is not None else (0.93 if neural_is_flat else (0.88 if score_divergence > 20 else 0.80)),
+            "neural": 0.0 if (mod1_score is not None and neural_is_flat) else (0.15 if mod1_score is not None else (0.07 if neural_is_flat else (0.12 if score_divergence > 20 else 0.20))),
+            "mod1": 0.15 if (mod1_score is not None and neural_is_flat) else (0.10 if mod1_score is not None else 0.0),
+        },
         "answer_classification": res.answer_classification,
         "detailed_scores": neural_results,
         "predicted_job_performance": job_prediction,
@@ -455,7 +509,8 @@ def evaluate_answer_node(state: AgentState):
         "shap_expected_value": float(np.ravel(expected_value)[0]) if expected_value is not None else None
     }
 
-    print(f"LLM Score: {llm_score}/100 | Neural Score: {neural_score}/100 | Blended: {blended_score}/100")
+    mod1_str = f" | MOD-1: {mod1_score:.1f}/100" if mod1_score is not None else ""
+    print(f"LLM Score: {llm_score}/100 | Neural Score: {neural_score}/100{mod1_str} | Blended: {blended_score}/100")
     print(f"Predicted Job Performance: {job_prediction}/10.0")
 
     return {
@@ -469,16 +524,21 @@ def _build_question_scores(evaluations: list) -> list:
     """Build the question_scores list from raw evaluation entries."""
     result = []
     for i, e in enumerate(evaluations, 1):
-        result.append({
+        entry = {
             "index": i,
             "question": e.get("question", ""),
             "answer": e.get("answer", ""),
             "score": e.get("score", 0),
+            "llm_score": e.get("llm_score"),
+            "neural_score": e.get("neural_score"),
+            "mod1_score": e.get("mod1_score"),
+            "score_weights": e.get("score_weights"),
             "classification": e.get("answer_classification", ""),
             "feedback": e.get("feedback", ""),
             "suggested_improvement": e.get("suggested_improvement", ""),
             "criteria_breakdown": e.get("criteria_breakdown", {}),
-        })
+        }
+        result.append(entry)
     return result
 
 
@@ -673,7 +733,6 @@ def synthesize_report(session_state: dict, candidate_name: str, job_title: str) 
     transcript_lines = []
     for i, e in enumerate(evaluations, 1):
         classification = e.get("answer_classification", "")
-        classification_str = f" [{classification}]" if classification else ""
         transcript_lines.append(
             f"Q{i}: {e.get('question', '')}\n"
             f"Answer: {e.get('answer', '')}\n"
