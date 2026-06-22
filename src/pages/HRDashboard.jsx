@@ -59,7 +59,7 @@ const HRDashboard = () => {
             }
         })();
         return () => { cancelled = true; };
-    }, [user?.accessToken, authLoading, retryTick]);
+    }, [user?.uid, authLoading, retryTick]);
 
     // Aggregate stats from jobs
     const totalCandidates = jobs.reduce((sum, j) => sum + (j.stats?.totalCandidates || 0), 0);

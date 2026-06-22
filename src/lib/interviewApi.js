@@ -3,26 +3,36 @@ import { onAuthStateChanged } from "firebase/auth";
 
 const API_BASE = "/api";
 
-// Resolves once Firebase has determined the initial auth state (fires exactly once).
-// This prevents the race where auth.currentUser is still null while Firebase
-// is restoring a session from storage — causing spurious 401s on first load.
+// Resolves with the first *authenticated* user Firebase reports, or null after
+// a 2-second timeout (meaning the user is genuinely not signed in).
+//
+// Why not resolve on the first onAuthStateChanged event?
+// Firebase can fire onAuthStateChanged with `null` before it has finished
+// reading a persisted session from IndexedDB.  If we resolve immediately on
+// that first null event the rest of the auth pipeline has no user and every
+// protected API request goes out without an Authorization header → 401.
+// By waiting for a non-null user (or giving up after 2 s) we capture the
+// real session without introducing a noticeable delay for signed-in users.
 const _authReady = new Promise((resolve) => {
+    const timer = setTimeout(() => { unsub(); resolve(null); }, 2000);
     const unsub = onAuthStateChanged(auth, (user) => {
-        unsub();
-        resolve(user);
+        if (user) {
+            clearTimeout(timer);
+            unsub();
+            resolve(user);
+        }
+        // null means Firebase hasn't finished restoring the session yet —
+        // keep listening until either a user arrives or the timeout fires.
     });
 });
 
 async function getAuthHeaders() {
-    // Fast path: auth state already known
+    // Fast path: session already restored and currentUser is populated.
     if (auth.currentUser) {
         const token = await auth.currentUser.getIdToken();
         return { Authorization: `Bearer ${token}` };
     }
-    // Wait for Firebase to finish restoring the session from storage.
-    // Use the user the promise resolved with — don't re-check auth.currentUser,
-    // which can still be null in the brief window between promise resolution
-    // and the Firebase singleton being updated.
+    // Wait for Firebase to confirm a signed-in user.
     const user = await _authReady;
     if (!user) return {};
     const token = await user.getIdToken();

@@ -65,9 +65,9 @@ const JobManagement = () => {
 
     useEffect(() => {
         if (authLoading) return;
-        if (!user?.accessToken) { setLoading(false); return; }
+        if (!user?.uid) { setLoading(false); return; }
         fetchJobs();
-    }, [fetchJobs, user?.accessToken, authLoading]);
+    }, [fetchJobs, user?.uid, authLoading]);
 
     // Create job handler
     const handleCreateJob = async (e) => {
