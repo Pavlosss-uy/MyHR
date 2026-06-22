@@ -1088,6 +1088,123 @@ async def get_analytics(company_id: str = Depends(get_current_company_id)):
 #  Helper: retrieve CV text + JD for token-based interview start (used by server.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  MODULE: Candidate Ranking (MOD-5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@hr_router.post("/jobs/{job_id}/rank-candidates")
+async def rank_candidates(
+    job_id: str,
+    company_id: str = Depends(get_current_company_id),
+):
+    """
+    Rank all interviewed candidates for a job using NeuralCandidateRanker (MOD-5).
+
+    Returns candidates sorted by neural ranking score (cosine similarity to an
+    ideal-candidate anchor in the ranker's 32-D latent space).
+
+    ⚠ Data-quality caveat (see score_quality field in response):
+      The ranker was trained on synthetically generated data where the ideal
+      profile is tautologically defined, giving artificially high NDCG during
+      training.  Scores are therefore relative rankings within this job's
+      candidate pool, NOT absolute quality measurements.  Treat them as a
+      tiebreaker alongside interviewScore and matchScore, not as ground truth.
+      The model will be retrained on real comparative labels in Phase 4.
+
+    Auth: Firebase ID token required (HR/company admin only).
+    Scope: only candidates who belong to this company's job are returned.
+    """
+    import torch
+
+    # 1. Ownership check
+    _get_authorized_job(job_id, company_id)
+
+    # 2. Pull all completed candidates for this job
+    try:
+        all_candidates = get_subcollection_docs("Jobs", job_id, "Candidates")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not load candidates: {e}")
+
+    completed = [
+        c for c in all_candidates
+        if c.get("interviewStatus") == "completed"
+        and c.get("interviewSessionId")
+    ]
+
+    if not completed:
+        return {
+            "job_id": job_id,
+            "ranked_candidates": [],
+            "total_ranked": 0,
+            "score_quality": "unavailable — no completed interviews found",
+        }
+
+    # 3. Load feature store + ranker
+    from recommender.feature_store import extract_candidate_features, build_ideal_profile
+
+    ranker = registry.load_candidate_ranker()
+
+    # 4. Extract 8-D feature vectors; skip candidates whose sessions can't be loaded
+    feature_rows, valid_candidates = [], []
+    skipped = []
+    for c in completed:
+        sid = c["interviewSessionId"]
+        fvec = extract_candidate_features(sid)
+        if fvec is None:
+            skipped.append(c.get("name", sid))
+            continue
+        feature_rows.append(fvec)
+        valid_candidates.append(c)
+
+    if not feature_rows:
+        return {
+            "job_id": job_id,
+            "ranked_candidates": [],
+            "total_ranked": 0,
+            "skipped": skipped,
+            "score_quality": "unavailable — feature extraction failed for all candidates",
+        }
+
+    # 5. Stack into (N, 8) matrix and run ranker
+    candidate_matrix = torch.cat(feature_rows, dim=0)   # (N, 8)
+    ideal_profile    = build_ideal_profile()             # (1, 8)
+
+    scores, sorted_indices = ranker.rank_candidates(candidate_matrix, ideal_profile)
+
+    # 6. Build ranked response
+    ranked = []
+    for rank_pos, (original_idx, sim_score) in enumerate(zip(sorted_indices, scores), start=1):
+        c = valid_candidates[original_idx]
+        ranked.append({
+            "rank": rank_pos,
+            "candidate_id": c.get("id", ""),
+            "name": c.get("name", "Unknown"),
+            "email": c.get("email", ""),
+            "neural_rank_score": round(float(sim_score), 4),
+            "interview_score": c.get("interviewScore"),
+            "match_score": c.get("matchScore"),
+            "total_score": c.get("totalScore"),
+            "session_id": c.get("interviewSessionId", ""),
+        })
+
+    return {
+        "job_id": job_id,
+        "ranked_candidates": ranked,
+        "total_ranked": len(ranked),
+        "skipped_no_session": skipped,
+        "score_quality": (
+            "RELATIVE — scores reflect similarity to an ideal profile within this "
+            "candidate pool only.  The ranker was trained on synthetic data and has "
+            "not been validated against real hiring outcomes.  Use neural_rank_score "
+            "as a tiebreaker alongside interview_score and match_score."
+        ),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helper: retrieve CV text + JD for token-based interview start (used by server.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def get_interview_context_for_token(token: str) -> dict:
     """
     Returns {"jd", "cv_text", "candidate_name", "job_title"} for a valid

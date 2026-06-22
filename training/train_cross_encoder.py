@@ -1,6 +1,19 @@
 """
 Cross-Encoder Fine-Tuning Script
 ==================================
+NOT PRODUCTION — cross-encoder is retired from active architecture (audit Task 2.4).
+Do NOT run this script and present the output as a production component until the
+reactivation criteria in models/cross_encoder_scorer.py are met.
+
+Last measured result (2026-04-07, n=98 test samples):
+  Fine-tuned: Spearman ρ = 0.18, p = 0.069  (NOT significant)
+  Base model: Spearman ρ = -0.15, p = 0.133 (NOT significant)
+
+Minimum to reactivate: 1,000+ training samples, ρ >= 0.50, p < 0.01.
+See models/cross_encoder_scorer.py for full reactivation criteria.
+
+----
+
 Fine-tunes a cross-encoder (ms-marco-MiniLM-L-12-v2) for interview answer
 quality scoring. Runs a comparison experiment against LLM-as-judge baseline.
 
@@ -13,9 +26,10 @@ Pipeline:
 
 Usage:
     python training/train_cross_encoder.py
-    
+
 Prerequisites:
     python training/generate_eval_data.py  (generates training data first)
+    Expand dataset to >= 1,000 samples before running.
 """
 
 import os

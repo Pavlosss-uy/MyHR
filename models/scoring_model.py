@@ -77,4 +77,12 @@ class ScoringPipeline:
             score = int(score_tensor.item())
             return min(max(score, 0), 100) 
 
-scorer = ScoringPipeline()
+# Lazy singleton — import this module without triggering model loading.
+# Use ScoringPipeline() directly when you need the standalone pipeline.
+_scorer_pipeline = None
+
+def get_scorer_pipeline() -> "ScoringPipeline":
+    global _scorer_pipeline
+    if _scorer_pipeline is None:
+        _scorer_pipeline = ScoringPipeline()
+    return _scorer_pipeline

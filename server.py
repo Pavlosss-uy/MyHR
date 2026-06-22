@@ -17,14 +17,10 @@ from fastapi import (
     File,
     Form,
     HTTPException,
-    Depends,
-    BackgroundTasks,
     WebSocket,
     WebSocketDisconnect,
 )
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 from langgraph.graph import END
 
 from firestore_client import create_session, get_session, update_session_state
@@ -774,7 +770,6 @@ async def end_interview(session_id: str):
 
 @app.post("/submit_answer")
 async def submit_answer(
-    background_tasks: BackgroundTasks,
     session_id: str = Form(...),
     audio: UploadFile = File(...),
 ):

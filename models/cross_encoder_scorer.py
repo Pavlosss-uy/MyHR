@@ -1,6 +1,42 @@
 """
 Cross-Encoder Answer Quality Scorer
 =====================================
+NOT PRODUCTION — retired from active architecture (audit Task 2.4).
+
+Status: code preserved as reference; NOT wired into agent.py or registry.py.
+
+Why retired:
+  Fine-tuned on 160 samples (80/20 split of 200-sample eval_training_data.json).
+  Measured performance on hold-out set (n=98):
+    - Fine-tuned model:  Spearman ρ =  0.18, p = 0.069  (not significant)
+    - Base model:        Spearman ρ = -0.15, p = 0.133  (not significant)
+  Fine-tuning moved the needle by only +0.34 ρ points.  Both p-values exceed
+  0.05, meaning neither result is statistically distinguishable from noise at
+  the standard significance threshold.
+
+Why this happens:
+  Cross-encoders require substantially more fine-tuning data than bi-encoder
+  MLPs because every weight update affects the shared attention layers used for
+  both inputs.  160 samples is insufficient; the model overfits to the training
+  set without generalising to the hold-out.
+
+Reactivation criteria (all must be met before wiring into inference):
+  1. Training set >= 1,000 labeled (question, answer, quality_score) samples.
+  2. Spearman ρ >= 0.50 on a held-out test set.
+  3. p-value < 0.01 on that test set.
+  4. Score distribution shows meaningful spread (not collapsed to a narrow band).
+
+Path to reactivation:
+  - Run generate_eval_data.py to expand eval_training_data.json beyond 200 samples.
+  - Set GENERATE_EXTRA_SAMPLES = True in train_cross_encoder.py to generate the
+    additional 300 behavioural/off-topic/vague/concise samples (brings total to ~500).
+  - Generate another 500+ via the same pipeline before retraining.
+  - Re-evaluate with run_comparison_experiment() and check all three criteria above.
+
+Architecture diagram note:
+  This component is listed as INACTIVE in the architecture.  It must not be
+  presented as a functioning scoring signal until the criteria above are met.
+
 Fine-tuned cross-encoder that processes (question, answer) as a single input,
 enabling deep cross-attention between all token pairs.
 
