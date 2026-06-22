@@ -32,6 +32,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from models.scoring_model import CandidateScoringMLP
 from training.metrics import regression_metrics, make_writer
+from utils.seeding import set_all_seeds
+from utils.trainer_logger import ExperimentLogger
 
 # ---------------------------------------------------------------------------
 # Tone feature proxy — maps quality tier to (confidence, valence)
@@ -112,6 +114,7 @@ def train():
         print("        Run: python training/generate_eval_data.py first.")
         sys.exit(1)
 
+    set_all_seeds(42)
     X, y = load_real_data(data_path)
 
     # 80/20 split
@@ -128,6 +131,7 @@ def train():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=150)
     criterion = nn.MSELoss()
     writer    = make_writer("scorer")
+    logger    = ExperimentLogger("scorer", params={"lr": 1e-3, "epochs": 300})
 
     epochs           = 300
     best_val_loss    = float("inf")
@@ -162,6 +166,10 @@ def train():
         writer.add_scalar("Metric/mae",      metrics["mae"],          epoch)
         writer.add_scalar("Metric/rmse",     metrics["rmse"],         epoch)
         writer.add_scalar("Metric/spearman", metrics["spearman_rho"], epoch)
+        logger.log_metric("loss/train", loss.item(), step=epoch)
+        logger.log_metric("loss/val",   val_loss,    step=epoch)
+        logger.log_metric("mae",        metrics["mae"],          step=epoch)
+        logger.log_metric("spearman",   metrics["spearman_rho"], step=epoch)
 
         if (epoch + 1) % 50 == 0:
             print(
@@ -181,6 +189,7 @@ def train():
                 break
 
     writer.close()
+    logger.finish()
     print(f"\n[OK] Training complete.  Best val loss: {best_val_loss:.4f}")
     print(f"     Checkpoint: {save_path}")
     print("\nNext step: the scorer is ready to use in agent.py (already wired).")

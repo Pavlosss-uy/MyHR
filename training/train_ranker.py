@@ -10,6 +10,8 @@ import os
 
 from models.candidate_ranker import NeuralCandidateRanker
 from training.metrics import ranking_metrics, make_writer
+from utils.seeding import set_all_seeds
+from utils.trainer_logger import ExperimentLogger
 
 
 class RealRankingDataset(Dataset):
@@ -37,6 +39,8 @@ class RealRankingDataset(Dataset):
 
 class DummyRankingDataset(Dataset):
     """Fallback when real data file is missing."""
+    _DIMS = 7  # must match NeuralCandidateRanker.input_features
+
     def __init__(self, num_samples=200):
         self.num_samples = num_samples
 
@@ -44,9 +48,9 @@ class DummyRankingDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
-        ideal_profile     = torch.tensor([1.0] * 8, dtype=torch.float32)
-        hired_features    = ideal_profile * torch.empty(8).uniform_(0.8, 1.0)
-        rejected_features = ideal_profile * torch.empty(8).uniform_(0.3, 0.7)
+        ideal_profile     = torch.tensor([1.0] * self._DIMS, dtype=torch.float32)
+        hired_features    = ideal_profile * torch.empty(self._DIMS).uniform_(0.8, 1.0)
+        rejected_features = ideal_profile * torch.empty(self._DIMS).uniform_(0.3, 0.7)
         return ideal_profile, hired_features, rejected_features
 
 
@@ -80,6 +84,7 @@ def evaluate_ranking(model, val_loader, device):
 
 
 def main():
+    set_all_seeds(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Starting Pairwise Ranking training on {device}...")
 
@@ -101,11 +106,12 @@ def main():
     val_loader   = DataLoader(val_dataset,   batch_size=16)
 
     # 2. Model, optimizer, scheduler
-    model     = NeuralCandidateRanker(input_features=8, embedding_dim=32).to(device)
+    model     = NeuralCandidateRanker(input_features=7, embedding_dim=32).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=3, factor=0.5)
     criterion = nn.MarginRankingLoss(margin=0.2)
     writer    = make_writer("candidate_ranker")
+    logger    = ExperimentLogger("candidate_ranker")
 
     epochs          = 20
     best_loss       = float("inf")
@@ -142,10 +148,13 @@ def main():
         # LR scheduler step
         scheduler.step(avg_loss)
 
-        # TensorBoard
+        # TensorBoard + MLflow
         writer.add_scalar("Loss/train",              avg_loss,                          epoch)
         writer.add_scalar("Metric/ndcg_at_5",        rank_metrics["ndcg_at_k"],         epoch)
         writer.add_scalar("Metric/pairwise_accuracy",rank_metrics["pairwise_accuracy"], epoch)
+        logger.log_metric("loss/train",       avg_loss,                          step=epoch)
+        logger.log_metric("ndcg_at_5",        rank_metrics["ndcg_at_k"],         step=epoch)
+        logger.log_metric("pairwise_accuracy",rank_metrics["pairwise_accuracy"], step=epoch)
 
         if (epoch + 1) % 2 == 0:
             print(
@@ -170,15 +179,16 @@ def main():
                 break
 
     writer.close()
+    logger.finish()
     print("\nCheckpoint saved: models/checkpoints/candidate_ranker_v1.pt")
 
     # 4. Inference test
     print("\n--- Quick Inference Test ---")
     model.eval()
     with torch.no_grad():
-        ideal  = torch.tensor([[1.0] * 8])
-        cand_a = torch.tensor([[0.9, 0.85, 0.9, 0.95, 0.8, 0.9, 0.85, 0.9]])
-        cand_b = torch.tensor([[0.4, 0.5,  0.6, 0.3,  0.5, 0.4, 0.2,  0.5]])
+        ideal  = torch.tensor([[1.0] * 7])
+        cand_a = torch.tensor([[0.9, 0.85, 0.9, 0.95, 0.8, 0.9, 0.85]])
+        cand_b = torch.tensor([[0.4, 0.5,  0.6, 0.3,  0.5, 0.4, 0.2]])
         candidates = torch.cat([cand_a, cand_b], dim=0)
         scores, indices = model.rank_candidates(candidates, ideal)
         for rank, idx in enumerate(indices):

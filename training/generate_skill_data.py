@@ -48,6 +48,82 @@ SKILL_COLS = [
     "PlatformWorkedWith",
 ]
 
+# ---------------------------------------------------------------------------
+# Paraphrase style tables (Task 4.1 — terminology bias fix)
+#
+# The same skills expressed in 5 different CV styles and 4 different JD styles.
+# Each match pair is generated with a randomly-chosen (cv_style, jd_style) pair,
+# so the Siamese network must match on semantic content, not surface phrasing.
+# ---------------------------------------------------------------------------
+
+_CV_STYLES = [
+    # 0 — formal / technical resume
+    lambda langs, fw, db, exp: ". ".join(filter(None, [
+        f"Languages: {langs}" if langs else "",
+        f"Frameworks: {fw}" if fw else "",
+        f"Databases: {db}" if db else "",
+        f"Experience: {exp}" if exp else "",
+    ])),
+    # 1 — first-person narrative
+    lambda langs, fw, db, exp: " ".join(filter(None, [
+        f"I work primarily with {langs}." if langs else "",
+        f"I build applications using {fw}." if fw else "",
+        f"I manage data in {db}." if db else "",
+        f"Professional coding experience: {exp}." if exp else "",
+    ])),
+    # 2 — academic / coursework
+    lambda langs, fw, db, exp: " ".join(filter(None, [
+        f"Studied and applied {langs} in academic and research projects." if langs else "",
+        f"Hands-on academic experience with {fw}." if fw else "",
+        f"Database coursework covering {db}." if db else "",
+    ])),
+    # 3 — self-taught / portfolio
+    lambda langs, fw, db, exp: " ".join(filter(None, [
+        f"Self-taught in {langs}; shipped personal and open-source projects." if langs else "",
+        f"Used {fw} in side projects and freelance work." if fw else "",
+        f"Deployed with {db} backends." if db else "",
+        f"Coding since: {exp}." if exp else "",
+    ])),
+    # 4 — bullet-point
+    lambda langs, fw, db, exp: "\n".join(filter(None, [
+        f"- Tech stack: {langs}" if langs else "",
+        f"- Frameworks & libraries: {fw}" if fw else "",
+        f"- Data stores: {db}" if db else "",
+        f"- Years of experience: {exp}" if exp else "",
+    ])),
+]
+
+_JD_STYLES = [
+    # 0 — corporate / formal
+    lambda dt, langs, fw, db: " ".join(filter(None, [
+        f"Seeking a {dt}.",
+        f"Required languages: {langs}." if langs else "",
+        f"Preferred frameworks: {fw}." if fw else "",
+        f"Database experience: {db}." if db else "",
+    ])),
+    # 1 — startup / casual
+    lambda dt, langs, fw, db: " ".join(filter(None, [
+        f"We're looking for a {dt} who knows {langs} cold." if langs
+        else f"We're hiring a {dt}.",
+        f"You'll ship features with {fw}." if fw else "",
+        f"Experience with {db} is a plus." if db else "",
+    ])),
+    # 2 — academic / research lab
+    lambda dt, langs, fw, db: " ".join(filter(None, [
+        f"Candidates for the {dt} role should demonstrate proficiency in {langs}."
+        if langs else f"Candidates for the {dt} role are sought.",
+        f"Familiarity with {fw} is expected." if fw else "",
+        f"Knowledge of {db} systems is required." if db else "",
+    ])),
+    # 3 — requirements list
+    lambda dt, langs, fw, db: "\n".join(filter(None, [
+        f"Role: {dt}",
+        f"Must-have languages: {langs}" if langs else "",
+        f"Framework experience: {fw}" if fw else "",
+        f"Database skills: {db}" if db else "",
+    ])),
+]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -60,54 +136,22 @@ def _join(cell) -> str:
     return ", ".join(p.strip() for p in str(cell).split(";") if p.strip())
 
 
-def build_cv_skills(row) -> str:
-    """
-    Build a readable CV skills string from a survey row.
-    e.g. "Languages: Python, JavaScript. Frameworks: Django. Databases: PostgreSQL. Experience: 3-5 years"
-    """
-    parts = []
+def build_cv_skills(row, style: int = 0) -> str:
+    """Build a CV skills string using the given phrasing style (0–4)."""
     langs = _join(row.get("LanguageWorkedWith", ""))
-    if langs:
-        parts.append(f"Languages: {langs}")
-
-    fw = _join(row.get("FrameworkWorkedWith", ""))
-    if fw:
-        parts.append(f"Frameworks: {fw}")
-
-    db = _join(row.get("DatabaseWorkedWith", ""))
-    if db:
-        parts.append(f"Databases: {db}")
-
-    plat = _join(row.get("PlatformWorkedWith", ""))
-    if plat:
-        parts.append(f"Platforms: {plat}")
-
-    exp = row.get("YearsCodingProf", "")
-    if pd.notna(exp) and str(exp).strip():
-        parts.append(f"Experience: {str(exp).strip()}")
-
-    return ". ".join(parts)
+    fw    = _join(row.get("FrameworkWorkedWith", ""))
+    db    = _join(row.get("DatabaseWorkedWith", ""))
+    exp_raw = row.get("YearsCodingProf", "")
+    exp = str(exp_raw).strip() if pd.notna(exp_raw) and str(exp_raw).strip() else ""
+    return _CV_STYLES[style % len(_CV_STYLES)](langs, fw, db, exp).strip()
 
 
-def build_jd_requirements(dev_type: str, jd_row) -> str:
-    """
-    Build a realistic JD requirements string from a DevType label and
-    a sample developer row that represents the role's typical tech stack.
-    e.g. "Seeking a Full-stack developer. Required: Python, JavaScript. Preferred frameworks: Django, React."
-    """
+def build_jd_requirements(dev_type: str, jd_row, style: int = 0) -> str:
+    """Build a JD requirements string using the given phrasing style (0–3)."""
     langs = _join(jd_row.get("LanguageWorkedWith", ""))
     fw    = _join(jd_row.get("FrameworkWorkedWith", ""))
     db    = _join(jd_row.get("DatabaseWorkedWith", ""))
-
-    parts = [f"Seeking a {dev_type}."]
-    if langs:
-        parts.append(f"Required languages: {langs}.")
-    if fw:
-        parts.append(f"Preferred frameworks: {fw}.")
-    if db:
-        parts.append(f"Database experience: {db}.")
-
-    return " ".join(parts)
+    return _JD_STYLES[style % len(_JD_STYLES)](dev_type, langs, fw, db).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -141,40 +185,51 @@ def generate_dataset(n_match: int = 250, n_mismatch: int = 250,
 
     samples = []
     skipped = 0
+    n_cv_styles = len(_CV_STYLES)
+    n_jd_styles = len(_JD_STYLES)
 
-    # --- Match pairs ---
-    print(f"\nGenerating {n_match} matching pairs ...")
-    match_pool = df.sample(n=min(n_match * 2, len(df)), random_state=seed)
+    # --- Match pairs (with random phrasing style per pair) ---
+    # Half the budget uses matching CV+JD styles; the other half deliberately
+    # mismatches styles (e.g. academic CV paired with startup JD for same skills)
+    # to force the network to match on semantics, not surface form.
+    print(f"\nGenerating {n_match} matching pairs (cross-phrasing enabled) ...")
+    match_pool = df.sample(n=min(n_match * 3, len(df)), random_state=seed)
     count = 0
     for _, row in match_pool.iterrows():
         if count >= n_match:
             break
-        cv = build_cv_skills(row)
+        cv_style = random.randint(0, n_cv_styles - 1)
+        jd_style = random.randint(0, n_jd_styles - 1)
+        cv = build_cv_skills(row, style=cv_style)
         if not cv:
             skipped += 1
             continue
         dev_type = row["DevTypePrimary"]
         group = devtype_groups.get(dev_type, df)
         jd_row = group.sample(1, random_state=random.randint(0, 99999)).iloc[0]
-        jd = build_jd_requirements(dev_type, jd_row)
+        jd = build_jd_requirements(dev_type, jd_row, style=jd_style)
         samples.append({
             "cv_skills":       cv,
             "jd_requirements": jd,
             "is_match":        True,
             "domain":          dev_type,
+            "cv_style":        cv_style,
+            "jd_style":        jd_style,
         })
         count += 1
         if count % 50 == 0:
             print(f"  {count}/{n_match} match pairs")
 
-    # --- Mismatch pairs ---
+    # --- Mismatch pairs (also randomized styles to avoid style-match shortcuts) ---
     print(f"\nGenerating {n_mismatch} mismatch pairs ...")
-    mismatch_pool = df.sample(n=min(n_mismatch * 2, len(df)), random_state=seed + 1)
+    mismatch_pool = df.sample(n=min(n_mismatch * 3, len(df)), random_state=seed + 1)
     count = 0
     for _, row in mismatch_pool.iterrows():
         if count >= n_mismatch:
             break
-        cv = build_cv_skills(row)
+        cv_style = random.randint(0, n_cv_styles - 1)
+        jd_style = random.randint(0, n_jd_styles - 1)
+        cv = build_cv_skills(row, style=cv_style)
         if not cv:
             skipped += 1
             continue
@@ -185,12 +240,14 @@ def generate_dataset(n_match: int = 250, n_mismatch: int = 250,
             continue
         other_type = random.choice(other_types)
         jd_row = devtype_groups[other_type].sample(1, random_state=random.randint(0, 99999)).iloc[0]
-        jd = build_jd_requirements(other_type, jd_row)
+        jd = build_jd_requirements(other_type, jd_row, style=jd_style)
         samples.append({
             "cv_skills":       cv,
             "jd_requirements": jd,
             "is_match":        False,
             "domain":          other_type,
+            "cv_style":        cv_style,
+            "jd_style":        jd_style,
         })
         count += 1
         if count % 50 == 0:

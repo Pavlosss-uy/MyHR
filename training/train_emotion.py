@@ -17,6 +17,8 @@ from sklearn.model_selection import StratifiedKFold
 from models.emotion_model import InterviewEmotionModel
 from training.dataset import InterviewEmotionDataset
 from training.metrics import classification_metrics, make_writer
+from utils.seeding import set_all_seeds
+from utils.trainer_logger import ExperimentLogger
 
 EMOTION_LABELS = [
     "confident", "hesitant", "nervous", "engaged",
@@ -129,6 +131,7 @@ def save_confusion_matrix(cm, label_names, save_path):
 def train_fold(model, train_loader, val_loader, device,
                epochs=10, fold_tag="full", checkpoint_path=None):
     writer    = make_writer(f"emotion_{fold_tag}")
+    logger    = ExperimentLogger(f"emotion_{fold_tag}")
     criterion = FocalLoss(gamma=2.0)
     optimizer = optim.AdamW(model.parameters(), lr=1e-4)
     scaler    = GradScaler('cuda')
@@ -161,6 +164,9 @@ def train_fold(model, train_loader, val_loader, device,
         writer.add_scalar(
             "LR", optimizer.param_groups[0]["lr"], epoch
         )
+        logger.log_metric("loss/val",     val_loss,                step=epoch)
+        logger.log_metric("weighted_f1",  metrics["weighted_f1"],  step=epoch)
+        logger.log_metric("accuracy",     metrics["accuracy"],     step=epoch)
 
         print(
             f"[{fold_tag}] Epoch {epoch+1}/{epochs} | "
@@ -188,6 +194,7 @@ def train_fold(model, train_loader, val_loader, device,
                 break
 
     writer.close()
+    logger.finish()
     return best_metrics, best_cm
 
 
@@ -196,6 +203,7 @@ def train_fold(model, train_loader, val_loader, device,
 # ---------------------------------------------------------------------------
 
 def main():
+    set_all_seeds(42)
     assert torch.cuda.is_available(), (
         "CUDA GPU not found. Check your PyTorch + CUDA installation.\n"
         "Install with: pip install torch --index-url https://download.pytorch.org/whl/cu121"

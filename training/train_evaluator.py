@@ -27,7 +27,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, WeightedRandomSampler
 from scipy.stats import spearmanr
 from pathlib import Path
 
@@ -37,6 +37,8 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from models.multi_head_evaluator import MultiHeadEvaluator
 from training.metrics import make_writer
+from utils.seeding import set_all_seeds
+from utils.trainer_logger import ExperimentLogger
 
 
 # ??? Configuration ???????????????????????????????????????????????????????????
@@ -93,17 +95,27 @@ def load_data(data_path: str) -> tuple:
         "clarity": np.array([s["clarity"] for s in samples], dtype=np.float32),
         "depth": np.array([s["technical_depth"] for s in samples], dtype=np.float32),
     }
+    quality_tiers = [s.get("quality_tier", "excellent") for s in samples]
 
     print(f"   Features shape: {features.shape}")
     print(f"   Label ranges: relevance=[{labels['relevance'].min():.0f}, {labels['relevance'].max():.0f}], "
           f"clarity=[{labels['clarity'].min():.0f}, {labels['clarity'].max():.0f}], "
           f"depth=[{labels['depth'].min():.0f}, {labels['depth'].max():.0f}]")
 
-    return features, labels
+    from collections import Counter
+    tier_counts = Counter(quality_tiers)
+    print(f"   Quality distribution: {dict(tier_counts)}")
+
+    return features, labels, quality_tiers
 
 
-def prepare_dataloaders(features, labels, val_split=VAL_SPLIT, seed=SEED):
-    """Split data into train/val and create DataLoaders."""
+def prepare_dataloaders(features, labels, quality_tiers, val_split=VAL_SPLIT, seed=SEED):
+    """Split data into train/val and create DataLoaders.
+
+    Uses WeightedRandomSampler on the training split so each quality tier
+    is sampled at equal frequency regardless of raw class counts.  This
+    directly addresses the 325 excellent / 10 poor imbalance in existing data.
+    """
     np.random.seed(seed)
     n = len(features)
     indices = np.random.permutation(n)
@@ -114,16 +126,34 @@ def prepare_dataloaders(features, labels, val_split=VAL_SPLIT, seed=SEED):
 
     print(f"\n? Train/Val split: {len(train_idx)}/{len(val_idx)}")
 
-    def make_loader(idx, shuffle=False):
-        X = torch.tensor(features[idx])
+    # --- Build WeightedRandomSampler for training split ---
+    from collections import Counter
+    train_tiers = [quality_tiers[i] for i in train_idx]
+    tier_counts = Counter(train_tiers)
+    tier_weight = {tier: 1.0 / count for tier, count in tier_counts.items()}
+    sample_weights = torch.tensor(
+        [tier_weight[t] for t in train_tiers], dtype=torch.float32
+    )
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(train_idx),
+        replacement=True,
+    )
+    print(f"   WeightedRandomSampler tier weights: "
+          + ", ".join(f"{t}={w:.4f}" for t, w in sorted(tier_weight.items())))
+
+    def make_tensor_ds(idx):
+        X     = torch.tensor(features[idx])
         y_rel = torch.tensor(labels["relevance"][idx])
         y_cla = torch.tensor(labels["clarity"][idx])
         y_dep = torch.tensor(labels["depth"][idx])
-        ds = TensorDataset(X, y_rel, y_cla, y_dep)
-        return DataLoader(ds, batch_size=BATCH_SIZE, shuffle=shuffle)
+        return TensorDataset(X, y_rel, y_cla, y_dep)
 
-    train_loader = make_loader(train_idx, shuffle=True)
-    val_loader = make_loader(val_idx, shuffle=False)
+    train_ds = make_tensor_ds(train_idx)
+    val_ds   = make_tensor_ds(val_idx)
+
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler)
+    val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False)
 
     return train_loader, val_loader, train_idx, val_idx
 
@@ -202,6 +232,7 @@ def train(model, train_loader, val_loader):
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = CosineAnnealingLR(optimizer, T_max=T_MAX)
     writer = make_writer("multi_head_evaluator")
+    logger = ExperimentLogger("multi_head_evaluator", params={"lr": LEARNING_RATE, "epochs": EPOCHS, "batch": BATCH_SIZE})
 
     best_val_loss = float("inf")
     best_epoch = 0
@@ -236,13 +267,16 @@ def train(model, train_loader, val_loader):
         val_results = evaluate(model, val_loader)
         val_loss = val_results["loss"]
 
-        # ?? TensorBoard ??
+        # ?? TensorBoard + MLflow ??
         writer.add_scalar("Loss/train", train_loss, epoch)
         writer.add_scalar("Loss/val", val_loss, epoch)
         writer.add_scalar("LR", optimizer.param_groups[0]["lr"], epoch)
+        logger.log_metric("loss/train", train_loss, step=epoch)
+        logger.log_metric("loss/val",   val_loss,   step=epoch)
         for key in ["relevance", "clarity", "depth"]:
             writer.add_scalar(f"Metric/{key}_spearman", val_results[f"{key}_spearman"], epoch)
             writer.add_scalar(f"Metric/{key}_mse",      val_results[f"{key}_mse"],      epoch)
+            logger.log_metric(f"{key}_spearman", val_results[f"{key}_spearman"], step=epoch)
 
         # ?? Logging ??
         if epoch % 5 == 0 or epoch == 1:
@@ -273,6 +307,7 @@ def train(model, train_loader, val_loader):
     if best_state is not None:
         model.load_state_dict(best_state)
     writer.close()
+    logger.finish()
 
     print(f"\n  ? Best model from epoch {best_epoch} (val_loss={best_val_loss:.4f})")
     return model, best_epoch
@@ -291,12 +326,10 @@ def main():
         print("   Run this first: python training/generate_eval_data.py")
         sys.exit(1)
 
-    # Set seed
-    torch.manual_seed(SEED)
-    np.random.seed(SEED)
+    set_all_seeds(SEED)
 
     # Load data
-    features, labels = load_data(DATA_FILE)
+    features, labels, quality_tiers = load_data(DATA_FILE)
 
     # Determine input dimension from data
     input_dim = features.shape[1]
@@ -310,7 +343,7 @@ def main():
     print(f"   Trainable parameters: {trainable_params:,}")
 
     # Prepare data
-    train_loader, val_loader, _, val_idx = prepare_dataloaders(features, labels)
+    train_loader, val_loader, _, val_idx = prepare_dataloaders(features, labels, quality_tiers)
 
     # Train
     model, best_epoch = train(model, train_loader, val_loader)

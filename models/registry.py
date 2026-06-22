@@ -184,7 +184,7 @@ class ModelRegistry:
     def load_candidate_ranker(self):
         """Returns NeuralCandidateRanker (always — falls back to random projections)."""
         if "ranker" not in self.loaded_models:
-            model = NeuralCandidateRanker(input_features=8, embedding_dim=32).to(self.device)
+            model = NeuralCandidateRanker(input_features=7, embedding_dim=32).to(self.device)
             path = self._get_path("ranker")
             if os.path.exists(path):
                 try:

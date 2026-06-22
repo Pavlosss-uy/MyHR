@@ -497,7 +497,7 @@ def evaluate_answer_node(state: AgentState):
         },
         "answer_classification": res.answer_classification,
         "detailed_scores": neural_results,
-        "predicted_job_performance": job_prediction,
+        "predicted_market_positioning": job_prediction,
         "feedback": res.feedback,
         "suggested_improvement": res.suggested_improvement,
         "criteria_breakdown": res.criteria_breakdown.model_dump(),
@@ -511,7 +511,7 @@ def evaluate_answer_node(state: AgentState):
 
     mod1_str = f" | MOD-1: {mod1_score:.1f}/100" if mod1_score is not None else ""
     print(f"LLM Score: {llm_score}/100 | Neural Score: {neural_score}/100{mod1_str} | Blended: {blended_score}/100")
-    print(f"Predicted Job Performance: {job_prediction}/10.0")
+    print(f"Predicted Market Positioning: {job_prediction}/10.0")
 
     return {
         "evaluations": state.get("evaluations", []) + [report_entry],

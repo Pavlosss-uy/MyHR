@@ -44,14 +44,16 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 OUTPUT_FILE = os.path.join(DATA_DIR, "eval_training_data.json")
 CHECKPOINT_FILE = os.path.join(DATA_DIR, "eval_data_checkpoint.json")
 
-# Quality tier distribution
+# Quality tier distribution — intentionally oversample mediocre/poor because the
+# LLM judge tends to up-label generated "poor" answers as "mediocre" or "good".
+# Oversampling compensates so the final dataset reaches rough balance after labeling.
 QUALITY_TIERS = {
-    "excellent": 50,
-    "good": 50,
-    "mediocre": 50,
-    "poor": 50,
+    "excellent": 60,
+    "good":      70,
+    "mediocre":  100,
+    "poor":      120,
 }
-TOTAL_SAMPLES = sum(QUALITY_TIERS.values())  # 200
+TOTAL_SAMPLES = sum(QUALITY_TIERS.values())  # 350
 
 # Retry config
 MAX_RETRIES = 5

@@ -3,11 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class NeuralCandidateRanker(nn.Module):
-    def __init__(self, input_features=8, embedding_dim=32):
+    def __init__(self, input_features=7, embedding_dim=32):
         super(NeuralCandidateRanker, self).__init__()
-        
-        # MLP to project candidate features into a comparable latent embedding space
-        # We take the 8 core features of a candidate and map them to a 32-dimensional vector
+
+        # Projects 7-D candidate features into a normalized 32-D embedding.
+        # input_features=7 after removing salary_percentile (formerly [7]) to
+        # fix data leakage in generate_ranking_data.py.
         self.projector = nn.Sequential(
             nn.Linear(input_features, 64),
             nn.ReLU(),

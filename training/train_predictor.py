@@ -10,6 +10,8 @@ import random
 
 from models.performance_predictor import PerformancePredictor
 from training.metrics import regression_metrics, make_writer
+from utils.seeding import set_all_seeds
+from utils.trainer_logger import ExperimentLogger
 
 
 class RealPerformanceDataset(Dataset):
@@ -51,6 +53,7 @@ class DummyPerformanceDataset(Dataset):
 
 
 def main():
+    set_all_seeds(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Starting Performance Predictor training on {device}...")
 
@@ -79,6 +82,7 @@ def main():
         optimizer, mode="min", patience=5, factor=0.5
     )
     writer = make_writer("performance_predictor")
+    logger = ExperimentLogger("performance_predictor")
 
     epochs      = 30
     best_loss   = float("inf")
@@ -119,7 +123,7 @@ def main():
         avg_val_loss = val_loss_total / len(val_loader)
         metrics = regression_metrics(val_true, val_preds)
 
-        # --- TensorBoard ---
+        # --- TensorBoard + MLflow ---
         writer.add_scalar("Loss/train",        avg_train_loss,          epoch)
         writer.add_scalar("Loss/val",          avg_val_loss,            epoch)
         writer.add_scalar("Metric/mae",        metrics["mae"],          epoch)
@@ -127,6 +131,10 @@ def main():
         writer.add_scalar("Metric/spearman",   metrics["spearman_rho"], epoch)
         writer.add_scalar("Metric/pearson",    metrics["pearson_r"],    epoch)
         writer.add_scalar("LR", optimizer.param_groups[0]["lr"],        epoch)
+        logger.log_metric("loss/train", avg_train_loss,          step=epoch)
+        logger.log_metric("loss/val",   avg_val_loss,            step=epoch)
+        logger.log_metric("mae",        metrics["mae"],          step=epoch)
+        logger.log_metric("spearman",   metrics["spearman_rho"], step=epoch)
 
         if (epoch + 1) % 5 == 0:
             print(
@@ -155,6 +163,7 @@ def main():
                 break
 
     writer.close()
+    logger.finish()
     print(
         f"\nCheckpoint saved: models/checkpoints/performance_predictor_v1.pt"
         f"\nBest val loss: {best_loss:.4f}  |  Best Spearman r: {best_spearman:.4f}"

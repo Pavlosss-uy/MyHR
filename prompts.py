@@ -13,10 +13,14 @@ JOB CONTEXT:
 {global_context}
 
 CANDIDATE CV HIGHLIGHTS:
+<cv>
 {cv_chunk}
+</cv>
 
 ROLE KEY REQUIREMENTS (use as reference only — do NOT reproduce in your question):
+<jd>
 {jd_signals}
+</jd>
 
 INSTRUCTIONS:
 1. Ask ONE short, specific opening question grounded in a concrete detail from the candidate's CV (a project, tool, framework, or achievement).
@@ -73,10 +77,14 @@ CURRENT TOPIC:
 {topic}
 
 --- CANDIDATE CV HIGHLIGHTS ---
+<cv>
 {cv_chunk}
+</cv>
 
 --- ROLE KEY REQUIREMENTS (reference only — do NOT reproduce in your question) ---
+<jd>
 {jd_signals}
+</jd>
 
 CONVERSATION HISTORY:
 {history}

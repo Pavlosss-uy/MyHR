@@ -46,11 +46,11 @@ def _load_session_state(session_id: str) -> Optional[dict]:
 
 def extract_candidate_features(session_id: str) -> Optional[torch.Tensor]:
     """
-    Return a (1, 8) float32 tensor representing the candidate's aggregate
+    Return a (1, 7) float32 tensor representing the candidate's aggregate
     feature vector for this session, or None if the session cannot be loaded
     or has no evaluated answers.
 
-    The 8 dimensions:
+    The 7 dimensions match NeuralCandidateRanker.input_features=7:
         0  skill_match      — CV-to-JD semantic match (0-1)
         1  relevance        — average answer relevance to questions (0-1)
         2  clarity          — average answer clarity score (0-1)
@@ -58,7 +58,9 @@ def extract_candidate_features(session_id: str) -> Optional[torch.Tensor]:
         4  confidence       — average vocal confidence from tone analysis (0-1)
         5  consistency      — thematic consistency across answers (0-1)
         6  gaps_inverted    — JD requirement coverage (0-1)
-        7  experience       — experience signal density (0-1)
+
+    NOTE: experience (formerly [7]) was dropped to match the 7-D training
+    data after removing salary_percentile leakage from the ranker.
     """
     state = _load_session_state(session_id)
     if not state:
@@ -69,23 +71,22 @@ def extract_candidate_features(session_id: str) -> Optional[torch.Tensor]:
         return None
 
     # --- Primary path: pre-computed feature_values from AnswerFeatureExtractor ---
+    # Accept both 7-D (new) and 8-D (legacy) stored vectors; truncate 8-D to 7.
     feature_rows = []
     for e in evaluations:
         fv = e.get("feature_values")
-        if fv and len(fv) == 8:
-            feature_rows.append(fv)
+        if fv and len(fv) >= 7:
+            feature_rows.append(list(fv)[:7])
 
     if feature_rows:
-        import numpy as np
         avg = torch.tensor(
             [sum(col) / len(feature_rows) for col in zip(*feature_rows)],
             dtype=torch.float32,
         )
-        return avg.unsqueeze(0)  # (1, 8)
+        return avg.unsqueeze(0)  # (1, 7)
 
-    # --- Fallback: reconstruct a coarser 8-D vector from stored scores ---
+    # --- Fallback: reconstruct a coarser 7-D vector from stored scores ---
     # Only triggered for sessions that predate the feature_values field.
-    # The reconstruction uses per-answer score and criteria_breakdown.
     scores, relevances, clarities, depths = [], [], [], []
     for e in evaluations:
         s = e.get("score", 0)
@@ -111,15 +112,14 @@ def extract_candidate_features(session_id: str) -> Optional[torch.Tensor]:
         avg_score,   # confidence proxy
         avg_score,   # consistency proxy
         avg_score,   # gaps proxy
-        avg_score,   # experience proxy
     ]
     return torch.tensor([features], dtype=torch.float32)
 
 
 def build_ideal_profile() -> torch.Tensor:
     """
-    Return a (1, 8) ideal-candidate feature tensor used as the ranking anchor.
+    Return a (1, 7) ideal-candidate feature tensor used as the ranking anchor.
     All dimensions set to 1.0 — maximum performance on every axis.
     Ranking then orders candidates by cosine similarity to this anchor.
     """
-    return torch.ones(1, 8, dtype=torch.float32)
+    return torch.ones(1, 7, dtype=torch.float32)

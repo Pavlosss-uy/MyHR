@@ -25,6 +25,8 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import EvalCallback
 
 from training.interview_env import InterviewEnv
+from utils.seeding import set_all_seeds
+from utils.trainer_logger import ExperimentLogger
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +34,7 @@ from training.interview_env import InterviewEnv
 # ---------------------------------------------------------------------------
 
 def train_ppo(total_timesteps: int = 50_000, save_path: str = "models/checkpoints/difficulty_ppo_v1"):
+    set_all_seeds(42)
     print(f"Training PPO for {total_timesteps:,} timesteps...")
 
     # Vectorised environment (4 parallel workers = faster data collection)
@@ -59,10 +62,13 @@ def train_ppo(total_timesteps: int = 50_000, save_path: str = "models/checkpoint
         verbose=0,
     )
 
+    logger = ExperimentLogger("difficulty_ppo", params={"total_timesteps": total_timesteps, "lr": 3e-4})
     model.learn(total_timesteps=total_timesteps, callback=eval_callback)
 
     os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else ".", exist_ok=True)
     model.save(save_path)
+    logger.log_artifact(save_path + ".zip")
+    logger.finish()
     print(f"PPO checkpoint saved ? {save_path}")
 
     return model

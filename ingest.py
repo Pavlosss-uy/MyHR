@@ -1,5 +1,6 @@
 import os
 import json
+import re as _re
 from datetime import datetime
 
 from llama_index.core import (
@@ -17,6 +18,33 @@ from pinecone import Pinecone, ServerlessSpec
 Settings.embed_model = HuggingFaceEmbedding(
     model_name="sentence-transformers/all-mpnet-base-v2"
 )
+
+# ---------------------------------------------------------------------------
+# Task 3.5 — Prompt injection guard
+# Patterns that could coerce the LLM into ignoring instructions or leaking data.
+# ---------------------------------------------------------------------------
+_INJECTION_PATTERNS = _re.compile(
+    r"ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|context)"
+    r"|you\s+are\s+now\s+(a|an|the)\s+\w+"
+    r"|<\s*/?(system|instruction|prompt|jailbreak|roleplay)\s*>"
+    r"|SYSTEM\s*:"
+    r"|\bDAN\b"
+    r"|\bassistant\s*:",
+    _re.IGNORECASE | _re.MULTILINE,
+)
+
+
+def _sanitize_text(text: str, label: str = "text") -> str:
+    """Strip prompt-injection patterns from CV/JD text before LLM indexing."""
+    if not text:
+        return text
+    if _INJECTION_PATTERNS.search(text):
+        print(f"⚠️ Potential prompt injection detected in {label} — suspicious patterns redacted.")
+    sanitized = _INJECTION_PATTERNS.sub("[REDACTED]", text)
+    sanitized = _re.sub(r"\n{4,}", "\n\n\n", sanitized)
+    sanitized = _re.sub(r"[ \t]{3,}", "  ", sanitized)
+    return sanitized
+
 
 # ---------- Local storage for BM25 raw texts ----------
 BM25_STORE_DIR = "storage/bm25"
@@ -103,6 +131,9 @@ def create_session_index(
         namespace=session_id
     )
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+    cv_text = _sanitize_text(cv_text, "CV")
+    jd_text = _sanitize_text(jd_text, "JD")
 
     documents = [
         Document(text=cv_text, metadata={"type": "cv"}),

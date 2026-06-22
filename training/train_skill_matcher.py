@@ -10,6 +10,8 @@ import json
 
 from models.skill_matcher import SkillMatchSiameseNet
 from training.metrics import make_writer
+from utils.seeding import set_all_seeds
+from utils.trainer_logger import ExperimentLogger
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +129,7 @@ def compute_pairwise_accuracy(model, val_loader, device):
 # ---------------------------------------------------------------------------
 
 def main():
+    set_all_seeds(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Starting Siamese Network training on {device}...")
 
@@ -160,6 +163,7 @@ def main():
     optimizer = optim.AdamW(model.shared_mlp.parameters(), lr=1e-3)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=2, factor=0.5)
     writer    = make_writer("skill_matcher")
+    logger    = ExperimentLogger("skill_matcher")
 
     epochs           = 10
     best_loss        = float("inf")
@@ -186,6 +190,8 @@ def main():
 
         writer.add_scalar("Loss/train",              avg_loss,     epoch)
         writer.add_scalar("Metric/pairwise_accuracy", pairwise_acc, epoch)
+        logger.log_metric("loss/train",       avg_loss,     step=epoch)
+        logger.log_metric("pairwise_accuracy", pairwise_acc, step=epoch)
 
         print(
             f"Epoch {epoch+1}/{epochs} | "
@@ -209,6 +215,7 @@ def main():
                 break
 
     writer.close()
+    logger.finish()
     print("\nTraining Complete!")
 
     # Inference test

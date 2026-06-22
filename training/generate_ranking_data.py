@@ -82,7 +82,7 @@ def _years_to_float(val) -> float:
 
 
 def build_features(row) -> list:
-    """Encode a survey row as an 8-D feature vector.
+    """Encode a survey row as a 7-D feature vector.
 
     Returns None if required fields are missing.
 
@@ -94,7 +94,12 @@ def build_features(row) -> list:
       [4] has_frontend_lang       (0 or 1)
       [5] company_size_norm       (0–1)
       [6] education_level_norm    (0–1)
-      [7] salary_percentile       (0–1, filled separately)
+
+    NOTE: salary_percentile (formerly [7]) was removed — it was both the
+    label used to construct positive/negative triplets AND a baked-in
+    feature, causing perfect NDCG=1.0 via trivial data leakage.
+    Salary is still used to select high/low candidates for triplets
+    but never appears in the feature vector itself.
     """
     # [0] years of professional coding
     years = _years_to_float(row.get("YearsCodingProf"))
@@ -132,9 +137,8 @@ def build_features(row) -> list:
     if np.isnan(edu_norm):
         edu_norm = 0.5  # median fallback
 
-    # [7] salary percentile — filled later per DevType group
     return [years_norm, n_langs_norm, n_fwks_norm, has_backend, has_frontend,
-            size_norm, edu_norm, 0.0]
+            size_norm, edu_norm]
 
 
 # ---------------------------------------------------------------------------
@@ -173,17 +177,23 @@ def generate(n_per_devtype: int = 200, seed: int = 42) -> list:
         primary = item["devtype"].split(";")[0].strip()
         groups[primary].append(item)
 
-    # Add salary percentile within each DevType group
-    for dev_type, items in groups.items():
-        salaries = np.array([x["salary"] for x in items])
-        ranks = salaries.argsort().argsort()  # ordinal rank
-        percentiles = ranks / (len(ranks) - 1 + 1e-9)
-        for i, item in enumerate(items):
-            item["features"][7] = float(percentiles[i])
-
     # Build triplets
     triplets = []
     skipped  = 0
+
+    sorted_devtypes = sorted(groups.keys())
+
+    # Pre-compute the mean feature vector for every DevType (used as cross-type anchors).
+    # Using the mean of a DIFFERENT DevType as the anchor breaks the circular dependency
+    # that existed when anchor = mean(same group being split by salary).
+    devtype_means: dict = {}
+    for dev_type, items in groups.items():
+        if len(items) >= 50:
+            devtype_means[dev_type] = np.array(
+                [x["features"] for x in items]
+            ).mean(axis=0).tolist()
+
+    eligible_devtypes = list(devtype_means.keys())
 
     for dev_type, items in sorted(groups.items()):
         if len(items) < 50:
@@ -200,9 +210,14 @@ def generate(n_per_devtype: int = 200, seed: int = 42) -> list:
         if not high_pool or not low_pool:
             continue
 
-        # Anchor = mean feature vector of this DevType
-        all_feats = np.array([x["features"] for x in items])
-        anchor = all_feats.mean(axis=0).tolist()
+        # Anchor = mean feature vector of a *different* DevType (cross-type anchor).
+        # This prevents the model from trivially learning that positive features are
+        # closer to the group mean that was used to define them.
+        other_types = [d for d in eligible_devtypes if d != dev_type]
+        if not other_types:
+            other_types = eligible_devtypes  # single-DevType edge case
+        anchor_type = rng.choice(other_types)
+        anchor = devtype_means[anchor_type]
 
         n = min(n_per_devtype, len(high_pool), len(low_pool))
 
@@ -211,10 +226,11 @@ def generate(n_per_devtype: int = 200, seed: int = 42) -> list:
 
         for hi, lo in zip(high_idx, low_idx):
             triplets.append({
-                "anchor":   anchor,
-                "positive": high_pool[hi]["features"],
-                "negative": low_pool[lo]["features"],
-                "devtype":  dev_type,
+                "anchor":      anchor,
+                "positive":    high_pool[hi]["features"],
+                "negative":    low_pool[lo]["features"],
+                "devtype":     dev_type,
+                "anchor_type": str(anchor_type),
             })
 
     print(f"\nGenerated {len(triplets):,} triplets across {len(groups):,} DevType groups")

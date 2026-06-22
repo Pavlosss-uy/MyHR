@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -20,8 +21,11 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
     Body,
+    Depends,
+    Header,
 )
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from langgraph.graph import END
 
@@ -48,6 +52,20 @@ from agent import (
 )
 
 app = FastAPI()
+
+# ---------------------------------------------------------------------------
+# Task 3.1 — CORS: allow only the configured frontend origin (not "*")
+# Set FRONTEND_URL in .env for production, e.g. https://myhr.example.com
+# ---------------------------------------------------------------------------
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:8080")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[FRONTEND_URL],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # B2B / HR endpoints
@@ -59,6 +77,28 @@ except ImportError as _hr_err:
 
 UPLOAD_DIR = "./uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Task 3.3 — environment-driven base URLs (replaces hardcoded localhost:8000)
+BASE_URL    = os.environ.get("BASE_URL",    "http://localhost:8000")
+BASE_WS_URL = os.environ.get("BASE_WS_URL", "ws://localhost:8000")
+
+# Task 3.4 — upload size limits (413 on excess)
+_CV_MAX_BYTES    = 10 * 1024 * 1024   # 10 MB
+_AUDIO_MAX_BYTES = 50 * 1024 * 1024   # 50 MB
+
+
+# Task 3.2 — Firebase token verification dependency
+async def verify_firebase_token(authorization: str = Header(...)) -> str:
+    """Verify a Firebase Bearer token; return the caller's UID on success."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        from firebase_admin import auth as fb_auth
+        decoded = fb_auth.verify_id_token(token)
+        return decoded["uid"]
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired Firebase ID token.")
 
 
 def _extract_jd_signals(jd_text: str) -> str:
@@ -377,10 +417,13 @@ def _run_interview_turn(
 async def start_interview(
     cv: UploadFile = File(...),
     jd: str = Form(...),
+    uid: str = Depends(verify_firebase_token),
 ):
     session_id = str(uuid.uuid4())
 
     cv_bytes = await cv.read()
+    if len(cv_bytes) > _CV_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="CV file too large. Maximum allowed size is 10 MB.")
     pdf_reader = PyPDF2.PdfReader(io.BytesIO(cv_bytes))
     cv_text = ""
     for page in pdf_reader.pages:
@@ -444,14 +487,14 @@ async def start_interview(
     )
 
     audio_path = generate_audio(greeting)
-    audio_url = f"http://localhost:8000/static/audio/{os.path.basename(audio_path)}" if audio_path else None
+    audio_url = f"{BASE_URL}/static/audio/{os.path.basename(audio_path)}" if audio_path else None
 
     return {
         "session_id": session_id,
         "question": greeting,
         "audio_url": audio_url,
         "question_number": 1,
-        "ws_url": f"ws://localhost:8000/ws/interview/{session_id}",
+        "ws_url": f"{BASE_WS_URL}/ws/interview/{session_id}",
     }
 
 
@@ -510,7 +553,7 @@ async def start_interview_from_token(
     )
 
     audio_path = generate_audio(greeting)
-    audio_url = f"http://localhost:8000/static/audio/{os.path.basename(audio_path)}" if audio_path else None
+    audio_url = f"{BASE_URL}/static/audio/{os.path.basename(audio_path)}" if audio_path else None
 
     return {
         "session_id": session_id,
@@ -617,7 +660,7 @@ async def live_interview_websocket(
 
                 await websocket.send_json({"type": "transcript", "text": transcription})
 
-                current_state, outcome = _run_interview_turn(current_state, transcription)
+                current_state, outcome = await asyncio.to_thread(_run_interview_turn, current_state, transcription)
 
                 update_session_state(session_id, current_state)
                 record["state_data"] = current_state
@@ -774,6 +817,7 @@ async def end_interview(session_id: str):
 async def submit_answer(
     session_id: str = Form(...),
     audio: UploadFile = File(...),
+    uid: str = Depends(verify_firebase_token),
 ):
     record = get_session(session_id)
     if not record:
@@ -782,6 +826,8 @@ async def submit_answer(
     current_state = record["state_data"]
 
     audio_bytes = await audio.read()
+    if len(audio_bytes) > _AUDIO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Audio file too large. Maximum allowed size is 50 MB.")
     content_type = audio.content_type or "audio/webm"
     ext = _mime_to_ext(content_type)
     temp_audio_path = os.path.join(UPLOAD_DIR, f"temp_{session_id}{ext}")
@@ -810,7 +856,7 @@ async def submit_answer(
     _attach_tone_analysis(current_state, temp_audio_path, session_id)
 
     try:
-        current_state, outcome = _run_interview_turn(current_state, transcription)
+        current_state, outcome = await asyncio.to_thread(_run_interview_turn, current_state, transcription)
 
         update_session_state(session_id, current_state)
 
@@ -840,7 +886,7 @@ async def submit_answer(
 
             closing_audio_path = generate_audio(closing)
             closing_audio_url = (
-                f"http://localhost:8000/static/audio/{os.path.basename(closing_audio_path)}"
+                f"{BASE_URL}/static/audio/{os.path.basename(closing_audio_path)}"
                 if closing_audio_path else None
             )
             return {
@@ -853,7 +899,7 @@ async def submit_answer(
             }
 
         audio_path = generate_audio(outcome["next_question"])
-        audio_url = f"http://localhost:8000/static/audio/{os.path.basename(audio_path)}" if audio_path else None
+        audio_url = f"{BASE_URL}/static/audio/{os.path.basename(audio_path)}" if audio_path else None
 
         return {
             "status": "ongoing",
@@ -883,7 +929,7 @@ class RankCandidatesRequest(BaseModel):
 
 
 @app.post("/candidates/rank")
-async def rank_candidates(request: RankCandidatesRequest):
+async def rank_candidates(request: RankCandidatesRequest, uid: str = Depends(verify_firebase_token)):
     """
     Rank a list of completed interview sessions by candidate quality.
 

@@ -29,15 +29,22 @@ class EmbeddingExtractor:
     def __init__(self):
         print("[AI] Loading Semantic Embedding Model for DL Scorer...")
         self.embedder = SentenceTransformer("all-mpnet-base-v2")
+        self._cache: dict = {}  # Task 3.8 — in-process embedding cache
+
+    def _encode_cached(self, text: str) -> torch.Tensor:
+        """Encode text, returning a cached tensor if the same text was seen before."""
+        if text not in self._cache:
+            with torch.no_grad():
+                self._cache[text] = self.embedder.encode(text, convert_to_tensor=True)
+        return self._cache[text]
 
     def extract(self, question: str, answer: str, tone_data: dict) -> torch.Tensor:
         if not answer or answer.strip() == "(No speech detected)":
             return torch.zeros(1, 1538)
 
         # 1. Convert words into raw semantic mathematics (768 dims each)
-        with torch.no_grad():
-            q_emb = self.embedder.encode(question, convert_to_tensor=True)
-            a_emb = self.embedder.encode(answer, convert_to_tensor=True)
+        q_emb = self._encode_cached(question)
+        a_emb = self._encode_cached(answer)
         
         # 2. Extract Tone Data 
         f_tone_conf = 0.8

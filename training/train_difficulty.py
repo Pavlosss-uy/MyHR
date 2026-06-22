@@ -8,9 +8,12 @@ import os
 from models.difficulty_engine import AdaptiveDifficultyEngine
 from training.metrics import rl_metrics, make_writer
 from training.interview_env import InterviewEnv
+from utils.seeding import set_all_seeds
+from utils.trainer_logger import ExperimentLogger
 
 
 def main():
+    set_all_seeds(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Starting Reinforcement Learning training on {device}...")
     print("State space: 6-D (full InterviewEnv observation)")
@@ -19,6 +22,7 @@ def main():
     model     = AdaptiveDifficultyEngine(state_dim=6).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     writer    = make_writer("difficulty_engine")
+    logger    = ExperimentLogger("difficulty_engine")
     env       = InterviewEnv(max_questions=5)
 
     epochs = 2000
@@ -80,6 +84,8 @@ def main():
             writer.add_scalar("Reward/avg",              metrics["avg_reward"],         step_num)
             writer.add_scalar("Score/variance",          metrics["score_variance"],      step_num)
             writer.add_scalar("Score/pct_in_target_zone",metrics["pct_in_target_zone"], step_num)
+            logger.log_metric("avg_reward",       metrics["avg_reward"],        step=step_num)
+            logger.log_metric("pct_in_zone",      metrics["pct_in_target_zone"], step=step_num)
 
             print(
                 f"Epoch {epoch+1}/{epochs} | "
@@ -93,6 +99,7 @@ def main():
             batch_scores  = []
 
     writer.close()
+    logger.finish()
     os.makedirs("models/checkpoints", exist_ok=True)
     torch.save(model.state_dict(), "models/checkpoints/difficulty_engine_v2.pt")
     print("\nRL Checkpoint saved: models/checkpoints/difficulty_engine_v2.pt")
