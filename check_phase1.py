@@ -126,9 +126,60 @@ except Exception as e:
     results.append(f'{FAIL} 1.8  PPO: {e}')
 
 # ── Summary ──────────────────────────────────────────────────────────────
+# ── Phase 2 spot-checks ──────────────────────────────────────────────────
+
+# 2.1 CandidateScoringMLP wired into evaluate_answer_node
+try:
+    src = open('agent.py', encoding='utf-8', errors='ignore').read()
+    assert 'load_scorer' in src, 'load_scorer not called in agent.py'
+    assert 'EmbeddingExtractor' in src, 'EmbeddingExtractor not imported'
+    assert 'mod1_score' in src, 'mod1_score blend not found'
+    results.append(f'{PASS} 2.1  CandidateScoringMLP wired: load_scorer + EmbeddingExtractor + mod1_score blend')
+except Exception as e:
+    results.append(f'{FAIL} 2.1  CandidateScoringMLP: {e}')
+
+# 2.2 load_performance_predictor has try/except / graceful None
+try:
+    src = open('models/registry.py', encoding='utf-8', errors='ignore').read()
+    assert 'load_performance_predictor' in src
+    # Check it returns None gracefully (not a bare torch.load)
+    assert 'omitting performance forecast' in src or 'predictor"] = None' in src
+    results.append(f'{PASS} 2.2  load_performance_predictor graceful None on missing checkpoint')
+except Exception as e:
+    results.append(f'{FAIL} 2.2  load_performance_predictor: {e}')
+
+# 2.3 POST /candidates/rank endpoint exists in server.py
+try:
+    src = open('server.py', encoding='utf-8', errors='ignore').read()
+    assert '/candidates/rank' in src, '/candidates/rank endpoint missing'
+    assert 'extract_candidate_features' in src, 'feature_store not called'
+    assert 'cosine_similarity' in src, 'cosine similarity not used'
+    results.append(f'{PASS} 2.3  POST /candidates/rank endpoint present with feature_store + cosine ranking')
+except Exception as e:
+    results.append(f'{FAIL} 2.3  /candidates/rank: {e}')
+
+# 2.4 Cross-encoder retired (NOT PRODUCTION marker)
+try:
+    src = open('training/train_cross_encoder.py', encoding='utf-8', errors='ignore').read()
+    assert 'NOT PRODUCTION' in src, 'NOT PRODUCTION marker missing from train_cross_encoder.py'
+    agent_src = open('agent.py', encoding='utf-8', errors='ignore').read()
+    assert 'cross_encoder' not in agent_src.lower(), 'cross_encoder still referenced in agent.py'
+    results.append(f'{PASS} 2.4  Cross-encoder retired: NOT PRODUCTION marker present, not wired into agent.py')
+except Exception as e:
+    results.append(f'{FAIL} 2.4  Cross-encoder: {e}')
+
+# 2.5 database.py removed
+try:
+    assert not os.path.exists('database.py'), 'database.py still present'
+    req = open('requirements.txt', encoding='utf-8', errors='ignore').read().lower()
+    assert 'sqlalchemy' not in req, 'SQLAlchemy still in requirements.txt'
+    results.append(f'{PASS} 2.5  database.py deleted, SQLAlchemy removed from requirements.txt')
+except Exception as e:
+    results.append(f'{FAIL} 2.5  Legacy DB cleanup: {e}')
+
 print()
 print('=' * 65)
-print('  Phase 1 Health Check')
+print('  Phase 1 + Phase 2 Health Check')
 print('=' * 65)
 for r in results:
     print(' ', r)

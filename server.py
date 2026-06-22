@@ -19,7 +19,9 @@ from fastapi import (
     HTTPException,
     WebSocket,
     WebSocketDisconnect,
+    Body,
 )
+from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from langgraph.graph import END
 
@@ -864,6 +866,73 @@ async def submit_answer(
         }
     finally:
         _safe_remove(temp_audio_path)
+
+
+
+# ---------------------------------------------------------------------------
+# Task 2.3 — Candidate Ranking Endpoint (MOD-5)
+# ---------------------------------------------------------------------------
+# NOTE: This endpoint is intentionally unauthenticated until Phase 3 (Task 3.2)
+# adds Firebase token verification.  Add auth before exposing to production.
+# Known limitation: ranker has perfect NDCG due to data leakage in training
+# triplets — see Task 4.3 for the fix.  Rankings are directionally useful but
+# scores should not be treated as absolute ground truth until retrained.
+
+class RankCandidatesRequest(BaseModel):
+    session_ids: list[str]
+
+
+@app.post("/candidates/rank")
+async def rank_candidates(request: RankCandidatesRequest):
+    """
+    Rank a list of completed interview sessions by candidate quality.
+
+    Body: {"session_ids": ["abc123", "def456", ...]}
+
+    Returns candidates sorted best-to-worst by cosine similarity of their
+    aggregate 8-D feature vector to the ideal-candidate anchor.
+    """
+    from recommender.feature_store import extract_candidate_features, build_ideal_profile
+    import torch
+    import torch.nn.functional as F
+
+    if not request.session_ids:
+        raise HTTPException(status_code=422, detail="session_ids must not be empty")
+
+    ranker = registry.load_candidate_ranker()
+    device = next(ranker.parameters()).device
+    ideal  = build_ideal_profile().to(device)
+
+    with torch.no_grad():
+        ideal_emb = ranker(ideal)          # (1, 32) L2-normalised embedding
+
+    ranked = []
+    skipped = []
+
+    for sid in request.session_ids:
+        features = extract_candidate_features(sid)
+        if features is None:
+            skipped.append({"session_id": sid, "reason": "session not found or no evaluations"})
+            continue
+        try:
+            with torch.no_grad():
+                cand_emb  = ranker(features.to(device))           # (1, 32)
+                similarity = F.cosine_similarity(cand_emb, ideal_emb).item()
+            ranked.append({"session_id": sid, "score": round(similarity, 4)})
+        except Exception as e:
+            skipped.append({"session_id": sid, "reason": str(e)})
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+
+    return {
+        "ranked": ranked,
+        "skipped": skipped,
+        "note": (
+            "Ranking uses cosine similarity to an ideal-candidate anchor. "
+            "Known data-leakage issue in training data (Task 4.3) — treat as "
+            "directional signal, not absolute ground truth."
+        ),
+    }
 
 
 if __name__ == "__main__":

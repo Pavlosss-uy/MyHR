@@ -153,8 +153,8 @@ def train():
             val_preds = model(X_val) / 100.0
             val_loss  = criterion(val_preds, y_val).item()
             metrics   = regression_metrics(
-                y_val.squeeze().tolist(),
-                val_preds.squeeze().tolist()
+                y_val.view(-1).tolist(),
+                val_preds.view(-1).tolist()
             )
 
         writer.add_scalar("Loss/train",     loss.item(),             epoch)
