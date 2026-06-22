@@ -10,6 +10,8 @@ Usage:
   python training/generate_ranking_data.py --n-per-devtype 100 --output data/ranking_pairs.json
 """
 
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 import json
 import argparse
 import warnings

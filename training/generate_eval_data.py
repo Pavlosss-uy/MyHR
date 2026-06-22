@@ -18,6 +18,7 @@ Supports:
 
 import os
 import sys
+sys.stdout.reconfigure(encoding='utf-8')
 import json
 import time
 import random
@@ -33,7 +34,7 @@ sys.path.insert(0, PROJECT_ROOT)
 from dotenv import load_dotenv
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from sentence_transformers import SentenceTransformer
 
 
@@ -60,24 +61,16 @@ BASE_DELAY = 2.0  # seconds
 # --- LLM Setup --------------------------------------------------------------
 
 def get_llm():
-    """Initialize LLM client. Prefers Groq; falls back to OpenAI."""
+    """Initialize LLM client using Groq (consistent with the rest of the system)."""
     groq_key = os.getenv("GROQ_API_KEY")
-    if groq_key:
-        return ChatOpenAI(
-            model="llama-3.3-70b-versatile",
-            openai_api_key=groq_key,
-            openai_api_base="https://api.groq.com/openai/v1",
-            temperature=0.7,
+    if not groq_key:
+        raise EnvironmentError(
+            "GROQ_API_KEY is not set. Add it to your .env file."
         )
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if openai_key:
-        return ChatOpenAI(
-            model="gpt-4o-mini",
-            openai_api_key=openai_key,
-            temperature=0.7,
-        )
-    raise EnvironmentError(
-        "Neither GROQ_API_KEY nor OPENAI_API_KEY is set."
+    return ChatGroq(
+        model="llama-3.3-70b-versatile",
+        groq_api_key=groq_key,
+        temperature=0.7,
     )
 
 

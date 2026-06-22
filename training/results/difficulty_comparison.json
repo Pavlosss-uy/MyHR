@@ -1,22 +1,22 @@
 {
   "heuristic": {
-    "score_variance": 179.24662736801184,
-    "pct_in_target_zone": 69.56,
-    "mean_score": 60.65249816512328,
+    "score_variance": 180.43664771700503,
+    "pct_in_target_zone": 70.12,
+    "mean_score": 60.730127671369374,
     "n_episodes": 500,
     "n_steps": 2500
   },
   "reinforce": {
-    "score_variance": 221.00916993157082,
-    "pct_in_target_zone": 65.03999999999999,
-    "mean_score": 62.683722497650244,
+    "score_variance": 174.78329078944395,
+    "pct_in_target_zone": 64.88000000000001,
+    "mean_score": 57.781612249349315,
     "n_episodes": 500,
     "n_steps": 2500
   },
   "ppo": {
-    "score_variance": 149.54120343517113,
-    "pct_in_target_zone": 77.64,
-    "mean_score": 64.8176465187844,
+    "score_variance": 147.52164258791683,
+    "pct_in_target_zone": 78.75999999999999,
+    "mean_score": 64.9214622921162,
     "n_episodes": 500,
     "n_steps": 2500
   }

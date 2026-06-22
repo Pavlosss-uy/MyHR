@@ -37,7 +37,7 @@ class ModelRegistry:
         # Centralized version control
         self.versions = {
             "scorer": "scorer_v2.pt",           # v2: trained with SentenceTransformer embeddings
-            "emotion": "emotion_finetuned_v1.pt",
+            "emotion": "emotion_finetuned_v2.pt",
             "skill_matcher": "skill_matcher_v1.pt",  # v1: available checkpoint
             "evaluator": "evaluator_v1.pt",
             "difficulty": "difficulty_engine_v1.pt",  # v1: 3-D state (avg_score, trend, diff)
@@ -59,7 +59,11 @@ class ModelRegistry:
         if "emotion" not in self.loaded_models:
             print("Loading Emotion Model...")
             model = InterviewEmotionModel().to(self.device)
-            model.load_state_dict(torch.load(self._get_path("emotion"), map_location=self.device))
+            try:
+                model.load_state_dict(torch.load(self._get_path("emotion"), map_location=self.device))
+                print("Emotion model checkpoint loaded.")
+            except Exception as e:
+                print(f"No weights found for emotion model ({e}), using HuggingFace pretrained backbone only.")
             model.eval()
             self.loaded_models["emotion"] = model
         return self.loaded_models["emotion"]
@@ -138,17 +142,24 @@ class ModelRegistry:
     def load_evaluator(self):
         if "evaluator" not in self.loaded_models:
             print("Loading Multi-Head Evaluator...")
-            # Initialize the Multi-Head Evaluator (MOD-4)
-            # input_dim=8 matches the 8-feature tensor from AnswerFeatureExtractor
-            model = MultiHeadEvaluator(input_dim=8).to(self.device)
-            
-            # If you saved a specific checkpoint for it, load it.
-            # Otherwise, it will safely initialize with default weights.
+            # input_dim=768: receives all-mpnet-base-v2 answer embedding, not the 8-D feature vector
+            model = MultiHeadEvaluator(input_dim=768).to(self.device)
+
             try:
-                model.load_state_dict(torch.load(self._get_path("evaluator"), map_location=self.device))
+                checkpoint = torch.load(self._get_path("evaluator"), map_location=self.device)
+                # Guard against checkpoints trained with a different input_dim
+                saved_dim = checkpoint.get("input_dim")
+                if saved_dim is not None and saved_dim != 768:
+                    raise ValueError(
+                        f"Checkpoint input_dim={saved_dim} does not match model input_dim=768. "
+                        "Retrain the evaluator with the corrected 768-D pipeline."
+                    )
+                state_dict = checkpoint.get("state_dict", checkpoint)
+                model.load_state_dict(state_dict)
+                print("Evaluator checkpoint loaded (input_dim=768).")
             except Exception as e:
-                print(f"No weights found for evaluator ({e}), using base initialized weights.")
-                
+                print(f"No weights found for evaluator ({e}), using randomly initialised weights.")
+
             model.eval()
             self.loaded_models["evaluator"] = model
         return self.loaded_models["evaluator"]

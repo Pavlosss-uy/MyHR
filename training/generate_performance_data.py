@@ -25,6 +25,7 @@ warnings.filterwarnings("ignore")
 
 # Reuse feature builder from generate_ranking_data
 import sys, os
+sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from training.generate_ranking_data import (
     build_features,

@@ -173,8 +173,8 @@ def grade_context_node(state: AgentState):
 def generate_question_node(state: AgentState):
     """Generates the question using Adaptive Difficulty + mode-specific prompt."""
 
-    # --- Adaptive Difficulty Integration (REINFORCE — PPO skipped, not installed) ---
-    diff_engine = registry.load_difficulty_engine()
+    # --- Adaptive Difficulty Integration (PPO preferred; falls back to REINFORCE automatically) ---
+    diff_engine = registry.load_difficulty_engine(use_ppo=True)
 
     score_history = [e['score'] for e in state.get("evaluations", [])]
     current_diff  = state.get("current_difficulty", 3)
@@ -350,8 +350,16 @@ def evaluate_answer_node(state: AgentState):
     if features.ndim == 1:
         features = features.unsqueeze(0)
 
-    # 3. Neural Evaluation (MOD-4)
-    neural_results = evaluator.evaluate_answer(features)
+    # 3. Neural Evaluation (MOD-4) — evaluator expects 768-D all-mpnet-base-v2 answer embedding
+    answer_text = state.get("last_answer", "")
+    if extractor.embedder is not None:
+        answer_emb = extractor.embedder.encode(answer_text, convert_to_numpy=True)
+        answer_emb_tensor = torch.tensor(answer_emb, dtype=torch.float32).unsqueeze(0)
+    else:
+        # Fallback: zero vector so the call doesn't crash when the embedder failed to load
+        answer_emb_tensor = torch.zeros(1, 768, dtype=torch.float32)
+    answer_emb_tensor = answer_emb_tensor.to(next(evaluator.parameters()).device)
+    neural_results = evaluator.evaluate_answer(answer_emb_tensor)
 
     # 4. Performance Prediction (MOD-6)
     job_prediction = predictor.predict_performance(features)

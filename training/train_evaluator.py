@@ -19,6 +19,7 @@ Prerequisites:
 
 import os
 import sys
+sys.stdout.reconfigure(encoding='utf-8')
 import json
 import numpy as np
 import torch
@@ -140,9 +141,9 @@ def compute_loss(preds, y_rel, y_cla, y_dep) -> torch.Tensor:
     """Multi-task weighted loss."""
     rel, cla, dep = _unpack_preds(preds)
     loss = (
-        LOSS_WEIGHTS["relevance"] * F.mse_loss(rel.squeeze(), y_rel)
-        + LOSS_WEIGHTS["clarity"] * F.mse_loss(cla.squeeze(), y_cla)
-        + LOSS_WEIGHTS["depth"] * F.mse_loss(dep.squeeze(), y_dep)
+        LOSS_WEIGHTS["relevance"] * F.mse_loss(rel.view(-1), y_rel)
+        + LOSS_WEIGHTS["clarity"] * F.mse_loss(cla.view(-1), y_cla)
+        + LOSS_WEIGHTS["depth"] * F.mse_loss(dep.view(-1), y_dep)
     )
     return loss
 
@@ -173,7 +174,7 @@ def evaluate(model, data_loader) -> dict:
                 [rel, cla, dep],
                 [y_rel, y_cla, y_dep]
             ):
-                all_preds[key].extend(pred_t.squeeze().tolist())
+                all_preds[key].extend(pred_t.view(-1).tolist())
                 all_labels[key].extend(y.tolist())
 
     results = {"loss": total_loss / max(n_batches, 1)}

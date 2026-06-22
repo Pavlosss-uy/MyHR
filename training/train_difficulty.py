@@ -1,3 +1,5 @@
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 import torch
 import torch.optim as optim
 from torch.distributions import Categorical

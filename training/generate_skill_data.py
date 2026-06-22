@@ -22,6 +22,8 @@ Usage:
     python -m training.generate_skill_data --n-match 100 --n-mismatch 100
 """
 
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 import json
 import os
 import argparse
