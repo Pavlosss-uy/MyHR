@@ -6,34 +6,44 @@ from sentence_transformers import SentenceTransformer
 
 class SkillMatchSiameseNet(nn.Module):
     """
-    Siamese network for skill matching using frozen SentenceTransformer embeddings.
+    Siamese network for skill matching.
 
-    The MLP projection layer was removed because it was never trained, meaning it
-    mapped high-quality semantic embeddings into a random latent space and produced
-    meaningless cosine similarity scores. The pretrained 'all-mpnet-base-v2' model
-    already outputs L2-normalized 768-d vectors that work directly for semantic
-    similarity — no additional projection is needed without a trained checkpoint.
+    Architecture:
+      - Frozen all-mpnet-base-v2 encoder → 768-D normalized embeddings
+      - Trainable shared_mlp projection head: 768 → 256 → 128-D (L2-normalized)
 
-    If you later train a fine-tuned projection head, re-add shared_mlp here and
-    load its weights via the registry before calling calculate_match_score.
+    The projection head is what gets trained via contrastive loss to learn
+    terminology-invariant skill representations (Task 4.1 fairness fix).
+    When no checkpoint exists, forward() falls back to the raw 768-D embeddings
+    so the model degrades gracefully to cosine similarity on raw encodings.
     """
 
-    def __init__(self, embedding_model: str = "all-mpnet-base-v2"):
+    def __init__(self, embedding_model: str = "all-mpnet-base-v2", projection_dim: int = 128):
         super(SkillMatchSiameseNet, self).__init__()
         self.embedder = SentenceTransformer(embedding_model)
         for param in self.embedder.parameters():
             param.requires_grad = False
 
-    def forward_once(self, text_input: str) -> torch.Tensor:
+        # Trainable projection head — learns to map diverse phrasings of the
+        # same skills close together in embedding space.
+        self.shared_mlp = nn.Sequential(
+            nn.Linear(768, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, projection_dim),
+        )
+
+    def forward_once(self, text_input) -> torch.Tensor:
         with torch.no_grad():
             embeddings = self.embedder.encode(
                 text_input, convert_to_tensor=True, normalize_embeddings=True
             )
         if embeddings.dim() == 1:
             embeddings = embeddings.unsqueeze(0)
-        return embeddings
+        projected = self.shared_mlp(embeddings)
+        return F.normalize(projected, p=2, dim=1)
 
-    def forward(self, cv_skills: str, jd_skills: str):
+    def forward(self, cv_skills, jd_skills):
         return self.forward_once(cv_skills), self.forward_once(jd_skills)
 
     def calculate_match_score(self, cv_skills: str, jd_skills: str) -> float:

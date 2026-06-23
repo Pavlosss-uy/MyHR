@@ -18,7 +18,7 @@ Supports:
 
 import os
 import sys
-sys.stdout.reconfigure(encoding='utf-8')
+sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
 import json
 import time
 import random
@@ -382,6 +382,12 @@ def save_dataset(samples: list, output_path: str = None):
 # --- Entry Point -------------------------------------------------------------
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force", action="store_true",
+                        help="Overwrite existing dataset without prompting")
+    args, _ = parser.parse_known_args()
+
     print("=" * 60)
     print("  [CHART] Evaluation Data Generator (LLM-as-Labeler)")
     print("=" * 60)
@@ -392,10 +398,13 @@ def main():
             existing = json.load(f)
         n = existing["metadata"]["total_samples"]
         print(f"\n[WARN]  Existing dataset found with {n} samples.")
-        response = input("   Regenerate? (y/N): ").strip().lower()
-        if response != "y":
-            print("   Using existing data. Exiting.")
-            return
+        if not args.force:
+            response = input("   Regenerate? (y/N): ").strip().lower()
+            if response != "y":
+                print("   Using existing data. Exiting.")
+                return
+        else:
+            print("   --force flag set, regenerating...")
 
     llm = get_llm()
 

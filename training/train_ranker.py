@@ -186,9 +186,9 @@ def main():
     print("\n--- Quick Inference Test ---")
     model.eval()
     with torch.no_grad():
-        ideal  = torch.tensor([[1.0] * 7])
-        cand_a = torch.tensor([[0.9, 0.85, 0.9, 0.95, 0.8, 0.9, 0.85]])
-        cand_b = torch.tensor([[0.4, 0.5,  0.6, 0.3,  0.5, 0.4, 0.2]])
+        ideal  = torch.tensor([[1.0] * 7]).to(device)
+        cand_a = torch.tensor([[0.9, 0.85, 0.9, 0.95, 0.8, 0.9, 0.85]]).to(device)
+        cand_b = torch.tensor([[0.4, 0.5,  0.6, 0.3,  0.5, 0.4, 0.2]]).to(device)
         candidates = torch.cat([cand_a, cand_b], dim=0)
         scores, indices = model.rank_candidates(candidates, ideal)
         for rank, idx in enumerate(indices):
