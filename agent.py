@@ -683,10 +683,10 @@ def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
     def _to_dict_list(items):
         return [item for item in (items or []) if isinstance(item, dict)]
 
-    for _field in ("tips", "recommended_topics", "weaknesses", "improvements"):
+    for _field in ("recommended_topics", "weaknesses", "improvements"):
         raw[_field] = _to_str_list(raw.get(_field, []))
 
-    for _field in ("strengths", "areas_to_improve", "how_to_improve"):
+    for _field in ("strengths", "areas_to_improve", "how_to_improve", "tips"):
         raw[_field] = _to_dict_list(raw.get(_field, []))
     raw.setdefault("performance_level", (
         "Excellent"        if avg_score >= 85 else

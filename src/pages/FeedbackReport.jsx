@@ -456,6 +456,41 @@ const FeedbackReport = () => {
                                         {e.score}%
                                     </div>
                                 </div>
+                                {e.tone_data?.full_analysis && (() => {
+                                    const entries = Object.entries(e.tone_data.full_analysis)
+                                        .map(([emotion, pct]) => ({ emotion, value: parseFloat(pct) || 0 }))
+                                        .sort((a, b) => b.value - a.value)
+                                        .filter(x => x.value > 0);
+                                    if (!entries.length) return null;
+                                    const top = entries[0];
+                                    const second = entries[1];
+                                    const showTwo = second && (top.value - second.value) <= 15;
+                                    const toneColor = {
+                                        confident: "bg-mint/10 text-mint border-mint/20",
+                                        engaged: "bg-cobalt/10 text-cobalt-lighter border-cobalt/20",
+                                        enthusiastic: "bg-purple-500/10 text-purple-400 border-purple-500/20",
+                                        neutral: "bg-muted/60 text-muted-foreground border-border",
+                                        hesitant: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
+                                        nervous: "bg-warning/10 text-warning border-warning/20",
+                                        uncertain: "bg-orange-500/10 text-orange-400 border-orange-500/20",
+                                        frustrated: "bg-red-500/10 text-red-400 border-red-500/20",
+                                    };
+                                    const badge = (entry, showPct) => (
+                                        <span key={entry.emotion} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border ${toneColor[entry.emotion] ?? "bg-muted/60 text-muted-foreground border-border"}`}>
+                                            {entry.emotion.charAt(0).toUpperCase() + entry.emotion.slice(1)}
+                                            {showPct && <span className="opacity-70">{Math.round(entry.value)}%</span>}
+                                        </span>
+                                    );
+                                    return (
+                                        <div className="flex items-center gap-2 mt-2">
+                                            <span className="text-xs text-muted-foreground shrink-0">Tone:</span>
+                                            <div className="flex items-center gap-1.5">
+                                                {badge(top, showTwo)}
+                                                {showTwo && badge(second, true)}
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
                                 {e.feedback && (
                                     <div className="flex items-start gap-2 mt-2 pl-2 border-l-2 border-cobalt/20">
                                         <Lightbulb className="w-3.5 h-3.5 text-cobalt-lighter mt-0.5 shrink-0" />
