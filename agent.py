@@ -436,12 +436,13 @@ def evaluate_answer_node(state: AgentState):
     llm_score = float(res.score)
     neural_score = float(neural_results["overall"])
 
-    # --- MOD-1: CandidateScoringMLP (semantic embedding scorer) ---
-    # Weights rationale:
-    #   LLM (0.75): primary judge — well-calibrated language understanding
-    #   Neural/MOD-4 (0.15): structural 8-feature signal
-    #   MOD-1 (0.10): independent semantic similarity signal via all-mpnet-base-v2
+    # --- MOD-1: CandidateScoringMLP + Q↔A Relevance Gate ---
+    # The relevance gate computes cosine similarity between question and answer
+    # embeddings. A fluent but off-topic or empty answer has low Q↔A similarity,
+    # so its neural score is scaled down before blending — without any hardcoded
+    # classification caps. The embeddings are cached so the extra encode is free.
     mod1_score = None
+    adjusted_neural = neural_score  # fallback: no gate applied
     try:
         scorer_model = registry.load_scorer()
         emb_extractor = _get_embedding_extractor()
@@ -453,35 +454,47 @@ def evaluate_answer_node(state: AgentState):
             )
             mod1_score = float(scorer_model(emb_features).item())
             mod1_score = max(0.0, min(mod1_score, 100.0))
-        print(f"MOD-1 Score: {mod1_score:.1f}/100")
+
+            # Q↔A cosine similarity — hits cache, no extra encode cost
+            q_emb = emb_extractor._encode_cached(state.get("last_question", ""))
+            a_emb = emb_extractor._encode_cached(state.get("last_answer", ""))
+            cosine_sim = float(
+                torch.nn.functional.cosine_similarity(
+                    q_emb.unsqueeze(0), a_emb.unsqueeze(0)
+                ).item()
+            )
+            # Linear scale: sim=0 → factor=0, sim≥0.5 → factor=1.0
+            # Interview answers rarely exceed 0.7 similarity even when excellent,
+            # so 0.5 as the "full relevance" ceiling is well-calibrated.
+            relevance_factor = min(1.0, max(0.0, cosine_sim) / 0.5)
+            adjusted_neural = neural_score * relevance_factor
+            print(f"MOD-1 Score: {mod1_score:.1f}/100")
+            print(f"Q↔A Cosine: {cosine_sim:.3f} | Relevance factor: {relevance_factor:.2f} | Neural: {neural_score:.1f} → {adjusted_neural:.1f}")
     except Exception as e:
-        print(f"MOD-1 scorer skipped ({e})")
+        print(f"MOD-1/relevance gate skipped ({e})")
 
     # Detect flat / undertrained neural model — use wide threshold (±15 of center)
-    neural_is_flat = abs(neural_score - 50.0) < 15.0
-    score_divergence = abs(llm_score - neural_score)
+    neural_is_flat = abs(adjusted_neural - 50.0) < 15.0
+    score_divergence = abs(llm_score - adjusted_neural)
 
     if mod1_score is not None:
-        # Three-signal blend: LLM 75% | MOD-4 15% | MOD-1 10%
-        # Collapse to two-signal if neural is flat (MOD-1 picks up the slack)
         if neural_is_flat:
             blended_score = round(0.85 * llm_score + 0.15 * mod1_score, 1)
-            print(f"Neural flat ({neural_score:.1f}) — LLM+MOD1 blend (85/15)")
+            print(f"Neural flat ({adjusted_neural:.1f}) — LLM+MOD1 blend (85/15)")
         elif score_divergence > 20:
-            blended_score = round(0.80 * llm_score + 0.10 * neural_score + 0.10 * mod1_score, 1)
+            blended_score = round(0.80 * llm_score + 0.10 * adjusted_neural + 0.10 * mod1_score, 1)
             print(f"Score divergence {score_divergence:.1f} — LLM-weighted 3-signal blend (80/10/10)")
         else:
-            blended_score = round(0.75 * llm_score + 0.15 * neural_score + 0.10 * mod1_score, 1)
+            blended_score = round(0.75 * llm_score + 0.15 * adjusted_neural + 0.10 * mod1_score, 1)
     else:
-        # MOD-1 unavailable — fall back to original two-signal blend
         if neural_is_flat:
-            blended_score = round(0.93 * llm_score + 0.07 * neural_score, 1)
-            print(f"Neural flat ({neural_score:.1f}) — LLM-dominant blend (93/7)")
+            blended_score = round(0.93 * llm_score + 0.07 * adjusted_neural, 1)
+            print(f"Neural flat ({adjusted_neural:.1f}) — LLM-dominant blend (93/7)")
         elif score_divergence > 20:
-            blended_score = round(0.88 * llm_score + 0.12 * neural_score, 1)
+            blended_score = round(0.88 * llm_score + 0.12 * adjusted_neural, 1)
             print(f"Score divergence {score_divergence:.1f} — LLM-weighted blend (88/12)")
         else:
-            blended_score = round(0.80 * llm_score + 0.20 * neural_score, 1)
+            blended_score = round(0.80 * llm_score + 0.20 * adjusted_neural, 1)
 
     report_entry = {
         "question": state["last_question"],
