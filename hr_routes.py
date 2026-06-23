@@ -64,7 +64,8 @@ async def get_current_company_id(authorization: str = Header(...)) -> str:
     try:
         from firebase_admin import auth as fb_auth
         decoded = fb_auth.verify_id_token(token)
-    except Exception:
+    except Exception as exc:
+        print(f"[AUTH] verify_id_token failed — {type(exc).__name__}: {exc} | token_len={len(token)} token_prefix={token[:20]!r}")
         raise HTTPException(status_code=401, detail="Invalid or expired Firebase ID token.")
 
     uid = decoded["uid"]
