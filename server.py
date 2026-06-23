@@ -95,7 +95,7 @@ async def verify_firebase_token(authorization: str = Header(...)) -> str:
     token = authorization.removeprefix("Bearer ").strip()
     try:
         from firebase_admin import auth as fb_auth
-        decoded = fb_auth.verify_id_token(token)
+        decoded = fb_auth.verify_id_token(token, clock_skew_seconds=30)
         return decoded["uid"]
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid or expired Firebase ID token.")
