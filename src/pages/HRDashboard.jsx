@@ -43,6 +43,7 @@ const HRDashboard = () => {
         setLoading(true);
         (async () => {
             try {
+                await user.getIdToken();
                 const data = await getJobs();
                 if (!cancelled) setJobs(data.jobs || []);
             } catch (err) {

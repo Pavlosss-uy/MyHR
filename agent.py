@@ -666,7 +666,9 @@ def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
     raw.setdefault("tips", [])
     raw.setdefault("recommended_topics", [])
 
-    # Ensure list fields contain only strings (LLM may return dicts)
+    # Flatten simple string-list fields (tips, recommended_topics).
+    # Structured object fields (strengths, areas_to_improve, how_to_improve)
+    # must be preserved as lists of dicts — the frontend reads their nested keys.
     def _to_str_list(items):
         result = []
         for item in (items or []):
@@ -678,8 +680,14 @@ def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
                 result.append(str(item))
         return result
 
-    for _field in ("strengths", "weaknesses", "areas_to_improve", "improvements", "how_to_improve", "tips", "recommended_topics"):
+    def _to_dict_list(items):
+        return [item for item in (items or []) if isinstance(item, dict)]
+
+    for _field in ("tips", "recommended_topics", "weaknesses", "improvements"):
         raw[_field] = _to_str_list(raw.get(_field, []))
+
+    for _field in ("strengths", "areas_to_improve", "how_to_improve"):
+        raw[_field] = _to_dict_list(raw.get(_field, []))
     raw.setdefault("performance_level", (
         "Excellent"        if avg_score >= 85 else
         "Good"             if avg_score >= 70 else

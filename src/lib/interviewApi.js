@@ -45,13 +45,27 @@ async function getAuthHeaders() {
  */
 async function apiFetch(path, options = {}) {
     const authHeaders = await getAuthHeaders();
-    const res = await fetch(`${API_BASE}${path}`, {
+    let res = await fetch(`${API_BASE}${path}`, {
         ...options,
         headers: {
             ...authHeaders,
             ...(options.headers ?? {}),
         },
     });
+
+    // On 401, force-refresh the token once and retry — handles cold-start races
+    // where the session was restored after the initial getAuthHeaders() call.
+    if (res.status === 401 && auth.currentUser) {
+        await auth.currentUser.getIdToken(true);
+        const freshHeaders = await getAuthHeaders();
+        res = await fetch(`${API_BASE}${path}`, {
+            ...options,
+            headers: {
+                ...freshHeaders,
+                ...(options.headers ?? {}),
+            },
+        });
+    }
 
     if (!res.ok) {
         let message;
