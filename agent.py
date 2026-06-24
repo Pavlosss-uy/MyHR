@@ -373,7 +373,8 @@ def evaluate_answer_node(state: AgentState):
 
     # 4. Performance Prediction (MOD-6) — gracefully omitted if predictor unavailable
     if predictor is not None:
-        job_prediction = predictor.predict_performance(features)
+        predictor_device = next(predictor.parameters()).device
+        job_prediction = predictor.predict_performance(features.to(predictor_device))
     else:
         job_prediction = None
 

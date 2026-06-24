@@ -14,6 +14,7 @@ import PyPDF2
 import uvicorn
 from fastapi import (
     FastAPI,
+    Request,
     UploadFile,
     File,
     Form,
@@ -52,6 +53,17 @@ from agent import (
 )
 
 app = FastAPI()
+
+# ---------------------------------------------------------------------------
+# Task 3.2 — Rate limiting: prevent API abuse per IP address
+# ---------------------------------------------------------------------------
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ---------------------------------------------------------------------------
 # Task 3.1 — CORS: allow only the configured frontend origin (not "*")
@@ -414,7 +426,9 @@ def _run_interview_turn(
 
 
 @app.post("/start_interview")
+@limiter.limit("10/minute")
 async def start_interview(
+    request: Request,
     cv: UploadFile = File(...),
     jd: str = Form(...),
     uid: str = Depends(verify_firebase_token),
@@ -814,7 +828,9 @@ async def end_interview(session_id: str):
 
 
 @app.post("/submit_answer")
+@limiter.limit("30/minute")
 async def submit_answer(
+    request: Request,
     session_id: str = Form(...),
     audio: UploadFile = File(...),
     uid: str = Depends(verify_firebase_token),
@@ -929,7 +945,8 @@ class RankCandidatesRequest(BaseModel):
 
 
 @app.post("/candidates/rank")
-async def rank_candidates(request: RankCandidatesRequest, uid: str = Depends(verify_firebase_token)):
+@limiter.limit("20/minute")
+async def rank_candidates(request: Request, body: RankCandidatesRequest = Body(...), uid: str = Depends(verify_firebase_token)):
     """
     Rank a list of completed interview sessions by candidate quality.
 
@@ -942,7 +959,7 @@ async def rank_candidates(request: RankCandidatesRequest, uid: str = Depends(ver
     import torch
     import torch.nn.functional as F
 
-    if not request.session_ids:
+    if not body.session_ids:
         raise HTTPException(status_code=422, detail="session_ids must not be empty")
 
     ranker = registry.load_candidate_ranker()
@@ -955,7 +972,7 @@ async def rank_candidates(request: RankCandidatesRequest, uid: str = Depends(ver
     ranked = []
     skipped = []
 
-    for sid in request.session_ids:
+    for sid in body.session_ids:
         features = extract_candidate_features(sid)
         if features is None:
             skipped.append({"session_id": sid, "reason": "session not found or no evaluations"})

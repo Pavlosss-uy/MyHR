@@ -1,10 +1,11 @@
+import os
 import streamlit as st
 import requests
 import hashlib
 import plotly.graph_objects as go
 import streamlit as st
 
-API_URL = "http://localhost:8000"
+API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
 st.set_page_config(page_title="MyHR AI", layout="wide")
 
@@ -96,7 +97,7 @@ else:
                             st.session_state.messages.append({"role": "user", "content": resp.get("transcription", "")})
                             st.session_state.interview_completed = True
                             st.session_state.final_report = {
-                                "predicted_performance": resp["report"][-1].get("predicted_job_performance", 5.0) if resp.get("report") else 5.0,
+                                "predicted_performance": resp["report"][-1].get("predicted_market_positioning", 5.0) if resp.get("report") else 5.0,
                                 "evaluations": resp.get("report", []),
                                 "current_difficulty": 3
                             }

@@ -173,11 +173,58 @@ def rl_metrics(rewards_per_episode, scores_per_episode,
 
 
 # ---------------------------------------------------------------------------
-# TensorBoard writer factory
+# Task 3.9 — Experiment tracking: TensorBoard + optional MLflow
 # ---------------------------------------------------------------------------
 
-def make_writer(model_name: str) -> SummaryWriter:
-    """Return a SummaryWriter that logs to training/runs/<model_name>_<timestamp>."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = f"training/runs/{model_name}_{timestamp}"
-    return SummaryWriter(log_dir=log_dir)
+class ExperimentWriter:
+    """Drop-in SummaryWriter replacement that logs to TensorBoard AND MLflow.
+
+    MLflow is optional — if it's not installed or MLFLOW_TRACKING_URI is not
+    set, only TensorBoard is used and the object works exactly as before.
+    Usage is identical to SummaryWriter: add_scalar(), add_hparams(), close().
+    """
+
+    def __init__(self, model_name: str):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._run_name = f"{model_name}_{timestamp}"
+        log_dir = f"training/runs/{self._run_name}"
+        self._tb = SummaryWriter(log_dir=log_dir)
+        self._mlflow = None
+        try:
+            import mlflow
+            mlflow.set_experiment(model_name)
+            mlflow.start_run(run_name=self._run_name)
+            self._mlflow = mlflow
+            print(f"[MLflow] Tracking run '{self._run_name}' — experiment '{model_name}'")
+        except Exception:
+            pass  # MLflow not installed or not configured — TensorBoard only
+
+    def add_scalar(self, tag: str, value, global_step: int = None):
+        self._tb.add_scalar(tag, value, global_step)
+        if self._mlflow is not None:
+            try:
+                self._mlflow.log_metric(tag.replace("/", "."), float(value), step=global_step)
+            except Exception:
+                pass
+
+    def add_hparams(self, hparam_dict: dict, metric_dict: dict):
+        self._tb.add_hparams(hparam_dict, metric_dict)
+        if self._mlflow is not None:
+            try:
+                self._mlflow.log_params(hparam_dict)
+                self._mlflow.log_metrics(metric_dict)
+            except Exception:
+                pass
+
+    def close(self):
+        self._tb.close()
+        if self._mlflow is not None:
+            try:
+                self._mlflow.end_run()
+            except Exception:
+                pass
+
+
+def make_writer(model_name: str) -> ExperimentWriter:
+    """Return an ExperimentWriter that logs to TensorBoard and MLflow (if available)."""
+    return ExperimentWriter(model_name)

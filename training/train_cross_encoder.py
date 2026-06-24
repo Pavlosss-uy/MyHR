@@ -124,7 +124,7 @@ TOPICS = [
 
 def generate_extra_data(existing_samples: list) -> list:
     """Generate additional diverse training samples via Groq."""
-    from langchain_openai import ChatOpenAI
+    from langchain_groq import ChatGroq
 
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -132,10 +132,9 @@ def generate_extra_data(existing_samples: list) -> list:
         print("   Training will use existing data only.")
         return existing_samples
 
-    llm = ChatOpenAI(
+    llm = ChatGroq(
         model="llama-3.3-70b-versatile",
-        openai_api_key=api_key,
-        openai_api_base="https://api.groq.com/openai/v1",
+        groq_api_key=api_key,
         temperature=0.8,
     )
 
@@ -368,12 +367,11 @@ def run_comparison_experiment(model: CrossEncoder, test_data: list):
     api_key = os.getenv("GROQ_API_KEY")
     if api_key:
         try:
-            from langchain_openai import ChatOpenAI
+            from langchain_groq import ChatGroq
 
-            llm = ChatOpenAI(
+            llm = ChatGroq(
                 model="llama-3.3-70b-versatile",
-                openai_api_key=api_key,
-                openai_api_base="https://api.groq.com/openai/v1",
+                groq_api_key=api_key,
                 temperature=0.0,
             )
 
@@ -442,6 +440,9 @@ def run_comparison_experiment(model: CrossEncoder, test_data: list):
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
+    from utils.seeding import set_all_seeds
+    set_all_seeds(SEED)
+
     print("=" * 60)
     print("  🎯 Cross-Encoder Answer Quality Scorer Training")
     print("=" * 60)
