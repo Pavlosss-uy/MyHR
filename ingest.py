@@ -263,9 +263,11 @@ def save_interview_report(session_id: str, candidate_name: str, evaluations: lis
                 lines.append(f"| {k} | {v} |")
             lines.append("")
 
-        perf = ev.get("predicted_job_performance", None)
+        # Task 4.4 — model predicts salary-percentile market positioning, not job
+        # performance. Read the current key; fall back to the legacy key for old reports.
+        perf = ev.get("predicted_market_positioning", ev.get("predicted_job_performance", None))
         if perf is not None:
-            lines.append(f"**Predicted Job Performance**: {perf}/10.0")
+            lines.append(f"**Predicted Market Positioning**: {perf}/10.0")
 
         lines.append(f"**Feedback**: {ev.get('feedback', 'N/A')}")
         lines.append("")

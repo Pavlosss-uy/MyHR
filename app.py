@@ -192,12 +192,13 @@ def display_final_report(state):
 
     with col1:
         st.metric(
-            label="Predicted Job Performance",
+            label="Predicted Market Positioning",
             value=f"{pred_score} / 10",
             delta="High Potential" if pred_score > 7 else "Needs Training",
             delta_color="normal" if pred_score > 7 else "inverse"
         )
-        st.caption("Forecast based on technical depth, consistency, and communication clarity.")
+        st.caption("Estimated salary-percentile positioning among similarly-typed developers "
+                   "(market signal, not a direct job-performance score).")
 
     with col2:
         if state.get("evaluations"):

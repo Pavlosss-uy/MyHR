@@ -83,6 +83,11 @@ class AgentState(TypedDict, total=False):
 MIN_QUESTIONS = 5   # Minimum before any early-stop evaluation runs
 MAX_QUESTIONS = 7   # Hard ceiling on questions per session
 
+# Task 1.8 — adaptive-difficulty policy selection. PPO is the deployed default
+# (in-zone 78.8% vs REINFORCE 64.9%); set DIFFICULTY_POLICY=reinforce for ablation.
+DIFFICULTY_POLICY = os.getenv("DIFFICULTY_POLICY", "ppo").strip().lower()
+_USE_PPO_DIFFICULTY = DIFFICULTY_POLICY != "reinforce"
+
 def _strip_thinking(content: str) -> str:
     if not content:
         return ""
@@ -184,8 +189,10 @@ def grade_context_node(state: AgentState):
 def generate_question_node(state: AgentState):
     """Generates the question using Adaptive Difficulty + mode-specific prompt."""
 
-    # --- Adaptive Difficulty Integration (PPO preferred; falls back to REINFORCE automatically) ---
-    diff_engine = registry.load_difficulty_engine(use_ppo=True)
+    # --- Adaptive Difficulty Integration ---
+    # Policy chosen by DIFFICULTY_POLICY env (default PPO). PPO loader auto-falls
+    # back to REINFORCE if stable-baselines3 / the checkpoint is unavailable.
+    diff_engine = registry.load_difficulty_engine(use_ppo=_USE_PPO_DIFFICULTY)
 
     score_history = [e['score'] for e in state.get("evaluations", [])]
     current_diff  = state.get("current_difficulty", 3)
