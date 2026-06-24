@@ -482,7 +482,10 @@ async def start_interview(
     candidate_name = extract_candidate_name(cv_text, cv.filename)
     initial_state = _build_initial_state(session_id, candidate_name, jd, s3_cv_url, skill_score)
 
-    result = app_graph.invoke(initial_state)
+    result = app_graph.invoke(
+        initial_state,
+        config={"configurable": {"thread_id": session_id}},
+    )
 
     # The graph increments question_number once during generation of Q1.
     # Reset it to 1 so the first submit correctly returns Q2, second Q3, etc.
@@ -554,7 +557,10 @@ async def start_interview_from_token(
         skill_score = 0.5
 
     initial_state = _build_initial_state(session_id, candidate_name, jd, "", skill_score)
-    result = app_graph.invoke(initial_state)
+    result = app_graph.invoke(
+        initial_state,
+        config={"configurable": {"thread_id": session_id}},
+    )
     result["question_number"] = 1
 
     create_session(session_id, result)
@@ -827,12 +833,48 @@ async def end_interview(session_id: str):
     }
 
 
+@app.post("/analyze_frame")
+@limiter.limit("60/minute")
+async def analyze_frame(
+    request: Request,
+    frame: str = Form(...),
+    uid: str = Depends(verify_firebase_token),
+):
+    """Task 5.3 — DeepFace: accept a base64 JPEG frame, return dominant emotion."""
+    try:
+        import base64
+        import numpy as np
+        import cv2
+        from deepface import DeepFace
+
+        img_bytes = base64.b64decode(frame)
+        nparr     = np.frombuffer(img_bytes, np.uint8)
+        img       = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        results = DeepFace.analyze(img, actions=["emotion"], enforce_detection=False, silent=True)
+        r        = results[0] if isinstance(results, list) else results
+        dominant = r.get("dominant_emotion", "neutral")
+        emotions = r.get("emotion", {})
+        confidence = round(emotions.get(dominant, 0) / 100.0, 3)
+
+        return {
+            "dominant_emotion": dominant,
+            "confidence": confidence,
+            "all_emotions": {k: round(v / 100.0, 3) for k, v in emotions.items()},
+        }
+    except ImportError:
+        return {"dominant_emotion": "neutral", "confidence": 0.0, "all_emotions": {}, "note": "deepface not installed"}
+    except Exception as e:
+        return {"dominant_emotion": "neutral", "confidence": 0.0, "all_emotions": {}, "error": str(e)}
+
+
 @app.post("/submit_answer")
 @limiter.limit("30/minute")
 async def submit_answer(
     request: Request,
     session_id: str = Form(...),
     audio: UploadFile = File(...),
+    face_emotion: str = Form(None),
     uid: str = Depends(verify_firebase_token),
 ):
     record = get_session(session_id)
@@ -870,6 +912,14 @@ async def submit_answer(
         }
 
     _attach_tone_analysis(current_state, temp_audio_path, session_id)
+
+    # Task 5.3 — store facial emotion from the client frame snapshot
+    if face_emotion:
+        try:
+            import json as _json
+            current_state["facial_expression_data"] = _json.loads(face_emotion)
+        except Exception:
+            pass  # malformed JSON — leave existing state as-is
 
     try:
         current_state, outcome = await asyncio.to_thread(_run_interview_turn, current_state, transcription)

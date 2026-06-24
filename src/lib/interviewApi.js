@@ -118,15 +118,37 @@ export async function startInterview(cvFile, jdText) {
 }
 
 /**
+ * Task 5.3 — Analyze a video frame for facial emotion via DeepFace.
+ * @param {string} base64Jpeg – base64-encoded JPEG (no data-URI prefix)
+ * @returns {{ dominant_emotion: string, confidence: number, all_emotions: object }}
+ */
+export async function analyzeFrame(base64Jpeg) {
+    const form = new FormData();
+    form.append("frame", base64Jpeg);
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/analyze_frame`, {
+        method: "POST",
+        body: form,
+        headers: authHeaders,
+    });
+    if (!res.ok) return { dominant_emotion: "neutral", confidence: 0, all_emotions: {} };
+    return res.json();
+}
+
+/**
  * Submit a recorded audio answer.
- * @param {string} sessionId
- * @param {Blob}   audioBlob – WAV audio blob
+ * @param {string}      sessionId
+ * @param {Blob}        audioBlob  – WAV audio blob
+ * @param {object|null} faceEmotion – latest DeepFace result (Task 5.3), optional
  * @returns {{ status, transcription, next_question?, audio_url?, feedback?, report? }}
  */
-export async function submitAnswer(sessionId, audioBlob) {
+export async function submitAnswer(sessionId, audioBlob, faceEmotion = null) {
     const form = new FormData();
     form.append("session_id", sessionId);
     form.append("audio", audioBlob, "answer.wav");
+    if (faceEmotion) {
+        form.append("face_emotion", JSON.stringify(faceEmotion));
+    }
 
     const authHeaders = await getAuthHeaders();
     const res = await fetch(`${API_BASE}/submit_answer`, {

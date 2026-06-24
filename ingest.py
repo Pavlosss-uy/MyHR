@@ -34,6 +34,35 @@ _INJECTION_PATTERNS = _re.compile(
 )
 
 
+def _redact_pii(text: str) -> str:
+    """Replace PII (phone, email, SSN, location, person name) with typed tokens.
+
+    Task 5.2 — uses Microsoft Presidio when installed; silently skips when not.
+    Applied before chunking so the vector store never persists raw PII.
+    """
+    if not text:
+        return text
+    try:
+        from presidio_analyzer import AnalyzerEngine
+        from presidio_anonymizer import AnonymizerEngine
+
+        _PII_ENTITIES = [
+            "PHONE_NUMBER", "EMAIL_ADDRESS", "PERSON", "LOCATION",
+            "NRP", "US_SSN", "CREDIT_CARD", "IBAN_CODE",
+        ]
+        analyzer  = AnalyzerEngine()
+        anonymizer = AnonymizerEngine()
+        results   = analyzer.analyze(text=text, language="en", entities=_PII_ENTITIES)
+        if results:
+            print(f"[PII] Redacting {len(results)} entity/ies before indexing.")
+        return anonymizer.anonymize(text=text, analyzer_results=results).text
+    except ImportError:
+        return text          # Presidio not installed — skip silently
+    except Exception as e:
+        print(f"[PII] Redaction error ({e}) — using original text.")
+        return text
+
+
 def _sanitize_text(text: str, label: str = "text") -> str:
     """Strip prompt-injection patterns from CV/JD text before LLM indexing."""
     if not text:
@@ -132,6 +161,8 @@ def create_session_index(
     )
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
+    cv_text = _redact_pii(cv_text)
+    jd_text = _redact_pii(jd_text)
     cv_text = _sanitize_text(cv_text, "CV")
     jd_text = _sanitize_text(jd_text, "JD")
 

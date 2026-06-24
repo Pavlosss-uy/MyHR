@@ -9,7 +9,8 @@ import AudioQuestionPlayer from "@/components/AudioQuestionPlayer";
 import { useMediaDevices } from "@/hooks/useMediaDevices";
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
-import { submitAnswer, endInterview } from "@/lib/interviewApi";
+import { submitAnswer, endInterview, analyzeFrame } from "@/lib/interviewApi";
+import { useVAD } from "@/hooks/useVAD";
 import {
     Mic,
     MicOff,
@@ -45,6 +46,7 @@ const InterviewRoom = () => {
 
     const { isRecording, startRecording, stopRecording } = useAudioRecorder(stream);
     const { isPlaying, speakQuestion, stopSpeaking }     = useAudioPlayer();
+    const { vadBlob, clearBlob, userSpeaking: vadSpeaking, listening: vadListening, setVADPaused } = useVAD();
 
     // Interview state
     const [sessionId,       setSessionId]       = useState(null);
@@ -63,7 +65,11 @@ const InterviewRoom = () => {
     const [recordingElapsed, setRecordingElapsed] = useState(0);
     const [showTranscript,   setShowTranscript]   = useState(false);
 
+    // Task 5.3 — facial emotion tracking
+    const [latestFaceEmotion, setLatestFaceEmotion] = useState(null);
+
     const audioRef       = useRef(null);
+    const canvasRef      = useRef(null);
     const transcriptRef  = useRef(null);
     const hasRecordedRef = useRef(false);
 
@@ -148,9 +154,9 @@ const InterviewRoom = () => {
     }, [isRecording, isSubmitting, startRecording]);
 
     // ── Submit ─────────────────────────────────────────────────────────────
-    const handleSubmitAnswer = useCallback(async () => {
-        if (!isRecording || !sessionId || isSubmitting) return;
-
+    // Shared core: process a ready audio blob through the interview API.
+    // Called by both manual submit and VAD auto-submit (Task 5.1).
+    const _doSubmit = useCallback(async (audioBlob) => {
         setIsSubmitting(true);
         setSubmitError("");
         stopSpeaking();
@@ -158,12 +164,8 @@ const InterviewRoom = () => {
             audioRef.current.pause();
             setIsBackendPlaying(false);
         }
-
         try {
-            const audioBlob = await stopRecording();
-            if (!audioBlob) throw new Error("No audio recorded.");
-
-            const resp = await submitAnswer(sessionId, audioBlob);
+            const resp = await submitAnswer(sessionId, audioBlob, latestFaceEmotion);
 
             if (resp.transcription) {
                 setMessages((prev) => [...prev, { role: "user", text: resp.transcription }]);
@@ -258,7 +260,23 @@ const InterviewRoom = () => {
         } finally {
             setIsSubmitting(false);
         }
-    }, [isRecording, sessionId, isSubmitting, stopRecording, stopSpeaking, navigate]);
+    }, [sessionId, stopSpeaking, navigate, latestFaceEmotion, uid]);
+
+    const handleSubmitAnswer = useCallback(async () => {
+        if (!isRecording || !sessionId || isSubmitting) return;
+        try {
+            const audioBlob = await stopRecording();
+            if (!audioBlob) throw new Error("No audio recorded.");
+            await _doSubmit(audioBlob);
+        } catch (err) {
+            if (!isSubmitting) {
+                const msg = err.message || "Failed to submit. Please try again.";
+                setSubmitError(msg);
+                toast.error("Submission failed", { description: msg });
+                setIsSubmitting(false);
+            }
+        }
+    }, [isRecording, sessionId, isSubmitting, stopRecording, _doSubmit]);
 
     // ── End early ──────────────────────────────────────────────────────────
     const handleEndInterview = useCallback(async () => {
@@ -289,6 +307,45 @@ const InterviewRoom = () => {
         }
     }, [sessionId, navigate, stopSpeaking, isRecording, stopRecording, isEnding]);
 
+    // Task 5.1 — mute VAD while TTS is playing so it doesn't submit AI speech
+    useEffect(() => {
+        const ttsActive = isBackendPlaying || isPlaying;
+        if (ttsActive) {
+            setVADPaused(true);
+        } else {
+            // Small delay so the tail of the TTS clip doesn't trigger VAD
+            const t = setTimeout(() => setVADPaused(false), 400);
+            return () => clearTimeout(t);
+        }
+    }, [isBackendPlaying, isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Task 5.3 — capture a video frame every 2 s for DeepFace emotion analysis
+    useEffect(() => {
+        if (!isCameraOn || mediaError) return;
+        const interval = setInterval(async () => {
+            const video  = videoRef.current;
+            const canvas = canvasRef.current;
+            if (!video || !canvas || video.readyState < 2) return;
+            canvas.width  = 320;
+            canvas.height = 240;
+            canvas.getContext("2d").drawImage(video, 0, 0, 320, 240);
+            const base64 = canvas.toDataURL("image/jpeg", 0.75).split(",")[1];
+            try {
+                const emotion = await analyzeFrame(base64);
+                setLatestFaceEmotion(emotion);
+            } catch { /* silent */ }
+        }, 2000);
+        return () => clearInterval(interval);
+    }, [isCameraOn, mediaError]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Task 5.1 — auto-submit when VAD detects end of speech
+    useEffect(() => {
+        if (!vadBlob || isSubmitting || !sessionId || isRecording) return;
+        const blob = vadBlob;
+        clearBlob();
+        _doSubmit(blob);
+    }, [vadBlob]); // eslint-disable-line react-hooks/exhaustive-deps
+
     // ── Space shortcut ─────────────────────────────────────────────────────
     useEffect(() => {
         const handler = (e) => {
@@ -310,6 +367,10 @@ const InterviewRoom = () => {
         ? "Saving and analysing response…"
         : isRecording
         ? "Recording… press Submit when done"
+        : vadSpeaking
+        ? "Speaking detected — auto-submitting when you stop…"
+        : vadListening
+        ? "Listening… speak your answer"
         : isMicOn
         ? "Tap the mic to start your answer"
         : "Microphone is muted";
@@ -333,6 +394,8 @@ const InterviewRoom = () => {
                 onPause={() => setIsBackendPlaying(false)}
                 onEnded={() => setIsBackendPlaying(false)}
             />
+            {/* Hidden canvas for Task 5.3 frame capture */}
+            <canvas ref={canvasRef} className="hidden" />
 
             {/* ── TOP BAR ─────────────────────────────────────────────────── */}
             <header className="flex flex-col shrink-0 border-b border-room-border bg-room-surface/50 backdrop-blur-sm">
@@ -417,6 +480,7 @@ const InterviewRoom = () => {
                                 videoRef={videoRef}
                                 isCameraOn={isCameraOn}
                                 error={mediaError}
+                                faceEmotion={latestFaceEmotion}
                             />
                         </div>
                     </motion.div>

@@ -898,4 +898,10 @@ def decide_next_step(state: AgentState):
     return "rewrite"
 
 workflow.add_conditional_edges("process_answer", decide_next_step)
-app_graph = workflow.compile()
+
+# Task 5.4 — LangGraph session checkpointing: survives server restarts and
+# WebSocket drops. Each interview session is a separate thread_id so states
+# are fully isolated.
+from langgraph.checkpoint.memory import MemorySaver
+_checkpointer = MemorySaver()
+app_graph = workflow.compile(checkpointer=_checkpointer)

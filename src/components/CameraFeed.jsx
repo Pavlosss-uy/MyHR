@@ -1,15 +1,30 @@
 import { motion } from "framer-motion";
 import { Camera, CameraOff, AlertCircle } from "lucide-react";
 
+const EMOTION_EMOJI = {
+    happy:     "😊",
+    sad:       "😢",
+    angry:     "😠",
+    fear:      "😨",
+    surprise:  "😮",
+    disgust:   "🤢",
+    neutral:   "😐",
+    contempt:  "😒",
+};
+
 /**
  * CameraFeed - displays the user's live camera feed with graceful fallback states.
  *
- * @param {Object} props
- * @param {React.RefObject} props.videoRef - ref for the <video> element
- * @param {boolean} props.isCameraOn - whether camera is active
- * @param {string|null} props.error - error message if permission denied
+ * @param {Object}      props
+ * @param {React.RefObject} props.videoRef   – ref for the <video> element
+ * @param {boolean}     props.isCameraOn     – whether camera is active
+ * @param {string|null} props.error          – error message if permission denied
+ * @param {object|null} props.faceEmotion    – Task 5.3: latest DeepFace result
  */
-const CameraFeed = ({ videoRef, isCameraOn, error }) => {
+const CameraFeed = ({ videoRef, isCameraOn, error, faceEmotion = null }) => {
+    const emoji      = faceEmotion ? (EMOTION_EMOJI[faceEmotion.dominant_emotion] ?? "😐") : null;
+    const emotionPct = faceEmotion ? Math.round((faceEmotion.confidence ?? 0) * 100) : 0;
+
     return (
         <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
@@ -57,6 +72,19 @@ const CameraFeed = ({ videoRef, isCameraOn, error }) => {
                 <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/40 backdrop-blur-sm">
                     <Camera className="w-3 h-3 text-mint" />
                     <span className="text-[10px] font-medium text-white/80">LIVE</span>
+                </div>
+            )}
+
+            {/* Task 5.3 — Facial emotion badge */}
+            {isCameraOn && !error && faceEmotion && faceEmotion.dominant_emotion && (
+                <div className="absolute bottom-3 right-3 flex items-center gap-1 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
+                    <span className="text-sm leading-none">{emoji}</span>
+                    <span className="text-[10px] font-medium text-white/80 capitalize">
+                        {faceEmotion.dominant_emotion}
+                    </span>
+                    {emotionPct > 0 && (
+                        <span className="text-[9px] text-white/50">{emotionPct}%</span>
+                    )}
                 </div>
             )}
 
