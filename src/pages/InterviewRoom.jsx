@@ -29,6 +29,29 @@ import {
 // We keep a local fallback only for the progress bar initial render.
 const FALLBACK_MAX_QUESTIONS = 7;
 
+// Proctoring — roll up the per-frame buffer for one answer into an integrity summary.
+// Mirrors models/proctor.aggregate so client and server agree.
+function aggregateProctoring(frames) {
+    if (!frames || frames.length === 0) {
+        return {
+            face_absent_pct: 0, looking_away_pct: 0, multiple_faces_detected: false,
+            frames_analyzed: 0, suspicious: false,
+        };
+    }
+    const total = frames.length;
+    const present = frames.filter((f) => f.face_present);
+    const faceAbsentPct = +((total - present.length) / total).toFixed(3);
+    const lookingAwayPct = +(present.filter((f) => f.looking_away).length / total).toFixed(3);
+    const multipleFaces = frames.some((f) => f.multiple_faces);
+    return {
+        face_absent_pct: faceAbsentPct,
+        looking_away_pct: lookingAwayPct,
+        multiple_faces_detected: multipleFaces,
+        frames_analyzed: total,
+        suspicious: multipleFaces || faceAbsentPct > 0.20 || lookingAwayPct > 0.30,
+    };
+}
+
 const InterviewRoom = () => {
     const navigate    = useNavigate();
     const location    = useLocation();
@@ -65,13 +88,14 @@ const InterviewRoom = () => {
     const [recordingElapsed, setRecordingElapsed] = useState(0);
     const [showTranscript,   setShowTranscript]   = useState(false);
 
-    // Task 5.3 — facial emotion tracking
-    const [latestFaceEmotion, setLatestFaceEmotion] = useState(null);
+    // Proctoring — live alert + per-question frame buffer
+    const [proctorAlert, setProctorAlert] = useState(null); // "no_face" | "multiple" | "looking_away" | null
 
-    const audioRef       = useRef(null);
-    const canvasRef      = useRef(null);
-    const transcriptRef  = useRef(null);
-    const hasRecordedRef = useRef(false);
+    const audioRef        = useRef(null);
+    const canvasRef       = useRef(null);
+    const transcriptRef   = useRef(null);
+    const hasRecordedRef  = useRef(false);
+    const proctorBufferRef = useRef([]); // accumulates per-frame results for the current answer
 
     // ── Init ──────────────────────────────────────────────────────────────────
     useEffect(() => {
@@ -164,11 +188,19 @@ const InterviewRoom = () => {
             audioRef.current.pause();
             setIsBackendPlaying(false);
         }
+        // Proctoring — aggregate this answer's frames, then reset the buffer.
+        const integrity = aggregateProctoring(proctorBufferRef.current);
+        proctorBufferRef.current = [];
         try {
-            const resp = await submitAnswer(sessionId, audioBlob, latestFaceEmotion);
+            const resp = await submitAnswer(sessionId, audioBlob, integrity);
 
             if (resp.transcription) {
                 setMessages((prev) => [...prev, { role: "user", text: resp.transcription }]);
+            }
+
+            if (resp.status === "retry") {
+                toast.info("Didn't catch that", { description: resp.message || "Please answer again." });
+                return;
             }
 
             if (resp.status === "completed") {
@@ -260,7 +292,7 @@ const InterviewRoom = () => {
         } finally {
             setIsSubmitting(false);
         }
-    }, [sessionId, stopSpeaking, navigate, latestFaceEmotion, uid]);
+    }, [sessionId, stopSpeaking, navigate, uid]);
 
     const handleSubmitAnswer = useCallback(async () => {
         if (!isRecording || !sessionId || isSubmitting) return;
@@ -319,20 +351,26 @@ const InterviewRoom = () => {
         }
     }, [isBackendPlaying, isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Task 5.3 — capture a video frame every 2 s for DeepFace emotion analysis
+    // Proctoring — capture a frame every 2 s for integrity checks (OpenCV backend).
     useEffect(() => {
         if (!isCameraOn || mediaError) return;
         const interval = setInterval(async () => {
             const video  = videoRef.current;
             const canvas = canvasRef.current;
             if (!video || !canvas || video.readyState < 2) return;
-            canvas.width  = 320;
-            canvas.height = 240;
-            canvas.getContext("2d").drawImage(video, 0, 0, 320, 240);
+            canvas.width  = 640;
+            canvas.height = 480;
+            canvas.getContext("2d").drawImage(video, 0, 0, 640, 480);
             const base64 = canvas.toDataURL("image/jpeg", 0.75).split(",")[1];
             try {
-                const emotion = await analyzeFrame(base64);
-                setLatestFaceEmotion(emotion);
+                const result = await analyzeFrame(base64);
+                // Buffer for per-answer aggregation
+                proctorBufferRef.current.push(result);
+                // Live proctoring alert (most severe first)
+                if (result.multiple_faces)      setProctorAlert("multiple");
+                else if (!result.face_present)  setProctorAlert("no_face");
+                else if (result.looking_away)   setProctorAlert("looking_away");
+                else                            setProctorAlert(null);
             } catch { /* silent */ }
         }, 2000);
         return () => clearInterval(interval);
@@ -480,7 +518,7 @@ const InterviewRoom = () => {
                                 videoRef={videoRef}
                                 isCameraOn={isCameraOn}
                                 error={mediaError}
-                                faceEmotion={latestFaceEmotion}
+                                proctorAlert={proctorAlert}
                             />
                         </div>
                     </motion.div>
@@ -515,14 +553,24 @@ const InterviewRoom = () => {
                             {isCameraOn ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
                         </button>
 
-                        {/* Record */}
+                        {/* Record — reflects manual recording OR live VAD speech */}
                         <button
                             onClick={handleToggleRecording}
                             disabled={isSubmitting || !isMicOn}
-                            title={isRecording ? "Recording — press Submit to send" : "Start recording"}
+                            title={
+                                isRecording
+                                    ? "Recording — press Submit to send"
+                                    : vadSpeaking
+                                    ? "Listening to your answer…"
+                                    : "Start recording"
+                            }
                             className={`w-14 h-14 rounded-full flex items-center justify-center transition-all disabled:opacity-50 ${
                                 isRecording
                                     ? "bg-destructive/20 border-2 border-destructive text-destructive"
+                                    : vadSpeaking
+                                    ? "bg-destructive/20 border-2 border-destructive text-destructive animate-pulse"
+                                    : vadListening
+                                    ? "gradient-cobalt shadow-cobalt text-primary-foreground ring-2 ring-mint/50"
                                     : "gradient-cobalt shadow-cobalt text-primary-foreground hover:brightness-110"
                             }`}
                         >
@@ -530,6 +578,8 @@ const InterviewRoom = () => {
                                 <Loader2 className="w-5 h-5 animate-spin" />
                             ) : isRecording ? (
                                 <div className="w-5 h-5 rounded-sm bg-destructive" />
+                            ) : vadSpeaking ? (
+                                <Mic className="w-5 h-5 animate-pulse" />
                             ) : (
                                 <Mic className="w-5 h-5" />
                             )}

@@ -138,8 +138,13 @@ class InterviewEmotionModel(nn.Module):
             # Access attention_mask safely — not all extractor versions return it
             attention_mask = inputs.get("attention_mask", None)
 
+            device = next(self.parameters()).device
+            input_values = inputs.input_values.to(device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
+
             with torch.no_grad():
-                logits = self.forward(inputs.input_values, attention_mask)
+                logits = self.forward(input_values, attention_mask)
                 probabilities = torch.nn.functional.softmax(logits, dim=-1)
 
             pred_idx = torch.argmax(probabilities, dim=-1).item()

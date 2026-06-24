@@ -1,15 +1,10 @@
 import { motion } from "framer-motion";
-import { Camera, CameraOff, AlertCircle } from "lucide-react";
+import { Camera, CameraOff, AlertCircle, Users, UserX, Eye } from "lucide-react";
 
-const EMOTION_EMOJI = {
-    happy:     "😊",
-    sad:       "😢",
-    angry:     "😠",
-    fear:      "😨",
-    surprise:  "😮",
-    disgust:   "🤢",
-    neutral:   "😐",
-    contempt:  "😒",
+const PROCTOR_ALERTS = {
+    multiple:     { icon: Users, text: "Multiple people detected", color: "text-red-400 bg-red-500/20 border-red-500/40" },
+    no_face:      { icon: UserX, text: "Face not visible",         color: "text-amber-400 bg-amber-500/20 border-amber-500/40" },
+    looking_away: { icon: Eye,   text: "Looking away",             color: "text-amber-400 bg-amber-500/20 border-amber-500/40" },
 };
 
 /**
@@ -19,11 +14,10 @@ const EMOTION_EMOJI = {
  * @param {React.RefObject} props.videoRef   – ref for the <video> element
  * @param {boolean}     props.isCameraOn     – whether camera is active
  * @param {string|null} props.error          – error message if permission denied
- * @param {object|null} props.faceEmotion    – Task 5.3: latest DeepFace result
+ * @param {string|null} props.proctorAlert   – Proctoring: "multiple"|"no_face"|"looking_away"|null
  */
-const CameraFeed = ({ videoRef, isCameraOn, error, faceEmotion = null }) => {
-    const emoji      = faceEmotion ? (EMOTION_EMOJI[faceEmotion.dominant_emotion] ?? "😐") : null;
-    const emotionPct = faceEmotion ? Math.round((faceEmotion.confidence ?? 0) * 100) : 0;
+const CameraFeed = ({ videoRef, isCameraOn, error, proctorAlert = null }) => {
+    const alert = proctorAlert ? PROCTOR_ALERTS[proctorAlert] : null;
 
     return (
         <motion.div
@@ -75,16 +69,11 @@ const CameraFeed = ({ videoRef, isCameraOn, error, faceEmotion = null }) => {
                 </div>
             )}
 
-            {/* Task 5.3 — Facial emotion badge */}
-            {isCameraOn && !error && faceEmotion && faceEmotion.dominant_emotion && (
-                <div className="absolute bottom-3 right-3 flex items-center gap-1 px-2 py-1 rounded-md bg-black/50 backdrop-blur-sm">
-                    <span className="text-sm leading-none">{emoji}</span>
-                    <span className="text-[10px] font-medium text-white/80 capitalize">
-                        {faceEmotion.dominant_emotion}
-                    </span>
-                    {emotionPct > 0 && (
-                        <span className="text-[9px] text-white/50">{emotionPct}%</span>
-                    )}
+            {/* Proctoring — integrity alert banner (top center) */}
+            {isCameraOn && !error && alert && (
+                <div className={`absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg border backdrop-blur-sm ${alert.color}`}>
+                    <alert.icon className="w-3.5 h-3.5" />
+                    <span className="text-[11px] font-semibold">{alert.text}</span>
                 </div>
             )}
 

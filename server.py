@@ -80,6 +80,17 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+
+@app.on_event("startup")
+def _warmup_models():
+    """Initialize the OpenCV proctor (Haar cascade) at startup."""
+    try:
+        from models import proctor
+        proctor.warmup()
+    except Exception as e:
+        print(f"[WARN] proctor warmup skipped ({e}).")
+
+
 # B2B / HR endpoints
 try:
     from hr_routes import hr_router
@@ -291,6 +302,7 @@ def _build_initial_state(
         },
         "multimodal_analysis": {},
         "facial_expression_data": {},
+        "proctoring_data": {},
         "cv_chunk": "",
         "jd_chunk": "",
         "skill_match_score": skill_score,
@@ -840,32 +852,35 @@ async def analyze_frame(
     frame: str = Form(...),
     uid: str = Depends(verify_firebase_token),
 ):
-    """Task 5.3 — DeepFace: accept a base64 JPEG frame, return dominant emotion."""
-    try:
-        import base64
-        import numpy as np
-        import cv2
-        from deepface import DeepFace
+    """Proctoring — integrity signals for one video frame (OpenCV, no TensorFlow).
 
+    Returns face_count, face_present, multiple_faces, looking_away. Detection runs
+    in a worker thread so the FastAPI event loop is never stalled.
+    """
+    import base64
+    import numpy as np
+    import cv2
+    from models import proctor
+
+    try:
         img_bytes = base64.b64decode(frame)
         nparr     = np.frombuffer(img_bytes, np.uint8)
         img       = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    except Exception:
+        return proctor._empty_result(0.0)
 
-        results = DeepFace.analyze(img, actions=["emotion"], enforce_detection=False, silent=True)
-        r        = results[0] if isinstance(results, list) else results
-        dominant = r.get("dominant_emotion", "neutral")
-        emotions = r.get("emotion", {})
-        confidence = round(emotions.get(dominant, 0) / 100.0, 3)
+    # Offload the CPU-bound detection — do NOT block the event loop.
+    result = await asyncio.to_thread(proctor.analyze, img)
 
-        return {
-            "dominant_emotion": dominant,
-            "confidence": confidence,
-            "all_emotions": {k: round(v / 100.0, 3) for k, v in emotions.items()},
-        }
-    except ImportError:
-        return {"dominant_emotion": "neutral", "confidence": 0.0, "all_emotions": {}, "note": "deepface not installed"}
-    except Exception as e:
-        return {"dominant_emotion": "neutral", "confidence": 0.0, "all_emotions": {}, "error": str(e)}
+    # Log only flagged frames (multi-face / no-face / looking-away) to avoid spam.
+    if result.get("multiple_faces"):
+        print(f"[PROCTOR] ⚠ multiple faces: {result['face_count']}")
+    elif not result.get("face_present"):
+        print("[PROCTOR] ⚠ no face in frame")
+    elif result.get("looking_away"):
+        print(f"[PROCTOR] ⚠ looking away (yaw={result.get('yaw')} vspan={result.get('vspan')})")
+
+    return result
 
 
 @app.post("/submit_answer")
@@ -875,6 +890,7 @@ async def submit_answer(
     session_id: str = Form(...),
     audio: UploadFile = File(...),
     face_emotion: str = Form(None),
+    integrity: str = Form(None),
     uid: str = Depends(verify_firebase_token),
 ):
     record = get_session(session_id)
@@ -918,6 +934,14 @@ async def submit_answer(
         try:
             import json as _json
             current_state["facial_expression_data"] = _json.loads(face_emotion)
+        except Exception:
+            pass  # malformed JSON — leave existing state as-is
+
+    # Proctoring — store per-answer integrity aggregate (out-of-frame / multi-face / looking-away)
+    if integrity:
+        try:
+            import json as _json
+            current_state["proctoring_data"] = _json.loads(integrity)
         except Exception:
             pass  # malformed JSON — leave existing state as-is
 

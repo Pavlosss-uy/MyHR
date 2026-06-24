@@ -70,6 +70,8 @@ presidio-analyzer>=2.2.0
 presidio-anonymizer>=2.2.0
 spacy>=3.7.0
 
-# Facial emotion (Task 5.3)
-deepface>=0.0.93
+# Proctoring — OpenCV face detection (no TensorFlow; works on Python 3.14).
+# NOTE: DeepFace facial emotion was dropped — it requires TensorFlow, which has
+# no wheel for Python 3.14. Per-answer emotion is covered by the wav2vec2 audio
+# model instead.
 opencv-python-headless>=4.9.0

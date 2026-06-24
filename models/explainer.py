@@ -1,6 +1,8 @@
 import warnings
 from typing import Iterable, Optional, Sequence, Union
 
+import matplotlib
+matplotlib.use("Agg")  # Non-interactive backend — safe to call from FastAPI worker threads
 import matplotlib.pyplot as plt
 import numpy as np
 import shap
@@ -141,8 +143,10 @@ class ModelExplainer:
         model.eval()
 
         wrapper     = self._OverallScoreWrapper(model)
-        bg_tensor   = torch.tensor(background_np, dtype=torch.float32)
-        feat_tensor = torch.tensor(features_np,   dtype=torch.float32)
+        # Align inputs with the model's device — the model may live on CUDA.
+        model_device = next(model.parameters()).device
+        bg_tensor   = torch.tensor(background_np, dtype=torch.float32).to(model_device)
+        feat_tensor = torch.tensor(features_np,   dtype=torch.float32).to(model_device)
 
         explainer   = shap.GradientExplainer(wrapper, bg_tensor)
         shap_values = explainer.shap_values(feat_tensor)  # list[array(n_samples, n_features)]
@@ -171,6 +175,11 @@ class ModelExplainer:
         # but this branch keeps the method defensive.
         values = shap_values[0] if isinstance(shap_values, list) and len(shap_values) == 1 else shap_values
         values = np.asarray(values)
+
+        # GradientExplainer returns (n_samples, n_features, n_outputs). Our score is a
+        # single scalar output, so squeeze the trailing axis → (n_samples, n_features).
+        if values.ndim == 3 and values.shape[-1] == 1:
+            values = values[..., 0]
 
         if values.ndim == 1:
             values = values.reshape(1, -1)

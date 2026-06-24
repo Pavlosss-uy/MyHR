@@ -2,32 +2,38 @@ import { useEffect, useRef, useState } from "react";
 import { MicVAD, utils } from "@ricky0123/vad-web";
 
 /**
- * Task 5.1 — Silero VAD wrapper using the MicVAD class API.
+ * Task 5.1 — Silero VAD wrapper using the MicVAD class API (v0.0.22).
  *
- * WASM / model files must be served from /public/:
- *   /vad.worklet.bundle.min.js
- *   /silero_vad_v5.onnx
- *   /ort-wasm-simd-threaded*.wasm
+ * All assets are served from /public/ (committed to git):
+ *   baseAssetPath  "/"  →  /vad.worklet.bundle.min.js + /silero_vad_legacy.onnx
+ *   onnxWASMBasePath "/" →  /ort-wasm-simd-threaded*.wasm
  */
 export function useVAD() {
-    const [vadBlob,      setVadBlob]     = useState(null);
+    const [vadBlob,      setVadBlob]      = useState(null);
     const [userSpeaking, setUserSpeaking] = useState(false);
-    const [listening,    setListening]   = useState(false);
-    const [vadError,     setVadError]    = useState(null);
-    const vadRef     = useRef(null);
-    const pausedRef  = useRef(false); // external pause flag (set by caller)
+    const [listening,    setListening]    = useState(false);
+    const [vadError,     setVadError]     = useState(null);
+    const vadRef    = useRef(null);
+    const pausedRef = useRef(false);
 
     useEffect(() => {
         let destroyed = false;
 
         MicVAD.new({
+            model: "legacy",
+            baseAssetPath:    "/",
+            onnxWASMBasePath: "/",
+            ortConfig: (ort) => {
+                // Single-thread mode: uses ort-wasm-simd.wasm instead of the
+                // threaded variant — no SharedArrayBuffer needed.
+                ort.env.wasm.numThreads = 1;
+            },
             onSpeechStart: () => {
                 if (!destroyed && !pausedRef.current) setUserSpeaking(true);
             },
             onSpeechEnd: (audio) => {
                 if (destroyed) return;
                 setUserSpeaking(false);
-                // Discard capture if the caller has paused VAD (e.g. TTS playing)
                 if (pausedRef.current) return;
                 try {
                     const wavBuffer = utils.encodeWAV(audio);
@@ -36,15 +42,11 @@ export function useVAD() {
                     // encoding failed — drop silently
                 }
             },
-            workletURL: "/vad.worklet.bundle.min.js",
-            modelURL:   "/silero_vad_v5.onnx",
-            ortConfig: (ort) => {
-                ort.env.wasm.wasmPaths = "/";
-            },
+            onVADMisfire: () => setUserSpeaking(false),
             positiveSpeechThreshold: 0.80,
             negativeSpeechThreshold: 0.30,
-            minSpeechFrames:   3,
-            redemptionFrames:  8,
+            minSpeechFrames:    3,
+            redemptionFrames:   8,
             preSpeechPadFrames: 2,
         })
             .then((vad) => {
@@ -67,11 +69,6 @@ export function useVAD() {
         };
     }, []);
 
-    /**
-     * Soft-pause: keep the MicVAD running (avoids re-init latency) but
-     * discard any speech segments captured while paused. Call with
-     * `true` while TTS is playing, `false` when it ends.
-     */
     const setVADPaused = (paused) => {
         pausedRef.current = paused;
         if (paused) setUserSpeaking(false);
@@ -79,7 +76,7 @@ export function useVAD() {
 
     return {
         vadBlob,
-        clearBlob:    () => setVadBlob(null),
+        clearBlob: () => setVadBlob(null),
         userSpeaking,
         listening,
         vadError,

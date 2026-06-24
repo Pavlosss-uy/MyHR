@@ -118,9 +118,10 @@ export async function startInterview(cvFile, jdText) {
 }
 
 /**
- * Task 5.3 — Analyze a video frame for facial emotion via DeepFace.
+ * Proctoring — analyze a video frame for integrity signals (OpenCV backend).
  * @param {string} base64Jpeg – base64-encoded JPEG (no data-URI prefix)
- * @returns {{ dominant_emotion: string, confidence: number, all_emotions: object }}
+ * @returns {{ face_present: boolean, face_count: number,
+ *            multiple_faces: boolean, looking_away: boolean }}
  */
 export async function analyzeFrame(base64Jpeg) {
     const form = new FormData();
@@ -131,23 +132,26 @@ export async function analyzeFrame(base64Jpeg) {
         body: form,
         headers: authHeaders,
     });
-    if (!res.ok) return { dominant_emotion: "neutral", confidence: 0, all_emotions: {} };
+    // On failure, assume no usable reading (don't raise a false proctoring alert).
+    if (!res.ok) {
+        return { face_present: true, face_count: 1, multiple_faces: false, looking_away: false };
+    }
     return res.json();
 }
 
 /**
  * Submit a recorded audio answer.
  * @param {string}      sessionId
- * @param {Blob}        audioBlob  – WAV audio blob
- * @param {object|null} faceEmotion – latest DeepFace result (Task 5.3), optional
+ * @param {Blob}        audioBlob – WAV audio blob
+ * @param {object|null} integrity – per-answer proctoring aggregate, optional
  * @returns {{ status, transcription, next_question?, audio_url?, feedback?, report? }}
  */
-export async function submitAnswer(sessionId, audioBlob, faceEmotion = null) {
+export async function submitAnswer(sessionId, audioBlob, integrity = null) {
     const form = new FormData();
     form.append("session_id", sessionId);
     form.append("audio", audioBlob, "answer.wav");
-    if (faceEmotion) {
-        form.append("face_emotion", JSON.stringify(faceEmotion));
+    if (integrity) {
+        form.append("integrity", JSON.stringify(integrity));
     }
 
     const authHeaders = await getAuthHeaders();

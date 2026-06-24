@@ -40,6 +40,10 @@ class SkillMatchSiameseNet(nn.Module):
             )
         if embeddings.dim() == 1:
             embeddings = embeddings.unsqueeze(0)
+        # The SentenceTransformer may place embeddings on GPU while shared_mlp
+        # lives on CPU (or vice versa). Align them before the projection head.
+        mlp_device = next(self.shared_mlp.parameters()).device
+        embeddings = embeddings.to(mlp_device)
         projected = self.shared_mlp(embeddings)
         return F.normalize(projected, p=2, dim=1)
 

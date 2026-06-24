@@ -81,7 +81,8 @@ class ModelRegistry:
     def load_skill_matcher(self):
         """Returns SkillMatchSiameseNet (always — falls back to pretrained embeddings)."""
         if "skill_matcher" not in self.loaded_models:
-            model = SkillMatchSiameseNet()
+            # Checkpoint v1 was trained with a 64-D projection head.
+            model = SkillMatchSiameseNet(projection_dim=64)
             path = self._get_path("skill_matcher")
             if os.path.exists(path):
                 try:

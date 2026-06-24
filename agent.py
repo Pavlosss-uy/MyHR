@@ -66,6 +66,7 @@ class AgentState(TypedDict, total=False):
     last_answer: str
     multimodal_analysis: dict
     facial_expression_data: dict
+    proctoring_data: dict
     evaluations: List[dict]
     next_action: str
     question_number: int
@@ -517,6 +518,7 @@ def evaluate_answer_node(state: AgentState):
         "criteria_breakdown": res.criteria_breakdown.model_dump(),
         "overall_confidence": res.overall_confidence,
         "tone_data": tone_data,
+        "integrity": state.get("proctoring_data", {}),
         "feature_values": feature_values_list,
         "shap_values": shap_values_list,
         "feature_importance": shap_summary,
@@ -733,7 +735,41 @@ def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
     # Ensure tone_analysis always present (alias may have been set above; fill defaults if not)
     raw.setdefault("tone_analysis", raw.get("communication_analysis", {}))
 
+    # --- Proctoring: aggregate per-answer integrity into a session summary ---
+    raw["integrity"] = _aggregate_session_integrity(evaluations)
+
     return raw
+
+
+def _aggregate_session_integrity(evaluations: list) -> dict:
+    """Roll up per-answer integrity dicts into one session-level proctoring summary
+    for the HR reviewer. Worst-case across answers drives the flags.
+    """
+    per_answer = [e.get("integrity", {}) for e in evaluations if e.get("integrity")]
+    if not per_answer:
+        return {
+            "face_absent_pct": 0.0,
+            "looking_away_pct": 0.0,
+            "multiple_faces_detected": False,
+            "answers_flagged": 0,
+            "suspicious": False,
+            "available": False,
+        }
+
+    n = len(per_answer)
+    max_absent = max(float(p.get("face_absent_pct", 0.0)) for p in per_answer)
+    mean_away = round(sum(float(p.get("looking_away_pct", 0.0)) for p in per_answer) / n, 3)
+    multi = any(bool(p.get("multiple_faces_detected", False)) for p in per_answer)
+    flagged = sum(1 for p in per_answer if p.get("suspicious", False))
+
+    return {
+        "face_absent_pct": round(max_absent, 3),
+        "looking_away_pct": mean_away,
+        "multiple_faces_detected": multi,
+        "answers_flagged": flagged,
+        "suspicious": bool(multi or max_absent > 0.20 or mean_away > 0.30 or flagged > 0),
+        "available": True,
+    }
 
 
 def synthesize_report(session_state: dict, candidate_name: str, job_title: str) -> dict:
