@@ -21,7 +21,6 @@ import matplotlib
 matplotlib.use("Agg")  # non-interactive backend (safe on Windows/server)
 import matplotlib.pyplot as plt
 from scipy.stats import spearmanr, pearsonr
-from torch.utils.data import DataLoader, Subset
 
 # --- Path setup ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -30,9 +29,6 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from models.registry import ModelRegistry
-from models.multi_head_evaluator import MultiHeadEvaluator
-from models.performance_predictor import PerformancePredictor
-from models.candidate_ranker import NeuralCandidateRanker
 
 RESULTS_DIR = os.path.join(project_root, "training", "results")
 os.makedirs(RESULTS_DIR, exist_ok=True)

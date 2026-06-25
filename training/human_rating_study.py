@@ -26,7 +26,6 @@ Rubric (shown to each rater):
 
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
-import os
 import json
 import random
 import argparse
@@ -105,7 +104,6 @@ def _load_samples(n: int = 40, seed: int = 42) -> list:
 
 def _cohen_kappa(rater_a: list, rater_b: list, labels: list) -> float:
     """Compute Cohen's kappa for two lists of categorical labels."""
-    from collections import Counter
     n = len(rater_a)
     assert n == len(rater_b), "Rater lists must have equal length"
 

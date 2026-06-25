@@ -17,7 +17,6 @@ Signals:
 
 import re
 import json
-import math
 import string
 from pathlib import Path
 from collections import Counter
@@ -310,7 +309,6 @@ def apply_nlp_labels(samples: list) -> list:
 # ---------------------------------------------------------------------------
 
 def main():
-    import sys
     import numpy as np
     from collections import defaultdict
 
@@ -364,7 +362,6 @@ def main():
         embedding_source = "loaded_from_existing"
 
     # Stats per tier
-    from collections import defaultdict
     tier_stats = defaultdict(lambda: {"relevance": [], "clarity": [], "depth": []})
     for s in samples:
         t = s.get("quality_tier", "?")
@@ -399,7 +396,6 @@ def main():
               f"  gap={gap:.1f}  [{status}]")
 
     # Build distribution count
-    from collections import Counter
     dist = Counter(s["quality_tier"] for s in samples)
 
     # Save

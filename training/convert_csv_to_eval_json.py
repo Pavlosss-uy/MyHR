@@ -89,7 +89,7 @@ def main():
                 "quality_tier": tier,
                 "topic": row.get("category", "general"),
             })
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError):
             skipped += 1
             continue
 

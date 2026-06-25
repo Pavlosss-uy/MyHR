@@ -48,7 +48,6 @@ Base model: cross-encoder/ms-marco-MiniLM-L-12-v2
 """
 
 import os
-import torch
 import numpy as np
 from pathlib import Path
 from sentence_transformers import CrossEncoder

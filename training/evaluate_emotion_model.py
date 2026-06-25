@@ -3,7 +3,6 @@ import argparse
 from pathlib import Path
 
 import librosa
-import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
@@ -44,7 +43,6 @@ LABEL_NORMALIZATION = {
     "calm": "calm",
     "happy": "happy",
     "happiness": "happy",
-    "sad": "sad",
     "sadness": "sad",
     "angry": "angry",
     "anger": "angry",

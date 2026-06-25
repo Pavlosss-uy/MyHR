@@ -1,5 +1,5 @@
 import warnings
-from typing import Iterable, Optional, Sequence, Union
+from typing import Optional, Sequence, Union
 
 import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend — safe to call from FastAPI worker threads

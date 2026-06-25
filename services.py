@@ -1,7 +1,6 @@
 import os
 import re
 import uuid
-import asyncio
 from typing import AsyncIterator, Optional
 
 import httpx

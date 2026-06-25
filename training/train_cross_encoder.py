@@ -391,7 +391,7 @@ def run_comparison_experiment(model: CrossEncoder, test_data: list):
                     score = float(resp.content.strip().split()[0]) / 100.0
                     llm_preds.append(np.clip(score, 0, 1))
                     time.sleep(1.0)
-                except:
+                except Exception:
                     llm_preds.append(0.5)
 
             rho, p = spearmanr(llm_preds, true_subset)

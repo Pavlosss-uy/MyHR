@@ -117,7 +117,6 @@ def _install_fakes():
     )
 
     # ── models.registry → fake registry (no checkpoint loads) ─────────────────
-    import torch
     import torch.nn as nn
 
     class _FakeSkill:

@@ -102,7 +102,7 @@ class InterviewEmotionModel(nn.Module):
         return speech, target_sr
 
     def predict_from_audio(self, audio_path):
-        import os, traceback as _tb
+        import traceback as _tb
 
         self.eval()
         speech = None

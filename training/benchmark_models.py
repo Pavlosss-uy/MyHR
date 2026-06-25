@@ -48,7 +48,6 @@ LABEL_NORMALIZATION = {
     "happy": "happy",
     "happiness": "happy",
     "sadness": "sad",
-    "sad": "sad",
     "angry": "angry",
     "anger": "angry",
     "fear": "fearful",

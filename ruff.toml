@@ -1,0 +1,32 @@
+# Ruff config — keep linting meaningful, not pedantic.
+target-version = "py312"
+line-length = 120
+
+# Don't lint generated / vendored / data dirs.
+extend-exclude = [
+    "node_modules",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "static",
+    "storage",
+    "data",
+    "models/checkpoints",
+]
+
+[lint]
+# Default rules (E, F) minus a few that flag INTENTIONAL patterns in this project:
+#   E402 — training/demo scripts must run sys.path.insert / sys.stdout.reconfigure
+#          before their imports; that's deliberate, not a mistake.
+#   E401 — grouped `import os, sys` in scripts is fine here.
+#   E741 — single-letter loop vars (l) in a few math loops; harmless.
+#   F541 — f-strings without placeholders are cosmetic.
+ignore = ["E402", "E401", "E741", "F541"]
+
+[lint.per-file-ignores]
+# The legacy Streamlit UI (app.py) is kept for reference but not maintained.
+"app.py" = ["F821", "F811"]
+# Training/eval scripts are exploratory — tolerate unused locals/imports there.
+# (These rules stay ACTIVE for the runtime code: server, agent, models, retriever.)
+"training/**" = ["F841", "F401", "F811"]

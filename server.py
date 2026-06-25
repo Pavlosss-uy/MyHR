@@ -315,7 +315,6 @@ def _build_initial_state(
         "evaluations": [],
         "next_action": "continue",
         "loop_count": 0,
-        "current_search_query": "",
         "initial_job_context": {
             "jd_text": jd,
             "job_title": jd.split("\n")[0].strip() if jd else "Position",

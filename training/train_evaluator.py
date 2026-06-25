@@ -23,7 +23,6 @@ sys.stdout.reconfigure(encoding='utf-8')
 import json
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
