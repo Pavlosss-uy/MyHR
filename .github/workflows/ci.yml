@@ -1,0 +1,39 @@
+# MyHR CI — Task 7.2
+# Lint + integration tests on every push / PR. Tests run with TESTING=true and
+# fully faked collaborators (see tests/conftest.py), so CI needs NO secrets.
+name: CI
+
+on:
+  push:
+    branches: [main, enterprise]
+  pull_request:
+    branches: [main, enterprise]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    env:
+      TESTING: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system libs (opencv / audio)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libglib2.0-0 libsndfile1 ffmpeg
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Ruff lint (non-blocking style report)
+        run: ruff check . --output-format=github || true
+
+      - name: Run integration tests
+        run: pytest tests/ -q

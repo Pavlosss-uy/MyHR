@@ -112,6 +112,22 @@ The project began with a **data-driven research phase**:
 3. **Dashboard & Analysis** — Built Power BI dashboards to visualize findings and validate the product hypothesis
 4. **Key Decision** — Survey data confirmed strong demand for AI-powered interview simulation with scoring — proceeding with development
 
+### Model & System Metrics
+
+Full results — adaptive-difficulty (PPO **78.8%** in-zone), ranker (NDCG@5 **0.946**),
+skill-matcher fairness (terminology gap **~0**), evaluator (Spearman **~0.95**),
+RAG retrieval (**Context Recall 1.000**), and the integration suite (**12 passed**) —
+are consolidated in **[RESULTS.md](RESULTS.md)**.
+
+| Area | Headline metric |
+|---|---|
+| Adaptive difficulty (PPO) | 78.8% in-zone (vs 64.9% REINFORCE) |
+| Candidate ranker (leakage-free) | NDCG@5 0.946 |
+| Skill-matcher fairness | terminology gap ~0 (was 54 pts) |
+| Multi-head evaluator | Spearman ~0.95, discriminates poor answers |
+| RAG retrieval (Ragas/recall) | Context Recall 1.000 (target >0.85) |
+| Integration tests | 12 passed (`pytest tests/`) |
+
 ---
 
 ## Getting Started

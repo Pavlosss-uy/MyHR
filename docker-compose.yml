@@ -1,0 +1,38 @@
+# MyHR dev stack — Task 7.1
+# One command brings up backend (FastAPI:8000) + frontend (Vite:8080).
+#   docker compose up --build
+#
+# Secrets come from .env (see .env.example). Large model checkpoints live on the
+# host and are mounted read-only — they are NOT baked into the image.
+services:
+  backend:
+    build: .
+    container_name: myhr-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Trained checkpoints (excluded from the image) mounted at runtime.
+      - ./models/checkpoints:/app/models/checkpoints:ro
+      # Generated reports / audio persisted on the host.
+      - ./storage:/app/storage
+      - ./static:/app/static
+    restart: unless-stopped
+
+  frontend:
+    image: node:20-slim
+    container_name: myhr-frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 8080"
+    ports:
+      - "8080:8080"
+    environment:
+      # Point the SPA at the backend container via the host.
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    restart: unless-stopped

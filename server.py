@@ -111,9 +111,15 @@ _AUDIO_MAX_BYTES = 50 * 1024 * 1024   # 50 MB
 
 
 # Task 3.2 — Firebase token verification dependency
-async def verify_firebase_token(authorization: str = Header(...)) -> str:
-    """Verify a Firebase Bearer token; return the caller's UID on success."""
-    if not authorization.startswith("Bearer "):
+async def verify_firebase_token(authorization: str = Header(None)) -> str:
+    """Verify a Firebase Bearer token; return the caller's UID on success.
+
+    Task 6.3 — when TESTING=true, skip Firebase entirely and return a stub uid so
+    the integration suite can exercise authed endpoints without real credentials.
+    """
+    if os.getenv("TESTING") == "true":
+        return "test-uid"
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
     token = authorization.removeprefix("Bearer ").strip()
     try:

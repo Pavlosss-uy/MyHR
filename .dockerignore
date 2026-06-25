@@ -1,0 +1,47 @@
+# Task 7.1 — keep the build context small and secrets out of the image.
+
+# Secrets
+.env
+*.env
+myhr-*-firebase-adminsdk-*.json
+
+# Node / frontend build artifacts (frontend mounts the repo at runtime)
+node_modules
+dist
+.vite
+
+# Large trained checkpoints — mounted at runtime, not baked in
+models/checkpoints/
+*.pt
+*.zip
+
+# Training data + generated artifacts
+data/
+storage/
+static/audio/
+static/uploads/
+uploads/
+training/runs/
+training/results/
+
+# Python caches / venvs
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# VCS / IDE / OS
+.git/
+.github/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# Docs / plans not needed at runtime
+*.md
+!README.md
+
+# NOTE: models/weights/ (YuNet, ~232 KB) and public/ (VAD WASM) are intentionally
+# NOT ignored — proctoring and VAD need them.
