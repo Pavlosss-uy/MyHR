@@ -164,6 +164,15 @@ def test_candidates_rank_empty_list(client):
     assert resp.status_code == 422
 
 
+# ── /health ────────────────────────────────────────────────────────────────────
+def test_health_ok(client):
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert "models" in body
+
+
 # ── auth ───────────────────────────────────────────────────────────────────────
 def test_auth_required_when_not_testing(client, monkeypatch):
     monkeypatch.setenv("TESTING", "false")

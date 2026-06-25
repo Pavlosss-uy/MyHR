@@ -132,6 +132,40 @@ def _is_valid_question(question: str) -> bool:
     return True
 
 
+# --- Grounding guard (anti-hallucination) ---
+# When CV retrieval fails, cv_chunk is a placeholder. Feeding that to the LLM lets
+# it INVENT experience the candidate never wrote. These helpers detect that case so
+# we fall back to CV-agnostic questions instead of hallucinating CV details.
+_CV_PLACEHOLDERS = (
+    "no cv context found",
+    "no specific context found",
+    "no relevant context found",
+)
+
+_GENERIC_QUESTIONS = [
+    "Walk me through the most technically challenging project you've worked on — what made it hard and how did you approach it?",
+    "Tell me about a time you had to debug a difficult production issue. What was the problem and how did you resolve it?",
+    "Describe a technical decision you're proud of. What were the trade-offs you weighed?",
+    "How do you go about learning a new technology or framework when a project requires it?",
+    "Tell me about a time you disagreed with a teammate on a technical approach — how did you resolve it?",
+]
+
+
+def _has_grounded_cv(cv_chunk: str) -> bool:
+    """True only when retrieval returned REAL CV content (not a placeholder)."""
+    if not cv_chunk:
+        return False
+    text = cv_chunk.strip().lower()
+    if len(text) < 20:
+        return False
+    return not any(p in text for p in _CV_PLACEHOLDERS)
+
+
+def _generic_question(n: int) -> str:
+    """A CV-agnostic question, rotated by question number to avoid repetition."""
+    return _GENERIC_QUESTIONS[int(n) % len(_GENERIC_QUESTIONS)]
+
+
 # --- LLM CONFIGURATION ---
 llm = ChatGroq(
     model="llama-3.3-70b-versatile",
@@ -234,6 +268,22 @@ def generate_question_node(state: AgentState):
     # ── MODE: first_question ────────────────────────────────────────────────
     if interview_mode == "first_question":
         print(f"Mode: FIRST_QUESTION (Diff: {next_diff})")
+
+        # Anti-hallucination: if retrieval gave no real CV, ask a CV-agnostic
+        # opener instead of inventing the candidate's experience.
+        cv_chunk = state.get("cv_chunk", "No CV context found.")
+        if not _has_grounded_cv(cv_chunk):
+            print("⚠️ No grounded CV context — using a CV-agnostic opener (avoids hallucination).")
+            content = _generic_question(0)
+            return {
+                "last_question": content,
+                "loop_count": 0,
+                "current_difficulty": next_diff,
+                "asked_questions": asked_questions + [content],
+                "question_number": state.get("question_number", 1) + 1,
+                "interview_mode": "normal",
+            }
+
         chain = FIRST_QUESTION_PROMPT | llm
 
         max_attempts = 3
@@ -297,6 +347,23 @@ def generate_question_node(state: AgentState):
 
     # ── MODE: normal (CoT) ───────────────────────────────────────────────────
     print(f"Mode: NORMAL (Diff: {next_diff})")
+
+    # Anti-hallucination: no real CV → ask a CV-agnostic question rather than
+    # letting the LLM invent the candidate's projects/skills.
+    cv_chunk_norm = state.get("cv_chunk", "No CV context found.")
+    if not _has_grounded_cv(cv_chunk_norm):
+        print("⚠️ No grounded CV context — asking a generic question (avoids hallucination).")
+        content = _generic_question(state.get("question_number", 1))
+        return {
+            "last_question": content,
+            "current_topic": state.get("current_topic", "General"),
+            "loop_count": 0,
+            "current_difficulty": next_diff,
+            "asked_questions": asked_questions + [content],
+            "question_number": state.get("question_number", 1) + 1,
+            "interview_mode": "normal",
+        }
+
     chain = COT_QUESTION_PROMPT | llm
     guidance = "Ask a natural interview question." + difficulty_guidance
     if state.get("next_action") == "switch":
@@ -482,28 +549,23 @@ def evaluate_answer_node(state: AgentState):
     except Exception as e:
         print(f"MOD-1/relevance gate skipped ({e})")
 
-    # Detect flat / undertrained neural model — use wide threshold (±15 of center)
-    neural_is_flat = abs(adjusted_neural - 50.0) < 15.0
-    score_divergence = abs(llm_score - adjusted_neural)
-
+    # --- Final blend: 65% LLM / 35% neural ---
+    # Both neural models now discriminate quality (MOD-4 retrained on mpnet, MOD-1
+    # retrained without the leaky tone features), so we give them a real 35% say
+    # instead of the old ~20%. The Q↔A relevance gate stays on the evaluator
+    # (adjusted_neural) so off-topic answers can't ride a high neural score.
+    # The old neural-flat / divergence special-cases are gone — clean & predictable.
     if mod1_score is not None:
-        if neural_is_flat:
-            blended_score = round(0.85 * llm_score + 0.15 * mod1_score, 1)
-            print(f"Neural flat ({adjusted_neural:.1f}) — LLM+MOD1 blend (85/15)")
-        elif score_divergence > 20:
-            blended_score = round(0.80 * llm_score + 0.10 * adjusted_neural + 0.10 * mod1_score, 1)
-            print(f"Score divergence {score_divergence:.1f} — LLM-weighted 3-signal blend (80/10/10)")
-        else:
-            blended_score = round(0.75 * llm_score + 0.15 * adjusted_neural + 0.10 * mod1_score, 1)
+        w = {"llm": 0.65, "neural": 0.20, "mod1": 0.15}
+        blended_score = round(
+            w["llm"] * llm_score + w["neural"] * adjusted_neural + w["mod1"] * mod1_score, 1
+        )
+        print(f"Blend 65/20/15 — LLM {llm_score:.0f} / Eval {adjusted_neural:.0f} / "
+              f"MOD-1 {mod1_score:.0f} → {blended_score}")
     else:
-        if neural_is_flat:
-            blended_score = round(0.93 * llm_score + 0.07 * adjusted_neural, 1)
-            print(f"Neural flat ({adjusted_neural:.1f}) — LLM-dominant blend (93/7)")
-        elif score_divergence > 20:
-            blended_score = round(0.88 * llm_score + 0.12 * adjusted_neural, 1)
-            print(f"Score divergence {score_divergence:.1f} — LLM-weighted blend (88/12)")
-        else:
-            blended_score = round(0.80 * llm_score + 0.20 * adjusted_neural, 1)
+        w = {"llm": 0.65, "neural": 0.35, "mod1": 0.0}
+        blended_score = round(w["llm"] * llm_score + w["neural"] * adjusted_neural, 1)
+        print(f"Blend 65/35 — LLM {llm_score:.0f} / Eval {adjusted_neural:.0f} → {blended_score}")
 
     report_entry = {
         "question": state["last_question"],
@@ -512,11 +574,7 @@ def evaluate_answer_node(state: AgentState):
         "llm_score": llm_score,
         "neural_score": neural_score,
         "mod1_score": mod1_score,
-        "score_weights": {
-            "llm": 0.75 if mod1_score is not None else (0.93 if neural_is_flat else (0.88 if score_divergence > 20 else 0.80)),
-            "neural": 0.0 if (mod1_score is not None and neural_is_flat) else (0.15 if mod1_score is not None else (0.07 if neural_is_flat else (0.12 if score_divergence > 20 else 0.20))),
-            "mod1": 0.15 if (mod1_score is not None and neural_is_flat) else (0.10 if mod1_score is not None else 0.0),
-        },
+        "score_weights": w,
         "answer_classification": res.answer_classification,
         "detailed_scores": neural_results,
         "predicted_market_positioning": job_prediction,
@@ -942,9 +1000,12 @@ def decide_next_step(state: AgentState):
 
 workflow.add_conditional_edges("process_answer", decide_next_step)
 
-# Task 5.4 — LangGraph session checkpointing: survives server restarts and
-# WebSocket drops. Each interview session is a separate thread_id so states
-# are fully isolated.
+# Task 5.4 — LangGraph in-process checkpointing (per-session thread_id isolation).
+# NOTE: MemorySaver is RAM-only — it does NOT survive a server restart. Durable
+# session resume across restarts/WebSocket drops comes from Firestore
+# (firestore_client.get_session / update_session_state), which the server reloads
+# by session_id. For cross-restart graph checkpointing, swap MemorySaver for a
+# persistent saver (e.g. langgraph-checkpoint-postgres).
 from langgraph.checkpoint.memory import MemorySaver
 _checkpointer = MemorySaver()
 app_graph = workflow.compile(checkpointer=_checkpointer)

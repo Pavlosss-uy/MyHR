@@ -255,13 +255,12 @@ def save_interview_report(session_id: str, candidate_name: str, evaluations: lis
         lines.append(f"**A**: {ev.get('answer', 'N/A')}")
         lines.append("")
 
-        detailed = ev.get("detailed_scores", {})
-        if detailed:
-            lines.append("| Metric | Score |")
-            lines.append("|--------|-------|")
-            for k, v in detailed.items():
-                lines.append(f"| {k} | {v} |")
-            lines.append("")
+        # Show the FINAL rating the candidate received for this answer (the blended
+        # score), not the internal per-model breakdown — that's what the reader cares
+        # about and it stays consistent with the overall average.
+        final_rating = score if isinstance(score, (int, float)) else 0
+        lines.append(f"**Rating**: {final_rating}/100")
+        lines.append("")
 
         # Task 4.4 — model predicts salary-percentile market positioning, not job
         # performance. Read the current key; fall back to the legacy key for old reports.

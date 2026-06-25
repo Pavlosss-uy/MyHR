@@ -29,8 +29,10 @@ from ingest import get_session_index, load_session_raw_texts
 # ------------------------------
 # Cached models / session BM25s
 # ------------------------------
+import threading
 _reranker = None
 _hybrid_cache = {}
+_hybrid_cache_lock = threading.Lock()  # guards _hybrid_cache against asyncio.to_thread races
 
 
 def get_reranker():
@@ -157,13 +159,16 @@ class HybridRetriever:
 def get_hybrid_retriever(session_id: str):
     """
     Cache a HybridRetriever per session to avoid rebuilding BM25 repeatedly.
+
+    Thread-safe: retrieval runs via asyncio.to_thread, so concurrent interviews
+    could otherwise both rebuild the (expensive) BM25 index and race on the dict.
     """
     global _hybrid_cache
 
-    if session_id not in _hybrid_cache:
-        _hybrid_cache[session_id] = HybridRetriever(session_id)
-
-    return _hybrid_cache[session_id]
+    with _hybrid_cache_lock:
+        if session_id not in _hybrid_cache:
+            _hybrid_cache[session_id] = HybridRetriever(session_id)
+        return _hybrid_cache[session_id]
 
 
 def retrieve_context(session_id: str, query: str):

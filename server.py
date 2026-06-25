@@ -288,6 +288,23 @@ def _safe_remove(path: str | None):
             pass
 
 
+def _cleanup_session_vectors(session_id: str):
+    """Delete this session's Pinecone namespace once the interview is over.
+
+    Each interview indexes CV/JD vectors under namespace=session_id. Pinecone's
+    free tier caps total namespaces (100) — without this the system fails after
+    ~100 interviews and old candidates' vectors leak forever. Safe + idempotent:
+    deleting a missing namespace is a no-op. The interview is finished, so the
+    retriever is no longer needed.
+    """
+    try:
+        from ingest import pinecone_index
+        pinecone_index.delete(delete_all=True, namespace=session_id)
+        print(f"🧹 Cleaned Pinecone namespace for {session_id}")
+    except Exception as e:
+        print(f"[WARN] Pinecone namespace cleanup failed for {session_id}: {e}")
+
+
 def _build_initial_state(
     session_id: str, candidate_name: str, jd: str, s3_cv_url: str, skill_score: float
 ) -> Dict[str, Any]:
@@ -516,9 +533,8 @@ async def start_interview(
     job_title = initial_state["initial_job_context"]["job_title"]
     first_question = result["last_question"]
     greeting = (
-        f"Hello {candidate_name}! Welcome to your AI interview for the {job_title} position. "
-        f"I'm your interviewer today. We'll go through a series of questions — just speak naturally and take your time. "
-        f"Let's get started!\n\n{first_question}"
+        f"Hi {candidate_name}, welcome to your {job_title} interview — take your time and speak naturally.\n\n"
+        f"{first_question}"
     )
 
     audio_path = generate_audio(greeting)
@@ -586,8 +602,8 @@ async def start_interview_from_token(
     job_title = ctx["job_title"]
     first_question = result["last_question"]
     greeting = (
-        f"Hello {candidate_name}! Welcome to your AI interview for the {job_title} position. "
-        f"I'm your interviewer today. Let's get started!\n\n{first_question}"
+        f"Hi {candidate_name}, welcome to your {job_title} interview — take your time and speak naturally.\n\n"
+        f"{first_question}"
     )
 
     audio_path = generate_audio(greeting)
@@ -744,6 +760,7 @@ async def live_interview_websocket(
                             "transcription": transcription,
                         }
                     )
+                    _cleanup_session_vectors(session_id)  # interview done — free the Pinecone namespace
                     break
 
                 next_question = outcome["next_question"]
@@ -838,6 +855,9 @@ async def end_interview(session_id: str):
                 save_rich_report(session_id, rich_report)
         except Exception as e:
             print(f"Report synthesis warning: {e}")
+
+    # Interview is over (incl. early end) — free the Pinecone namespace. Idempotent.
+    _cleanup_session_vectors(session_id)
 
     return {
         "session_id": session_id,
@@ -985,6 +1005,7 @@ async def submit_answer(
                 f"{BASE_URL}/static/audio/{os.path.basename(closing_audio_path)}"
                 if closing_audio_path else None
             )
+            _cleanup_session_vectors(session_id)  # interview done — free the Pinecone namespace
             return {
                 "status": "completed",
                 "closing_message": closing,
@@ -1076,6 +1097,24 @@ async def rank_candidates(request: Request, body: RankCandidatesRequest = Body(.
             "directional signal, not absolute ground truth."
         ),
     }
+
+
+@app.get("/health")
+async def health():
+    """Liveness/readiness probe (H2). Reports per-model checkpoint status without
+    loading anything heavy. Returns 200 always so the process counts as alive; the
+    `models` map shows whether each checkpoint is present/loaded/missing."""
+    models_status = {}
+    try:
+        for name, filename in registry.versions.items():
+            path = os.path.join(registry.base_path, filename)
+            if name in registry.loaded_models:
+                models_status[name] = "loaded" if registry.loaded_models[name] is not None else "unavailable"
+            else:
+                models_status[name] = "present" if os.path.exists(path) else "missing"
+    except Exception as e:
+        models_status = {"error": str(e)}
+    return {"status": "ok", "models": models_status}
 
 
 if __name__ == "__main__":

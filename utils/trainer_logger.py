@@ -43,6 +43,12 @@ class ExperimentLogger:
             print(f"[MLflow] Tracking run '{run_name}' at {tracking_uri}")
         except ImportError:
             print(f"[MLflow] mlflow not installed — metrics logged to TensorBoard only.")
+        except Exception as e:
+            # MLflow present but misconfigured (bad tracking store, perms, etc.) —
+            # never let experiment tracking break a training run.
+            self._mlflow = None
+            self._run = None
+            print(f"[MLflow] disabled ({type(e).__name__}) — metrics logged to TensorBoard only.")
 
     def log_metric(self, key: str, value: float, step: Optional[int] = None) -> None:
         if self._mlflow and self._run:

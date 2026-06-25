@@ -154,15 +154,28 @@ class ModelRegistry:
             try:
                 checkpoint = torch.load(self._get_path("evaluator"), map_location=self.device)
                 # Guard against checkpoints trained with a different input_dim
-                saved_dim = checkpoint.get("input_dim")
+                saved_dim = checkpoint.get("input_dim") if isinstance(checkpoint, dict) else None
                 if saved_dim is not None and saved_dim != 768:
                     raise ValueError(
                         f"Checkpoint input_dim={saved_dim} does not match model input_dim=768. "
                         "Retrain the evaluator with the corrected 768-D pipeline."
                     )
-                state_dict = checkpoint.get("state_dict", checkpoint)
+                # Guard against the MiniLM/mpnet mix-up: inference feeds
+                # all-mpnet-base-v2(answer), so the checkpoint must have been
+                # trained on the same embedder. Legacy raw state_dicts have no
+                # tag — warn loudly so the mismatch is visible.
+                embedder = checkpoint.get("embedder") if isinstance(checkpoint, dict) else None
+                if embedder is None:
+                    print("[WARN] Evaluator checkpoint has no embedder tag — it may predate the "
+                          "mpnet alignment fix. Retrain via training/train_evaluator.py.")
+                elif embedder != "all-mpnet-base-v2":
+                    raise ValueError(
+                        f"Checkpoint embedder='{embedder}' != inference embedder 'all-mpnet-base-v2'. "
+                        "Retrain the evaluator so training matches inference."
+                    )
+                state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
                 model.load_state_dict(state_dict)
-                print("[OK]   Evaluator checkpoint loaded (input_dim=768).")
+                print("[OK]   Evaluator checkpoint loaded (input_dim=768, embedder=all-mpnet-base-v2).")
             except Exception as e:
                 print(f"[WARN] No weights found for evaluator ({e}), using randomly initialised weights.")
             model.eval()

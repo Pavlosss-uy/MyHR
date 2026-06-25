@@ -1,4 +1,5 @@
 import os
+import threading
 import torch
 import torch.nn as nn
 from sentence_transformers import SentenceTransformer
@@ -6,7 +7,7 @@ from sentence_transformers import SentenceTransformer
 # --- 1. THE DEEP LEARNING ARCHITECTURE ---
 # RENAME: Changed from InterviewScorerMLP to CandidateScoringMLP to match your Registry
 class CandidateScoringMLP(nn.Module):
-    def __init__(self, input_dim=1538): # 768(Q) + 768(A) + 2(Tone)
+    def __init__(self, input_dim=1536): # 768(Q) + 768(A) — tone removed (was leaky proxy)
         super(CandidateScoringMLP, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(input_dim, 512),
@@ -30,42 +31,44 @@ class EmbeddingExtractor:
         print("[AI] Loading Semantic Embedding Model for DL Scorer...")
         self.embedder = SentenceTransformer("all-mpnet-base-v2")
         self._cache: dict = {}  # Task 3.8 — in-process embedding cache
+        self._cache_lock = threading.Lock()  # guards _cache against asyncio.to_thread races
 
     def _encode_cached(self, text: str) -> torch.Tensor:
-        """Encode text, returning a cached tensor if the same text was seen before."""
-        if text not in self._cache:
-            with torch.no_grad():
-                self._cache[text] = self.embedder.encode(text, convert_to_tensor=True)
-        return self._cache[text]
+        """Encode text, returning a cached tensor if the same text was seen before.
 
-    def extract(self, question: str, answer: str, tone_data: dict) -> torch.Tensor:
+        Thread-safe: endpoints run this via asyncio.to_thread, so concurrent
+        interviews could otherwise race on the unguarded dict.
+        """
+        with self._cache_lock:
+            if text not in self._cache:
+                with torch.no_grad():
+                    self._cache[text] = self.embedder.encode(text, convert_to_tensor=True)
+            return self._cache[text]
+
+    def extract(self, question: str, answer: str, tone_data: dict = None) -> torch.Tensor:
+        """Build the MOD-1 feature vector: concat(mpnet(question), mpnet(answer)).
+
+        Tone features were REMOVED: in training they were derived from the quality
+        tier (label leakage) and at inference they were a near-constant (0.8), so
+        they made the model score noise. tone_data is accepted but ignored for
+        backward compatibility with callers.
+        """
         if not answer or answer.strip() == "(No speech detected)":
-            return torch.zeros(1, 1538)
+            return torch.zeros(1, 1536)
 
-        # 1. Convert words into raw semantic mathematics (768 dims each)
+        # Convert words into semantic vectors (768 dims each)
         q_emb = self._encode_cached(question)
         a_emb = self._encode_cached(answer)
-        
-        # 2. Extract Tone Data 
-        f_tone_conf = 0.8
-        f_valence = 1.0 
-        
-        if tone_data and "primary_emotion" in tone_data:
-            primary = tone_data["primary_emotion"].lower()
-            if "processing" not in primary:
-                f_valence = 1.0 if primary in ["happy", "neutral", "neu", "hap"] else 0.0
 
-        tone_tensor = torch.tensor([f_tone_conf, f_valence], dtype=torch.float32).to(q_emb.device)
-        
-        # 3. Concatenate: 768 + 768 + 2 = 1538
-        features = torch.cat([q_emb, a_emb, tone_tensor], dim=0)
-        return features.unsqueeze(0) 
+        # Concatenate: 768 + 768 = 1536
+        features = torch.cat([q_emb, a_emb], dim=0)
+        return features.unsqueeze(0)
 
 # --- 3. INFERENCE PIPELINE ---
 class ScoringPipeline:
     def __init__(self):
         # FIX: Ensure this matches the renamed class above
-        self.model = CandidateScoringMLP(input_dim=1538)
+        self.model = CandidateScoringMLP(input_dim=1536)
         self.extractor = EmbeddingExtractor()
         
         checkpoint_path = os.path.join(os.path.dirname(__file__), 'checkpoints', 'scorer_v2.pt')

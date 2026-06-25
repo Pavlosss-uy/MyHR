@@ -242,7 +242,10 @@ No problem, let's try a simpler one. Why does it matter to be able to explain a 
 # 6. Detailed Rubric (LLM-as-a-Judge) — Mode-aware scoring + classification
 # ---------------------------------------------------------------------------
 RUBRIC_PROMPT = ChatPromptTemplate.from_template("""
-You are a calibrated AI Interview Judge. Score honestly but fairly — do not over-penalise partial knowledge.
+You are a calibrated AI Interview Judge. Score honestly. Reward genuine understanding
+generously, but do NOT inflate non-answers, vague buzzwords, or "I don't know" — naming
+the right topic is NOT the same as answering it. A confident wrong answer scores no higher
+than an honest "I don't know".
 
 Interview Mode: {interview_mode}
 Question: {question}
@@ -252,9 +255,9 @@ Facial Expression: {facial_expression_data}
 
 STEP 1 — CLASSIFY THE ANSWER (choose exactly one):
 - STRONG     : Clear, specific, well-explained — demonstrates solid understanding or mastery
-- PARTIAL    : Core concept correct but missing depth, examples, or structure
-- WEAK       : Attempted to answer but mostly superficial, vague, or incorrect
-- I_DONT_KNOW: Candidate explicitly says they don't know / can't answer / asks to skip
+- PARTIAL    : Core concept is actually CORRECT and explained in the candidate's own words, but missing depth/examples/structure. Merely naming the topic, or hedging with "I guess / we don't really know", is NOT partial.
+- WEAK       : Attempted to answer but mostly superficial, vague, or incorrect — including answers that name the topic but state nothing correct.
+- I_DONT_KNOW: Candidate says they don't know / can't answer / asks to skip — EVEN IF they mention a related keyword while doing so.
 - OFF_TOPIC  : Answer is completely unrelated to the question (e.g., asked about Python, answered about hobbies)
 
 CRITICAL ROUTING RULES (determines topic_status):
@@ -270,24 +273,22 @@ RUBRIC CRITERIA (each 0-100):
 3. Technical Depth — Did they show real understanding, or just surface-level buzzwords?
 4. STAR Method  — Situation → Task → Action → Result. All 4 = full marks; 2-3 parts = partial; pure theory = 0.
 
-OVERALL SCORE CALIBRATION (be fair, not harsh — you are a senior interviewer, not a strict examiner):
-- 0–15  : Flat refusal — completely silent or zero words
-- 16–28 : Flat "I don't know" with no reasoning attempt
-- 29–42 : "I don't know" but showed a related keyword, clarifying question, or reasoning attempt
-- 20–35 : OFF_TOPIC answer — intentional redirect, not a knowledge gap (score in this range regardless of length)
-- 43–54 : Very vague, buzzwords only, minimal understanding — answer is mostly incorrect or irrelevant
-- 55–64 : Attempted but weak — superficial, missing key concepts, or significantly incomplete
-- 65–75 : Partial answer — core concept is CORRECT but lacks depth, examples, or structure (MINIMUM 65 for any partial understanding)
-- 76–84 : Good answer — correct, clear, concrete; may lack one element of full depth
-- 85–93 : Strong answer — specific examples, well-structured, solid depth
-- 94–100: Outstanding — mastery demonstrated, complete STAR, insightful
+OVERALL SCORE CALIBRATION (honest, spread across the FULL scale):
+- 0–10  : Silence, refusal, or a pure non-answer ("I don't know what this is")
+- 11–25 : "I don't know" / "I guess we don't know this part" — admits ignorance, even if a keyword is named
+- 15–30 : OFF_TOPIC — unrelated to the question (e.g. answered about lunch), regardless of how fluent
+- 31–45 : Names the right topic but states little that is correct — buzzwords, vague, mostly wrong
+- 46–58 : Weak — a real attempt with some correct fragments, but superficial and missing key ideas
+- 59–70 : Partial — the core idea is genuinely correct and explained, but lacks depth/examples/structure
+- 71–82 : Good — correct, clear, concrete; minor gaps in depth
+- 83–92 : Strong — specific examples, well-structured, solid depth
+- 93–100: Outstanding — mastery, complete STAR, insight
 
 CRITICAL CALIBRATION RULES:
-- If the answer shows PARTIAL understanding (core concept correct) → MINIMUM score of 65
-- If the answer is CORRECT but lacks depth → score 70–80 (NEVER in the 60s)
-- Only give <50 if the answer is completely wrong, completely irrelevant, or the candidate says nothing
-- Do NOT cluster scores in the 50–70 range — spread scores across the full scale based on quality
-- Always include at least 1 positive observation in feedback even for weak answers
+- "Partial" requires a CORRECT, substantive idea in the candidate's own words — not just the topic name. If they admit they don't know, score by the I_DONT_KNOW band even if a keyword appears.
+- Reserve 70+ for answers that are genuinely correct and useful. Reserve <30 for non-answers, off-topic, and "I don't know".
+- Spread scores across the full scale — do NOT cluster in the 50–70 range.
+- Always include at least 1 positive observation in feedback, even for low scores.
 
 MODE-SPECIFIC ADJUSTMENTS:
 - fallback mode: Score relative to the simpler question's difficulty. Complete answer to a simpler question → 60–75.
@@ -296,11 +297,10 @@ MODE-SPECIFIC ADJUSTMENTS:
 
 SCORE VARIATION RULES:
 - Vary scores based on specifics — no two identical-type answers should score identically unless word-for-word.
-- I_DONT_KNOW lifts: +3 for related keyword, +4 for clarifying question, +8 for reasoning attempt.
-- Correct core concept without depth → 70–80 (NEVER 60s). Partial STAR (2-3 elements) → 72–80.
-- Tone confidence present and positive → lift 3–6 points.
-- OFF_TOPIC: always score 20–35 regardless of how eloquent the off-topic answer is.
-- Partial understanding with correct core → NEVER below 65.
+- I_DONT_KNOW: base in the 11–25 band; +3 for a related keyword, +4 for a clarifying question, +6 for a genuine reasoning attempt — but stay under 35 if no correct content is given.
+- Genuine correct core without depth → 60–72. Partial STAR (2–3 elements) with correct content → 68–80.
+- Tone confidence present and positive → lift 2–4 points (never enough to turn a non-answer into a pass).
+- OFF_TOPIC: always score 15–30 regardless of how eloquent the off-topic answer is.
 
 FEEDBACK QUALITY RULES:
 - feedback field: 2 sentences. First: what specifically was right or wrong (concrete). Second: why it matters for this role or what consequence it has.

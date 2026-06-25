@@ -88,8 +88,21 @@ def load_data(data_path: str) -> tuple:
     print(f"   Feature dim: {metadata['feature_dim']}")
     print(f"   Quality distribution: {metadata['quality_distribution']}")
 
-    # Extract features and labels
-    features = np.array([s["features"] for s in samples], dtype=np.float32)
+    # --- CRITICAL FIX: align training features with INFERENCE ---
+    # The stored s["features"] were built with all-MiniLM-L6-v2 as concat(Q, A)
+    # (see generate_eval_data.py), but the live evaluator is fed
+    # all-mpnet-base-v2(answer) only (agent.py / feature_extractor.py). Same 768
+    # dims, but a totally different vector space + content → the deployed model
+    # scored noise. We re-encode the ANSWER with the exact inference embedder so
+    # training == inference.
+    from sentence_transformers import SentenceTransformer
+    print("   Re-encoding answers with all-mpnet-base-v2 (matches inference)...")
+    _embedder = SentenceTransformer("all-mpnet-base-v2")
+    answers = [s.get("answer", "") for s in samples]
+    features = _embedder.encode(
+        answers, convert_to_numpy=True, batch_size=32, show_progress_bar=True
+    ).astype(np.float32)
+
     labels = {
         "relevance": np.array([s["relevance"] for s in samples], dtype=np.float32),
         "clarity": np.array([s["clarity"] for s in samples], dtype=np.float32),
@@ -383,9 +396,15 @@ def main():
         for key in ["relevance", "clarity", "depth"]:
             print(f"    {key}: mean={means[key][:3].tolist()}, std={stds[key][:3].tolist()}")
 
-    # Save checkpoint
+    # Save checkpoint — wrapped with metadata so the registry can verify the
+    # embedder identity matches inference (guards against the MiniLM/mpnet mix-up).
     os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
-    torch.save(model.state_dict(), CHECKPOINT_PATH)
+    torch.save({
+        "state_dict": model.state_dict(),
+        "input_dim": input_dim,
+        "embedder": "all-mpnet-base-v2",
+        "embed_mode": "answer_only",
+    }, CHECKPOINT_PATH)
     print(f"\n  ? Model saved to {CHECKPOINT_PATH}")
 
     print(f"\n? Training complete! Next step:")

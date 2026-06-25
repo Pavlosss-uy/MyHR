@@ -35,26 +35,17 @@ from training.metrics import regression_metrics, make_writer
 from utils.seeding import set_all_seeds
 from utils.trainer_logger import ExperimentLogger
 
-# ---------------------------------------------------------------------------
-# Tone feature proxy — maps quality tier to (confidence, valence)
-# Real inference uses the live emotion model; training uses these proxies
-# because the emotion model expects audio, not text.
-# ---------------------------------------------------------------------------
-TIER_TONE = {
-    "excellent": (0.90, 1.0),
-    "good":      (0.72, 0.8),
-    "mediocre":  (0.50, 0.4),
-    "poor":      (0.28, 0.1),
-}
-
-
 def load_real_data(data_path: str):
     """
     Load Q+A pairs from eval_training_data.json, compute all-mpnet-base-v2
-    embeddings, attach tone proxies, and return (X, y) tensors.
+    embeddings, and return (X, y) tensors.
+
+    Tone features were REMOVED: they were derived from the quality tier (label
+    leakage) and were a near-constant at inference, which made the deployed model
+    score noise. MOD-1 now learns purely from the question+answer content.
 
     Returns:
-        X: FloatTensor shape (N, 1538)
+        X: FloatTensor shape (N, 1536)   # 768 question + 768 answer
         y: FloatTensor shape (N, 1)
     """
     print(f"Loading training data from {data_path}...")
@@ -85,11 +76,7 @@ def load_real_data(data_path: str):
 
     X_list, y_list = [], []
     for i, s in enumerate(valid):
-        tier = s.get("quality_tier", "mediocre")
-        tone_conf, tone_val = TIER_TONE.get(tier, (0.5, 0.5))
-
-        tone = np.array([tone_conf, tone_val], dtype=np.float32)
-        feature = np.concatenate([q_embs[i], a_embs[i], tone])  # (1538,)
+        feature = np.concatenate([q_embs[i], a_embs[i]])  # (1536,) — Q + A only
         X_list.append(feature)
 
         target = float(s["overall_quality"]) / 100.0
@@ -126,7 +113,7 @@ def train():
 
     print(f"\nTrain: {len(X_train)} | Val: {len(X_val)}")
 
-    model     = CandidateScoringMLP(input_dim=1538)
+    model     = CandidateScoringMLP(input_dim=1536)
     optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=150)
     criterion = nn.MSELoss()
