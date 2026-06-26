@@ -543,7 +543,7 @@ async def upload_cvs(
                     print(f"Semantic match warning for {filename}: {e}")
 
             #    b) Structured 100-point rubric (Tech 40 + Arch 25 + Exp 20 + Pref 15)
-            rubric = compute_rubric_score(cv_text, jd_text, jd_skills)
+            rubric = compute_rubric_score(cv_text, jd_text, jd_skills, cv_skills=cv_skills)
 
             #    c) Equal blend: rubric gives structured explainability,
             #       semantic captures nuance the keyword scorer misses
