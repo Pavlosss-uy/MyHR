@@ -445,6 +445,7 @@ async def create_job(
             "totalCandidates": 0,
             "interviewed": 0,
             "avgMatchScore": 0,
+            "matchScoreSum": 0,
         },
     })
 
@@ -604,33 +605,38 @@ def _persist_candidate(job_id: str, candidate_id: str, data: dict) -> None:
 
 
 def _update_job_stats(job_id: str, batch_scores: list[float]) -> None:
-    """Atomically update totalCandidates and avgMatchScore for a job.
+    """Atomically update totalCandidates, matchScoreSum, and avgMatchScore.
 
-    Uses a Firestore transaction so concurrent uploads don't lose each
-    other's stats.
+    Uses ``firestore.Increment`` for the two additive counters so concurrent
+    uploads never lose each other's data.  A follow-up transaction reads the
+    incremented values and derives ``avgMatchScore`` — the only field that
+    requires a read-before-write.
     """
     if not batch_scores:
         return
 
-    batch_sum = sum(batch_scores)
     batch_count = len(batch_scores)
+    batch_sum = sum(batch_scores)
     job_ref = db.collection("Jobs").document(job_id)
 
+    # Step 1: Atomic increments (no read required)
+    job_ref.update({
+        "stats.totalCandidates": fs_admin.Increment(batch_count),
+        "stats.matchScoreSum": fs_admin.Increment(batch_sum),
+        "updatedAt": fs_admin.SERVER_TIMESTAMP,
+    })
+
+    # Step 2: Derive avgMatchScore from the now-current counters
     @fs_admin.transactional
-    def _txn(tx, ref):
+    def _recompute_avg(tx, ref):
         snap = ref.get(transaction=tx)
         stats = snap.to_dict().get("stats", {}) if snap.exists else {}
-        old_total = stats.get("totalCandidates", 0)
-        old_avg = stats.get("avgMatchScore", 0.0)
-        new_total = old_total + batch_count
-        new_avg = round((old_avg * old_total + batch_sum) / new_total, 1)
-        tx.update(ref, {
-            "stats.totalCandidates": new_total,
-            "stats.avgMatchScore": new_avg,
-            "updatedAt": fs_admin.SERVER_TIMESTAMP,
-        })
+        total = stats.get("totalCandidates", 0)
+        score_sum = stats.get("matchScoreSum", 0)
+        avg = round(score_sum / max(total, 1), 1)
+        tx.update(ref, {"stats.avgMatchScore": avg})
 
-    _txn(db.transaction(), job_ref)
+    _recompute_avg(db.transaction(), job_ref)
 
 
 # ── Route handler (orchestrator) ─────────────────────────────────────────────
