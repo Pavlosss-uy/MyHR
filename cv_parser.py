@@ -173,29 +173,40 @@ COMMON_SKILLS = [
     "blockchain", "web3", "solidity",
 ]
 
+# Pre-compiled regex: single alternation of all skills with word boundaries.
+# Skills are sorted longest-first so that multi-word skills (e.g. "machine learning")
+# are matched before shorter substrings (e.g. "machine").
+_SKILLS_RE = re.compile(
+    r'\b(?:' +
+    '|'.join(re.escape(s) for s in sorted(COMMON_SKILLS, key=len, reverse=True)) +
+    r')\b',
+    re.IGNORECASE,
+)
+
+# Lookup table for canonical display casing (short skills → UPPER, rest → Title)
+_SKILLS_DISPLAY: dict[str, str] = {
+    s: (s.upper() if len(s) <= 2 else s.title()) for s in COMMON_SKILLS
+}
+
 
 def extract_skills_keyword(text: str) -> list[str]:
     """
     Extract skills from text using keyword matching.
     Fast, deterministic, no API calls.
+
+    Uses a single pre-compiled regex (_SKILLS_RE) instead of
+    iterating over every skill individually.
     """
     if not text:
         return []
 
-    text_lower = text.lower()
-    found = []
-
-    for skill in COMMON_SKILLS:
-        # Word boundary matching for short skills (avoid false positives)
-        if len(skill) <= 2:
-            pattern = rf'\b{re.escape(skill)}\b'
-            if re.search(pattern, text_lower):
-                found.append(skill.title() if len(skill) > 2 else skill.upper())
-        else:
-            if skill in text_lower:
-                # Capitalize properly
-                found.append(skill.title() if skill.islower() else skill)
-
+    seen: set[str] = set()
+    found: list[str] = []
+    for m in _SKILLS_RE.finditer(text):
+        key = m.group(0).lower()
+        if key not in seen:
+            seen.add(key)
+            found.append(_SKILLS_DISPLAY.get(key, key.title()))
     return found
 
 
@@ -466,9 +477,18 @@ def compute_rubric_score(
     cv_text: str,
     jd_text: str,
     jd_skills: List[str],
+    cv_skills: Optional[List[str]] = None,
 ) -> dict:
     """
     Compute the 100-point structured rubric score for a candidate against a JD.
+
+    Args:
+      cv_text   — raw CV text
+      jd_text   — raw job-description text
+      jd_skills — pre-extracted JD skill list
+      cv_skills — optional pre-extracted CV skill list; when supplied the
+                  function skips its own extract_skills_keyword() call,
+                  saving a redundant regex pass over the CV text.
 
     Returns:
       total          — final clamped score after KO rules (0–100)
@@ -481,7 +501,8 @@ def compute_rubric_score(
     """
     cv_lower  = cv_text.lower()
     jd_lower  = jd_text.lower()
-    cv_skills = extract_skills_keyword(cv_text)
+    if cv_skills is None:
+        cv_skills = extract_skills_keyword(cv_text)
 
     tech_score, tech_matched, tech_missing = _score_tech_stack(cv_skills, jd_skills)
     arch_score, arch_signals              = _score_architecture(cv_lower, jd_lower)

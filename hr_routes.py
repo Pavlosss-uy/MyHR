@@ -513,7 +513,7 @@ async def _process_single_cv(
 
     # 6. Score — semantic + rubric blend
     semantic_score = await _compute_semantic_score(skill_matcher, cv_text, jd_text, filename)
-    rubric = compute_rubric_score(cv_text, jd_text, jd_skills)
+    rubric = compute_rubric_score(cv_text, jd_text, jd_skills, cv_skills=cv_skills)
     match_score = round(0.5 * rubric["total"] + 0.5 * semantic_score, 1)
 
     # 7. Keyword match details
@@ -650,7 +650,6 @@ async def upload_cvs(
 
             # Persist to Firestore
             _persist_candidate(job_id, result["candidate_id"], result["data"])
-
             # Track for within-batch deduplication
             seen_hashes.add(result["data"]["cvHash"])
             email = result["data"].get("email")
