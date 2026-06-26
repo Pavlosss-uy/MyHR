@@ -460,6 +460,164 @@ async def get_job(job_id: str, company_id: str = Depends(get_current_company_id)
     return _get_authorized_job(job_id, company_id)
 
 
+# ── CV upload helpers (extracted from upload_cvs for SRP / testability) ───────
+
+
+async def _process_single_cv(
+    file: UploadFile,
+    job_id: str,
+    jd_text: str,
+    jd_skills: list[str],
+    skill_matcher,
+    seen_hashes: set[str],
+    seen_emails: set[str],
+) -> dict | None:
+    """Process one uploaded CV file through the full pipeline.
+
+    Returns a result dict on success, or ``None`` if the file was skipped
+    (in which case the caller should check ``result["skipped"]`` for the
+    reason appended to the *failed* list).
+
+    Raises on unexpected errors — the caller wraps this in a try/except.
+
+    Steps:
+      1. Read bytes & compute content hash (dedup by identical file).
+      2. Extract & validate CV text.
+      3. Generate candidate ID & upload to S3.
+      4. Extract candidate metadata (name, email, phone, skills).
+      5. Dedup by email.
+      6. Score: semantic similarity + rubric blend.
+      7. Compute keyword match details.
+    """
+    file_bytes = await file.read()
+    content_type = file.content_type or "application/pdf"
+    filename = file.filename or "unnamed.pdf"
+
+    # 1. Hash — done before text extraction so we skip heavy processing for
+    #    exact duplicates immediately.
+    cv_hash = hashlib.sha256(file_bytes).hexdigest()
+    if cv_hash in seen_hashes:
+        return {"skipped": {"filename": filename, "reason": "Duplicate CV — identical file already uploaded for this job."}}
+
+    # 2. Extract & validate text
+    cv_text = extract_text(file_bytes, content_type)
+    if not _is_valid_cv_text(cv_text):
+        return {"skipped": {"filename": filename, "reason": "Not a valid CV"}}
+
+    # 3. Generate candidate ID & upload to S3
+    candidate_id = uuid.uuid4().hex[:16]
+    await file.seek(0)
+    try:
+        s3_url = upload_file_to_s3(file, prefix=f"cvs/{job_id}/{candidate_id}")
+    except Exception as e:
+        print(f"S3 upload warning for {filename}: {e}")
+        s3_url = ""
+
+    # 4. Extract candidate metadata
+    name = extract_candidate_name(cv_text, filename)
+    email = extract_email(cv_text) or ""
+    phone = extract_phone(cv_text) or ""
+    cv_skills = extract_skills_keyword(cv_text)
+
+    # 5. Email duplicate check
+    if email and email.lower() in seen_emails:
+        return {"skipped": {"filename": filename, "reason": f"Duplicate candidate — {email} already exists in this job."}}
+
+    # 6. Score — semantic + rubric blend
+    semantic_score = await _compute_semantic_score(skill_matcher, cv_text, jd_text, filename)
+    rubric = compute_rubric_score(cv_text, jd_text, jd_skills, cv_skills=cv_skills)
+    match_score = round(SEMANTIC_RUBRIC_WEIGHT * rubric["total"] + SEMANTIC_RUBRIC_WEIGHT * semantic_score, 1)
+
+    # 7. Keyword match details
+    match_details = compute_match_details(cv_skills, jd_skills)
+
+    return {
+        "candidate_id": candidate_id,
+        "data": {
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "cvUrl": s3_url,
+            "cvText": cv_text[:CV_TEXT_MAX_CHARS],
+            "cvSkills": cv_skills,
+            "cvHash": cv_hash,
+            "matchScore": match_score,
+            "matchDetails": match_details,
+            "rubricScore": rubric,
+            "interviewStatus": "not_invited",
+            "interviewSessionId": "",
+            "interviewScore": 0,
+            "interviewReport": {},
+            "totalScore": match_score,
+            "invitationToken": "",
+            "invitationSentAt": None,
+            "updatedAt": fs_admin.SERVER_TIMESTAMP,
+        },
+        "summary": {
+            "candidateId": candidate_id,
+            "name": name,
+            "email": email,
+            "matchScore": match_score,
+            "matchDetails": match_details,
+            "rubricScore": rubric,
+            "cvSkills": cv_skills,
+        },
+    }
+
+
+async def _compute_semantic_score(
+    skill_matcher, cv_text: str, jd_text: str, filename: str,
+) -> float:
+    """Return a 0–100 semantic similarity score, falling back to 50 on error."""
+    if not (skill_matcher and jd_text and cv_text):
+        return 50.0
+    try:
+        raw = await asyncio.to_thread(skill_matcher.calculate_match_score, cv_text, jd_text)
+        if isinstance(raw, (int, float)):
+            return round((raw if raw <= 1.0 else raw / 100.0) * 100, 1)
+    except Exception as e:
+        print(f"Semantic match warning for {filename}: {e}")
+    return 50.0
+
+
+def _persist_candidate(job_id: str, candidate_id: str, data: dict) -> None:
+    """Write a single candidate document to the Jobs/{job_id}/Candidates subcollection."""
+    set_subcollection_doc("Jobs", job_id, "Candidates", candidate_id, data)
+
+
+def _update_job_stats(job_id: str, batch_scores: list[float]) -> None:
+    """Atomically update totalCandidates and avgMatchScore for a job.
+
+    Uses a Firestore transaction so concurrent uploads don't lose each
+    other's stats.
+    """
+    if not batch_scores:
+        return
+
+    batch_sum = sum(batch_scores)
+    batch_count = len(batch_scores)
+    job_ref = db.collection("Jobs").document(job_id)
+
+    @fs_admin.transactional
+    def _txn(tx, ref):
+        snap = ref.get(transaction=tx)
+        stats = snap.to_dict().get("stats", {}) if snap.exists else {}
+        old_total = stats.get("totalCandidates", 0)
+        old_avg = stats.get("avgMatchScore", 0.0)
+        new_total = old_total + batch_count
+        new_avg = round((old_avg * old_total + batch_sum) / new_total, 1)
+        tx.update(ref, {
+            "stats.totalCandidates": new_total,
+            "stats.avgMatchScore": new_avg,
+            "updatedAt": fs_admin.SERVER_TIMESTAMP,
+        })
+
+    _txn(db.transaction(), job_ref)
+
+
+# ── Route handler (orchestrator) ─────────────────────────────────────────────
+
+
 @hr_router.post("/jobs/{job_id}/upload-cvs")
 async def upload_cvs(
     job_id: str,
@@ -468,140 +626,49 @@ async def upload_cvs(
 ):
     """
     Batch upload CVs for a specific job.
-    For each file:
-      1. Extract text (PDF/DOCX)
-      2. Validate as a CV
-      3. Upload to S3
-      4. Extract candidate info
-      5. Calculate match score
-      6. Create Candidate document
+    Orchestrates: process → persist → update stats.
     """
     job = _get_authorized_job(job_id, company_id)
-
     jd_text = job.get("description", "")
     jd_skills = job.get("extractedSkills", [])
 
-    processed = []
-    failed = []
-
-    # Load skill matcher once for all CVs
+    # Load skill matcher once for the entire batch
     try:
         skill_matcher = registry.load_skill_matcher()
     except Exception as e:
         print(f"Skill matcher load warning: {e}")
         skill_matcher = None
 
-    # Pre-load existing candidates to power both duplicate checks.
-    # seen_hashes  — catches an identical binary file re-uploaded under any name.
-    # seen_emails  — catches the same person uploaded as a different file.
+    # Pre-load existing candidates for deduplication (hash + email)
     existing_candidates = get_subcollection_docs("Jobs", job_id, "Candidates")
     seen_hashes: set[str] = {c["cvHash"] for c in existing_candidates if c.get("cvHash")}
     seen_emails: set[str] = {c["email"].lower() for c in existing_candidates if c.get("email")}
 
+    processed: list[dict] = []
+    failed: list[dict] = []
+
     for file in files:
         try:
-            file_bytes = await file.read()
-            content_type = file.content_type or "application/pdf"
-            filename = file.filename or "unnamed.pdf"
-
-            # 0. Hash the raw bytes — done before text extraction so we skip
-            #    all heavy processing for exact duplicates immediately.
-            cv_hash = hashlib.sha256(file_bytes).hexdigest()
-            if cv_hash in seen_hashes:
-                failed.append({"filename": filename, "reason": "Duplicate CV — identical file already uploaded for this job."})
+            result = await _process_single_cv(
+                file, job_id, jd_text, jd_skills,
+                skill_matcher, seen_hashes, seen_emails,
+            )
+            if result is None:
                 continue
 
-            # 1. Extract text
-            cv_text = extract_text(file_bytes, content_type)
-
-            # 2. Validate
-            if not _is_valid_cv_text(cv_text):
-                failed.append({"filename": filename, "reason": "Not a valid CV"})
+            if "skipped" in result:
+                failed.append(result["skipped"])
                 continue
 
-            # 3. Generate candidate ID
-            candidate_id = uuid.uuid4().hex[:16]
-
-            # 4. Upload to S3
-            await file.seek(0)
-            try:
-                s3_url = upload_file_to_s3(file, prefix=f"cvs/{job_id}/{candidate_id}")
-            except Exception as e:
-                print(f"S3 upload warning for {filename}: {e}")
-                s3_url = ""
-
-            # 5. Extract candidate info
-            name = extract_candidate_name(cv_text, filename)
-            email = extract_email(cv_text) or ""
-            phone = extract_phone(cv_text) or ""
-            cv_skills = extract_skills_keyword(cv_text)
-
-            # Email duplicate check — same person re-uploaded as a different file.
-            if email and email.lower() in seen_emails:
-                failed.append({"filename": filename, "reason": f"Duplicate candidate — {email} already exists in this job."})
-                continue
-
-            # 6. Calculate match scores
-            #    a) Semantic similarity via SentenceTransformer (0-100)
-            semantic_score = 50.0
-            if skill_matcher and jd_text and cv_text:
-                try:
-                    raw = await asyncio.to_thread(skill_matcher.calculate_match_score, cv_text, jd_text)
-                    if isinstance(raw, (int, float)):
-                        semantic_score = round(
-                            (raw if raw <= 1.0 else raw / 100.0) * 100, 1
-                        )
-                except Exception as e:
-                    print(f"Semantic match warning for {filename}: {e}")
-
-            #    b) Structured 100-point rubric (Tech 40 + Arch 25 + Exp 20 + Pref 15)
-            rubric = compute_rubric_score(cv_text, jd_text, jd_skills, cv_skills=cv_skills)
-
-            #    c) Equal blend: rubric gives structured explainability,
-            #       semantic captures nuance the keyword scorer misses
-            match_score = round(SEMANTIC_RUBRIC_WEIGHT * rubric["total"] + SEMANTIC_RUBRIC_WEIGHT * semantic_score, 1)
-
-            # 7. Compute keyword match details
-            match_details = compute_match_details(cv_skills, jd_skills)
-
-            # 8. Create candidate document
-            candidate_data = {
-                "name": name,
-                "email": email,
-                "phone": phone,
-                "cvUrl": s3_url,
-                "cvText": cv_text[:CV_TEXT_MAX_CHARS],
-                "cvSkills": cv_skills,
-                "cvHash": cv_hash,
-                "matchScore": match_score,
-                "matchDetails": match_details,
-                "rubricScore": rubric,
-                "interviewStatus": "not_invited",
-                "interviewSessionId": "",
-                "interviewScore": 0,
-                "interviewReport": {},
-                "totalScore": match_score,
-                "invitationToken": "",
-                "invitationSentAt": None,
-                "updatedAt": fs_admin.SERVER_TIMESTAMP,
-            }
-
-            set_subcollection_doc("Jobs", job_id, "Candidates", candidate_id, candidate_data)
-
+            # Persist to Firestore
+            _persist_candidate(job_id, result["candidate_id"], result["data"])
             # Track for within-batch deduplication
-            seen_hashes.add(cv_hash)
+            seen_hashes.add(result["data"]["cvHash"])
+            email = result["data"].get("email")
             if email:
                 seen_emails.add(email.lower())
 
-            processed.append({
-                "candidateId": candidate_id,
-                "name": name,
-                "email": email,
-                "matchScore": match_score,
-                "matchDetails": match_details,
-                "rubricScore": rubric,
-                "cvSkills": cv_skills,
-            })
+            processed.append(result["summary"])
 
         except Exception as e:
             failed.append({
@@ -609,27 +676,8 @@ async def upload_cvs(
                 "reason": str(e),
             })
 
-    # Update job stats
-    if processed:
-        batch_sum = sum(c["matchScore"] for c in processed)
-        batch_count = len(processed)
-        job_ref = db.collection("Jobs").document(job_id)
-
-        @fs_admin.transactional
-        def _update_stats(tx, ref):
-            snap = ref.get(transaction=tx)
-            stats = snap.to_dict().get("stats", {}) if snap.exists else {}
-            old_total = stats.get("totalCandidates", 0)
-            old_avg = stats.get("avgMatchScore", 0.0)
-            new_total = old_total + batch_count
-            new_avg = round((old_avg * old_total + batch_sum) / new_total, 1)
-            tx.update(ref, {
-                "stats.totalCandidates": new_total,
-                "stats.avgMatchScore": new_avg,
-                "updatedAt": fs_admin.SERVER_TIMESTAMP,
-            })
-
-        _update_stats(db.transaction(), job_ref)
+    # Atomically update job stats
+    _update_job_stats(job_id, [c["matchScore"] for c in processed])
 
     return {
         "processed": len(processed),
