@@ -4,6 +4,7 @@ Covers: Request Access, Admin Actions, Job Management,
 Batch CV Upload, Candidate Ranking, Interview Invitations.
 """
 import asyncio
+import logging
 import hashlib
 import json
 import os
@@ -48,6 +49,8 @@ from recommender.feature_store import extract_candidate_features, build_ideal_pr
 
 hr_router = APIRouter(tags=["HR / B2B"])
 
+logger = logging.getLogger(__name__)
+
 # ── Rate limiter (shared with server.py) ─────────────────────────────────────
 # Lazy-loaded: the limiter is created by server.py at app startup and attached
 # to app.state.  We import it here so HR routes can use @limiter.limit(...).
@@ -85,7 +88,7 @@ def _decode_bearer(authorization: str) -> dict:
     try:
         return fb_auth.verify_id_token(token, clock_skew_seconds=30)
     except Exception as exc:
-        print(f"[AUTH] verify_id_token failed — {type(exc).__name__}: {exc}")
+        logger.error("verify_id_token failed — %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=401, detail="Invalid or expired Firebase ID token.")
 
 
@@ -331,6 +334,7 @@ async def accept_request(request_id: str, background_tasks: BackgroundTasks, _ad
             contact_name=req["contactName"],
             company_name=req["companyName"],
             link=invitation_link,
+            expires_hours=HR_INVITE_EXPIRY_HOURS,
         ),
     )
 
@@ -511,14 +515,21 @@ async def _process_single_cv(
     content_type = file.content_type or "application/pdf"
     filename = file.filename or "unnamed.pdf"
 
+    # 0. File size guard
+    if len(file_bytes) > MAX_CV_BYTES:
+        return {"skipped": {"filename": filename, "reason": "File too large (max 5 MB)"}}
+
     # 1. Hash — done before text extraction so we skip heavy processing for
     #    exact duplicates immediately.
     cv_hash = hashlib.sha256(file_bytes).hexdigest()
     if cv_hash in seen_hashes:
         return {"skipped": {"filename": filename, "reason": "Duplicate CV — identical file already uploaded for this job."}}
 
-    # 2. Extract & validate text
-    cv_text = extract_text(file_bytes, content_type)
+    # 2. Extract & validate text (offloaded to thread with 10 s timeout)
+    cv_text = await asyncio.wait_for(
+        asyncio.to_thread(extract_text, file_bytes, content_type),
+        timeout=10,
+    )
     if not _is_valid_cv_text(cv_text):
         return {"skipped": {"filename": filename, "reason": "Not a valid CV"}}
 
@@ -528,7 +539,7 @@ async def _process_single_cv(
     try:
         s3_url = upload_file_to_s3(file, prefix=f"cvs/{job_id}/{candidate_id}")
     except Exception as e:
-        print(f"S3 upload warning for {filename}: {e}")
+        logger.warning("S3 upload failed for %s: %s", filename, e)
         s3_url = ""
 
     # 4. Extract candidate metadata
@@ -594,7 +605,7 @@ async def _compute_semantic_score(
         if isinstance(raw, (int, float)):
             return round((raw if raw <= 1.0 else raw / 100.0) * 100, 1)
     except Exception as e:
-        print(f"Semantic match warning for {filename}: {e}")
+        logger.warning("Semantic match failed for %s: %s", filename, e)
     return 50.0
 
 
@@ -654,7 +665,7 @@ async def upload_cvs(
     try:
         skill_matcher = registry.load_skill_matcher()
     except Exception as e:
-        print(f"Skill matcher load warning: {e}")
+        logger.warning("Skill matcher load failed: %s", e)
         skill_matcher = None
 
     # Pre-load existing candidates for deduplication (hash + email)
@@ -773,8 +784,8 @@ async def get_candidate(
                     if _key in _rich:
                         existing[_key] = _rich[_key]
                 data["interviewReport"] = existing
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("rich report load failed for session %s: %s", session_id, exc)
 
     return data
 
@@ -1278,7 +1289,7 @@ async def rank_candidates(
         }
 
     # 5. Stack into (N, 8) matrix and run ranker
-    candidate_matrix = torch.cat(feature_rows, dim=0)   # (N, 8)
+    candidate_matrix = await asyncio.to_thread(torch.cat, feature_rows, dim=0)   # (N, 8)
     ideal_profile    = build_ideal_profile()             # (1, 8)
 
     scores, sorted_indices = await asyncio.to_thread(ranker.rank_candidates, candidate_matrix, ideal_profile)
