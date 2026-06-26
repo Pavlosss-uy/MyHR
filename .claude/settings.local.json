@@ -8,7 +8,24 @@
       "Bash(python -m training.train_evaluator)",
       "Bash(python -c ':*)",
       "Bash(python -m training.train_difficulty_ppo --timesteps 50000 --simulations 500)",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(npm install *)",
+      "Bash(python -c ' *)",
+      "Bash(pip index *)",
+      "Bash(pip install *)",
+      "Bash(python -m py_compile training/train_evaluator.py models/registry.py)",
+      "Bash(python demo_phase1.py)",
+      "Bash(grep -vE \"warn|Warning|tensorflow|oneDNN|cuda|cuDNN|deprecat|FutureWarning|huggingface|tokenizers|gradient_checkpoint|ModelRegistry|checkpoint present|=====$|Startup Health|^\\\\s*\\\\[OK\\\\]\\\\s+\\\\w+\\\\s+checkpoint|PPO|Skill matcher|Emotion model|Loading|pydantic\")",
+      "Bash(TESTING=true python -m pytest tests/ --tb=short -p no:cacheprovider -W ignore)",
+      "Bash(python -m py_compile prompts.py ingest.py agent.py)",
+      "Bash(TESTING=true python -m pytest tests/ -p no:cacheprovider -W ignore)",
+      "Bash(python -m py_compile server.py)",
+      "Bash(ruff check *)",
+      "Bash(python -m py_compile server.py agent.py models/registry.py models/scoring_model.py prompts.py ingest.py)",
+      "Bash(grep -E \"^\\\\w.*s$|load|import\")",
+      "Bash(python -m py_compile hr_routes.py)",
+      "Bash(grep -rn \"/auth\\\\|navigate\\(\\\\\"/\\\\|to=\\\\\"/\" src/pages/Landing*.jsx src/components/Navbar.jsx)",
+      "Bash(npx eslint *)"
     ]
   }
 }
