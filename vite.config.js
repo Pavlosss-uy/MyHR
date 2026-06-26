@@ -15,14 +15,11 @@ export default defineConfig(({ mode }) => ({
         hmr: {
             overlay: false,
         },
-        // Task 5.1 — Silero VAD WASM requires SharedArrayBuffer, which the
-        // browser only exposes in a cross-origin-isolated context.
-        // "credentialless" COEP is used (instead of "require-corp") to keep
-        // Firebase and other cross-origin fetches working.
-        headers: {
-            "Cross-Origin-Opener-Policy": "same-origin",
-            "Cross-Origin-Embedder-Policy": "credentialless",
-        },
+        // NOTE: No COOP/COEP headers here on purpose. The Silero VAD runs in
+        // single-thread mode (ort.env.wasm.numThreads = 1, see src/hooks/useVAD.js),
+        // so it does NOT need SharedArrayBuffer / cross-origin isolation. Setting
+        // Cross-Origin-Opener-Policy: same-origin breaks Firebase/Google sign-in
+        // popups (it severs window.opener), so we must NOT set it.
         proxy: {
             "/api": {
                 target: "http://localhost:8000",

@@ -16,10 +16,14 @@ Required environment variables
   EMAIL_FROM   Display name + address    e.g. MyHR <myhr2026@gmail.com>
 """
 
+import html
+import logging
 import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+logger = logging.getLogger(__name__)
 
 _SMTP_HOST = "smtp.gmail.com"
 _SMTP_PORT = 587
@@ -27,24 +31,26 @@ _SMTP_USER = os.getenv("SMTP_USER", "")
 _SMTP_PASS = os.getenv("SMTP_PASS", "")
 _FROM      = os.getenv("EMAIL_FROM", f"MyHR <{_SMTP_USER}>")
 
+MYHR_BASE_URL = os.getenv("MYHR_BASE_URL", "http://localhost:5173")
+
 
 # ── Dispatcher ────────────────────────────────────────────────────────────────
 
-def send_in_background(to: str, subject: str, html: str) -> None:
+def send_in_background(to: str, subject: str, html_body: str) -> None:
     """
     Synchronous Gmail SMTP dispatch over STARTTLS.
     Always pass this to FastAPI BackgroundTasks — never call it directly from
     an async route, because smtplib is blocking and must run in a thread pool.
     """
     if not _SMTP_USER or not _SMTP_PASS:
-        print(f"[email] SMTP_USER/SMTP_PASS not configured — skipping: {to} | {subject}")
+        logger.warning("SMTP_USER/SMTP_PASS not configured — skipping: %s | %s", to, subject)
         return
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"]    = _FROM
         msg["To"]      = to
-        msg.attach(MIMEText(html, "html", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
 
         with smtplib.SMTP(_SMTP_HOST, _SMTP_PORT) as smtp:
             smtp.ehlo()
@@ -53,13 +59,13 @@ def send_in_background(to: str, subject: str, html: str) -> None:
             smtp.login(_SMTP_USER, _SMTP_PASS)
             smtp.sendmail(_SMTP_USER, [to], msg.as_string())
 
-        print(f"[email] ✓ sent → {to} | {subject}")
+        logger.info("sent → %s | %s", to, subject)
     except smtplib.SMTPAuthenticationError:
-        print(f"[email] ✗ authentication failed — check SMTP_USER and SMTP_PASS (use an App Password, not your Gmail password)")
+        logger.error("authentication failed — check SMTP_USER and SMTP_PASS (use an App Password, not your Gmail password)")
     except smtplib.SMTPRecipientsRefused:
-        print(f"[email] ✗ recipient refused → {to}")
+        logger.error("recipient refused → %s", to)
     except Exception as exc:
-        print(f"[email] ✗ failed → {to} | {exc}")
+        logger.error("failed → %s | %s", to, exc)
 
 
 # ── Shared layout shell ───────────────────────────────────────────────────────
@@ -117,6 +123,15 @@ def _shell(body: str) -> str:
 
 # ── Templates ─────────────────────────────────────────────────────────────────
 
+def _validate_link(link: str) -> str:
+    """Ensure the link starts with MYHR_BASE_URL to prevent open redirect."""
+    if not link.startswith(MYHR_BASE_URL):
+        raise ValueError(
+            f"Link must start with {MYHR_BASE_URL!r}, got {link!r}"
+        )
+    return link
+
+
 def hr_invitation_html(
     contact_name: str,
     company_name: str,
@@ -124,15 +139,19 @@ def hr_invitation_html(
     expires_hours: int = 72,
 ) -> str:
     """Email sent to an HR contact when their access request is approved."""
+    link = _validate_link(link)
+    _name = html.escape(contact_name)
+    _company = html.escape(company_name)
+    _link = html.escape(link)
     body = f"""
 <h2 style="margin:0 0 6px;font-size:22px;font-weight:700;color:#0f172a;">
   Access approved! 🎉
 </h2>
-<p style="margin:0 0 24px;font-size:14px;color:#64748b;">Hi {contact_name},</p>
+<p style="margin:0 0 24px;font-size:14px;color:#64748b;">Hi {_name},</p>
 
 <p style="margin:0 0 16px;font-size:15px;line-height:1.7;color:#334155;">
   Your enterprise access request for
-  <strong style="color:#1e3a8a;">{company_name}</strong> has been approved.
+  <strong style="color:#1e3a8a;">{_company}</strong> has been approved.
   Click the button below to complete your account setup and start hiring smarter.
 </p>
 
@@ -150,7 +169,7 @@ def hr_invitation_html(
 </div>
 
 <div style="text-align:center;margin:28px 0;">
-  <a href="{link}"
+  <a href="{_link}"
      style="display:inline-block;
             background:linear-gradient(135deg,#1e3a8a,#3b82f6);
             color:#fff;padding:14px 40px;border-radius:10px;
@@ -173,16 +192,21 @@ def candidate_interview_html(
     expires_days: int = 7,
 ) -> str:
     """Email sent to a candidate when they are invited to an AI interview."""
+    link = _validate_link(link)
+    _name = html.escape(candidate_name)
+    _title = html.escape(job_title)
+    _company = html.escape(company_name)
+    _link = html.escape(link)
     body = f"""
 <h2 style="margin:0 0 6px;font-size:22px;font-weight:700;color:#0f172a;">
   Interview invitation
 </h2>
-<p style="margin:0 0 24px;font-size:14px;color:#64748b;">Hi {candidate_name},</p>
+<p style="margin:0 0 24px;font-size:14px;color:#64748b;">Hi {_name},</p>
 
 <p style="margin:0 0 16px;font-size:15px;line-height:1.7;color:#334155;">
   You've been shortlisted for the
-  <strong style="color:#1e3a8a;">{job_title}</strong> role at
-  <strong>{company_name}</strong> and are invited to complete an
+  <strong style="color:#1e3a8a;">{_title}</strong> role at
+  <strong>{_company}</strong> and are invited to complete an
   AI-powered interview.
 </p>
 
@@ -200,7 +224,7 @@ def candidate_interview_html(
 </div>
 
 <div style="text-align:center;margin:28px 0;">
-  <a href="{link}"
+  <a href="{_link}"
      style="display:inline-block;
             background:linear-gradient(135deg,#15803d,#22c55e);
             color:#fff;padding:14px 40px;border-radius:10px;
@@ -223,6 +247,12 @@ def admin_new_request_html(
     admin_url: str,
 ) -> str:
     """Internal alert sent to the admin when a new access request arrives."""
+    _validate_link(admin_url)
+    _company = html.escape(company_name)
+    _size = html.escape(company_size)
+    _name = html.escape(contact_name)
+    _email = html.escape(contact_email)
+    _url = html.escape(admin_url)
     body = f"""
 <h2 style="margin:0 0 6px;font-size:22px;font-weight:700;color:#0f172a;">
   New access request
@@ -237,28 +267,28 @@ def admin_new_request_html(
     <td style="padding:10px 14px;color:#64748b;font-weight:600;
                border-bottom:1px solid #e2e8f0;width:130px;">Company</td>
     <td style="padding:10px 14px;color:#0f172a;
-               border-bottom:1px solid #e2e8f0;">{company_name}</td>
+               border-bottom:1px solid #e2e8f0;">{_company}</td>
   </tr>
   <tr>
     <td style="padding:10px 14px;color:#64748b;font-weight:600;
                border-bottom:1px solid #e2e8f0;">Size</td>
     <td style="padding:10px 14px;color:#0f172a;
-               border-bottom:1px solid #e2e8f0;">{company_size}</td>
+               border-bottom:1px solid #e2e8f0;">{_size}</td>
   </tr>
   <tr style="background:#f8fafc;">
     <td style="padding:10px 14px;color:#64748b;font-weight:600;
                border-bottom:1px solid #e2e8f0;">Contact</td>
     <td style="padding:10px 14px;color:#0f172a;
-               border-bottom:1px solid #e2e8f0;">{contact_name}</td>
+               border-bottom:1px solid #e2e8f0;">{_name}</td>
   </tr>
   <tr>
     <td style="padding:10px 14px;color:#64748b;font-weight:600;">Email</td>
-    <td style="padding:10px 14px;color:#0f172a;">{contact_email}</td>
+    <td style="padding:10px 14px;color:#0f172a;">{_email}</td>
   </tr>
 </table>
 
 <div style="text-align:center;margin:24px 0;">
-  <a href="{admin_url}"
+  <a href="{_url}"
      style="display:inline-block;
             background:linear-gradient(135deg,#1e3a8a,#3b82f6);
             color:#fff;padding:13px 36px;border-radius:10px;

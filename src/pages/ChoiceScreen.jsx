@@ -154,7 +154,14 @@ const ChoiceScreen = () => {
                     Back to home
                 </Link>
                 <span className="text-border">|</span>
-                {!isSignIn && (
+                {isSignIn ? (
+                    <button
+                        onClick={() => navigate("/choose")}
+                        className="text-cobalt-light hover:text-cobalt font-medium transition-colors"
+                    >
+                        New here? Get started
+                    </button>
+                ) : (
                     <button
                         onClick={() => navigate("/choose?mode=signin")}
                         className="text-cobalt-light hover:text-cobalt font-medium transition-colors"

@@ -6,6 +6,7 @@ Batch CV Upload, Candidate Ranking, Interview Invitations.
 import hashlib
 import os
 import re
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -50,26 +51,44 @@ ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "myhr2026@gmail.com")
 #  Auth dependency
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def get_current_company_id(authorization: str = Header(...)) -> str:
-    """
-    Verify the Firebase ID token from the Authorization: Bearer <token> header,
-    then look up which Company the authenticated user administers.
-    Returns the companyId on success; raises 401/403 on failure.
-    """
-    if not authorization.startswith("Bearer "):
+# Admin allowlist — UIDs (comma-separated) in ADMIN_UIDS, plus the ADMIN_EMAIL owner.
+ADMIN_UIDS = {u.strip() for u in os.getenv("ADMIN_UIDS", "").split(",") if u.strip()}
+
+
+def _decode_bearer(authorization: str) -> dict:
+    """Verify a Firebase Bearer token and return the decoded claims, or raise 401."""
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
-
     token = authorization.removeprefix("Bearer ").strip()
-
     try:
         from firebase_admin import auth as fb_auth
-        decoded = fb_auth.verify_id_token(token, clock_skew_seconds=30)
+        return fb_auth.verify_id_token(token, clock_skew_seconds=30)
     except Exception as exc:
-        print(f"[AUTH] verify_id_token failed — {type(exc).__name__}: {exc} | token_len={len(token)} token_prefix={token[:20]!r}")
+        print(f"[AUTH] verify_id_token failed — {type(exc).__name__}: {exc}")
         raise HTTPException(status_code=401, detail="Invalid or expired Firebase ID token.")
 
-    uid = decoded["uid"]
 
+async def verify_firebase_uid(authorization: str = Header(...)) -> str:
+    """Return the authenticated caller's Firebase UID (any logged-in user)."""
+    return _decode_bearer(authorization)["uid"]
+
+
+async def verify_admin(authorization: str = Header(...)) -> str:
+    """Require a platform admin caller (uid in ADMIN_UIDS, or email == ADMIN_EMAIL)."""
+    decoded = _decode_bearer(authorization)
+    uid = decoded.get("uid", "")
+    email = (decoded.get("email") or "").lower()
+    if uid in ADMIN_UIDS or (email and email == ADMIN_EMAIL.lower()):
+        return uid
+    raise HTTPException(status_code=403, detail="Admin access required.")
+
+
+async def get_current_company_id(authorization: str = Header(...)) -> str:
+    """
+    Verify the Firebase ID token, then look up which Company the authenticated
+    user administers. Returns the companyId on success; raises 401/403 on failure.
+    """
+    uid = _decode_bearer(authorization)["uid"]
     companies = query_collection(
         "Companies",
         filters=[("adminUIDs", "array_contains", uid)],
@@ -77,8 +96,16 @@ async def get_current_company_id(authorization: str = Header(...)) -> str:
     )
     if not companies:
         raise HTTPException(status_code=403, detail="User is not associated with any company.")
-
     return companies[0]["id"]
+
+
+def _validate_token_expiry(doc: dict) -> None:
+    """Raise 410 if the token document is past its expiresAt timestamp."""
+    expires_at = doc.get("expiresAt")
+    if expires_at:
+        exp_ts = expires_at.timestamp() if hasattr(expires_at, "timestamp") else expires_at
+        if datetime.now(timezone.utc).timestamp() > exp_ts:
+            raise HTTPException(status_code=410, detail="This invitation has expired.")
 
 
 def _get_authorized_job(job_id: str, company_id: str) -> dict:
@@ -109,7 +136,9 @@ def _is_corporate_email(email: str) -> bool:
 
 
 def _generate_token() -> str:
-    return uuid.uuid4().hex
+    # Cryptographically secure, URL-safe — these tokens gate company onboarding
+    # and candidate interviews, so they must not be guessable (UUID is not).
+    return secrets.token_urlsafe(32)
 
 
 def _is_valid_cv_text(text: str) -> bool:
@@ -210,7 +239,7 @@ async def request_access(
 
 
 @hr_router.get("/admin/pending-requests")
-async def list_pending_requests():
+async def list_pending_requests(_admin: str = Depends(verify_admin)):
     """List all pending access requests (admin only)."""
     requests = query_collection(
         "PendingRequests",
@@ -222,7 +251,7 @@ async def list_pending_requests():
 
 
 @hr_router.post("/admin/accept-request/{request_id}")
-async def accept_request(request_id: str, background_tasks: BackgroundTasks):
+async def accept_request(request_id: str, background_tasks: BackgroundTasks, _admin: str = Depends(verify_admin)):
     """
     Accept a pending request:
     1. Update status to 'accepted'
@@ -288,7 +317,7 @@ async def accept_request(request_id: str, background_tasks: BackgroundTasks):
 
 
 @hr_router.post("/admin/reject-request/{request_id}")
-async def reject_request(request_id: str, notes: str = Form("")):
+async def reject_request(request_id: str, notes: str = Form(""), _admin: str = Depends(verify_admin)):
     """Reject a pending access request."""
     req = get_doc("PendingRequests", request_id)
     if not req:
@@ -335,10 +364,11 @@ async def validate_invitation(token: str):
 
 
 @hr_router.post("/invite/{token}/accept")
-async def accept_invitation(token: str, uid: str = Form(...)):
+async def accept_invitation(token: str, uid: str = Depends(verify_firebase_uid)):
     """
-    Mark an invitation as used and link the user to the company.
-    Called after the user creates their Firebase account.
+    Mark an invitation as used and link the authenticated user to the company.
+    The uid comes from the verified Firebase token (not a client form field), so a
+    user can only link THEIR OWN account.
     """
     doc = get_doc("InvitationTokens", token)
     if not doc:
@@ -346,6 +376,8 @@ async def accept_invitation(token: str, uid: str = Form(...)):
 
     if doc.get("usedAt"):
         raise HTTPException(status_code=410, detail="Already used.")
+
+    _validate_token_expiry(doc)  # reject expired invitations (was missing here)
 
     # Mark as used
     set_doc("InvitationTokens", token, {
@@ -694,10 +726,21 @@ async def ignore_candidate(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @hr_router.post("/user/role")
-async def register_user_role(uid: str = Form(...), role: str = Form(...)):
-    """Register a user's portal role (candidate | hr) in Firestore Users collection."""
-    if role not in ("hr", "candidate"):
-        raise HTTPException(status_code=422, detail="Invalid role. Must be 'hr' or 'candidate'.")
+async def register_user_role(role: str = Form(...), uid: str = Depends(verify_firebase_uid)):
+    """Register the CALLER's own portal role (candidate | hr).
+
+    The uid is taken from the verified Firebase token — a user can only set their
+    own role, never someone else's.
+
+    Only "candidate" can be self-registered. HR access is NOT self-assignable: it
+    is granted exclusively by accepting a company invitation (request-access →
+    admin approval → invite), which adds the user to a Company's adminUIDs.
+    """
+    if role != "candidate":
+        raise HTTPException(
+            status_code=403,
+            detail="HR access is granted via company invitation, not self-registration.",
+        )
     set_doc("Users", uid, {"role": role, "uid": uid})
     return {"status": "ok", "role": role}
 
@@ -710,7 +753,10 @@ async def get_user_role(uid: str):
     Candidate: registered in Users collection with role=candidate.
     Fallback: 'candidate'.
     """
-    # HR check — UID in any company's adminUIDs array
+    # HR is granted ONLY by company membership — the user's UID must appear in a
+    # Company's adminUIDs, which only happens after request-access → admin approval
+    # → invitation acceptance. A stored Users.role of "hr" is intentionally NOT
+    # honored here, so HR access cannot be self-assigned without approval.
     companies = query_collection(
         "Companies",
         filters=[("adminUIDs", "array_contains", uid)],
@@ -719,11 +765,7 @@ async def get_user_role(uid: str):
     if companies:
         return {"role": "hr"}
 
-    # Explicit Users doc
-    user_doc = get_doc("Users", uid)
-    if user_doc:
-        return {"role": user_doc.get("role", "candidate")}
-
+    # Everyone not in an approved company is a candidate.
     return {"role": "candidate"}
 
 
@@ -813,14 +855,7 @@ async def validate_interview_token(token: str):
     if doc.get("usedAt"):
         raise HTTPException(status_code=410, detail="This interview has already been completed.")
 
-    expires_at = doc.get("expiresAt")
-    if expires_at:
-        if hasattr(expires_at, 'timestamp'):
-            exp_ts = expires_at.timestamp()
-        else:
-            exp_ts = expires_at
-        if datetime.now(timezone.utc).timestamp() > exp_ts:
-            raise HTTPException(status_code=410, detail="This interview invitation has expired.")
+    _validate_token_expiry(doc)
 
     # Fetch job and candidate names for the welcome screen
     job = get_doc("Jobs", doc["jobId"]) if doc.get("jobId") else None
@@ -847,48 +882,44 @@ async def validate_interview_token(token: str):
 
 
 @hr_router.post("/candidate-interview/{token}/complete")
-async def complete_candidate_interview(
-    token: str,
-    sessionId: str = Form(...),
-    interviewScore: float = Form(0),
-    interviewReport: str = Form("{}"),
-):
+async def complete_candidate_interview(token: str, sessionId: str = Form(...)):
     """
-    Called when a candidate's AI interview finishes.
-    Saves the results back to the HR dashboard (Firestore), NO report to candidate.
+    Called when a candidate's AI interview finishes. Saves results to the HR
+    dashboard. The score and report are read from the SERVER-GENERATED report
+    (synthesized by the AI backend and written to disk) — NEVER from the client —
+    so a candidate cannot submit their own score.
     """
     import json
+    import os as _os_c
 
     doc = get_doc("InvitationTokens", token)
     if not doc:
         raise HTTPException(status_code=404, detail="Invalid token.")
+    if doc.get("type") != "candidate_interview":
+        raise HTTPException(status_code=400, detail="Invalid token type.")
+    _validate_token_expiry(doc)
 
     job_id = doc.get("jobId")
     candidate_id = doc.get("candidateId")
-
     if not job_id or not candidate_id:
         raise HTTPException(status_code=400, detail="Token missing job/candidate reference.")
 
-    # Parse report
-    try:
-        report_data = json.loads(interviewReport) if isinstance(interviewReport, str) else interviewReport
-    except Exception:
-        report_data = {}
-
-    # Merge rich_report from disk — overrides blank summary/strengths/weaknesses
-    import os as _os_c
+    # Authoritative report + score come from the server-side synthesized report,
+    # produced only when the AI interview actually ran and completed.
     _rich_path = _os_c.path.join("storage", "reports", f"{sessionId}_rich_report.json")
-    if _os_c.path.exists(_rich_path):
-        try:
-            with open(_rich_path, "r", encoding="utf-8") as _f:
-                _rich = json.load(_f)
-            for _key in ("summary", "strengths", "weaknesses", "communication",
-                         "overall_score", "performance_level", "hiring_signal",
-                         "improvements", "tips", "recommended_topics"):
-                if _key in _rich:
-                    report_data[_key] = _rich[_key]
-        except Exception:
-            pass
+    if not _os_c.path.exists(_rich_path):
+        raise HTTPException(
+            status_code=409,
+            detail="Interview report not found — the interview was not completed on the server.",
+        )
+    try:
+        with open(_rich_path, "r", encoding="utf-8") as _f:
+            report_data = json.load(_f)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read interview report.")
+
+    # Trust only the server-computed score.
+    interview_score = float(report_data.get("overall_score", 0) or 0)
 
     # Update candidate with interview results
     ref = (
@@ -903,12 +934,12 @@ async def complete_candidate_interview(
     match_score = candidate.get("matchScore", 50)
 
     # Compute total score: 40% CV match + 60% interview performance
-    total_score = round(0.4 * match_score + 0.6 * interviewScore, 1)
+    total_score = round(0.4 * match_score + 0.6 * interview_score, 1)
 
     ref.update({
         "interviewStatus": "completed",
         "interviewSessionId": sessionId,
-        "interviewScore": interviewScore,
+        "interviewScore": interview_score,
         "interviewReport": report_data,
         "totalScore": total_score,
         "updatedAt": fs_admin.SERVER_TIMESTAMP,
@@ -933,7 +964,7 @@ async def complete_candidate_interview(
         "status": "completed",
         "totalScore": total_score,
         "matchScore": match_score,
-        "interviewScore": interviewScore,
+        "interviewScore": interview_score,
     }
 
 
