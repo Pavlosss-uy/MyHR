@@ -5,6 +5,7 @@ Batch CV Upload, Candidate Ranking, Interview Invitations.
 """
 import asyncio
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -40,12 +41,24 @@ from email_service import (
     admin_new_request_html,
 )
 
+import torch
+from firebase_admin import auth as fb_auth
 from firebase_admin import firestore as fs_admin
+from recommender.feature_store import extract_candidate_features, build_ideal_profile
 
 hr_router = APIRouter(tags=["HR / B2B"])
 
 # ── Admin notification email ─────────────────────────────────────────────────
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "myhr2026@gmail.com")
+
+# ── Magic-number constants ───────────────────────────────────────────────────
+CV_TEXT_MAX_CHARS: int          = 5_000              # max chars stored per CV
+CV_SCORE_WEIGHT: float         = 0.4                 # CV match weight in total score
+INTERVIEW_SCORE_WEIGHT: float  = 0.6                 # interview weight in total score
+SEMANTIC_RUBRIC_WEIGHT: float  = 0.5                 # blend weight: rubric ↔ semantic
+HR_INVITE_EXPIRY_HOURS: int    = 72                  # company-access invite TTL
+CANDIDATE_INVITE_EXPIRY_DAYS: int = 7                # candidate interview invite TTL
+MAX_CV_BYTES: int              = 5 * 1024 * 1024     # 5 MiB upload cap
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,7 +75,6 @@ def _decode_bearer(authorization: str) -> dict:
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header.")
     token = authorization.removeprefix("Bearer ").strip()
     try:
-        from firebase_admin import auth as fb_auth
         return fb_auth.verify_id_token(token, clock_skew_seconds=30)
     except Exception as exc:
         print(f"[AUTH] verify_id_token failed — {type(exc).__name__}: {exc}")
@@ -284,7 +296,7 @@ async def accept_request(request_id: str, background_tasks: BackgroundTasks, _ad
         "type": "company_access",
         "jobId": None,
         "candidateId": None,
-        "expiresAt": datetime.now(timezone.utc) + timedelta(hours=72),
+        "expiresAt": datetime.now(timezone.utc) + timedelta(hours=HR_INVITE_EXPIRY_HOURS),
         "usedAt": None,
         "createdAt": fs_admin.SERVER_TIMESTAMP,
     })
@@ -547,7 +559,7 @@ async def upload_cvs(
 
             #    c) Equal blend: rubric gives structured explainability,
             #       semantic captures nuance the keyword scorer misses
-            match_score = round(0.5 * rubric["total"] + 0.5 * semantic_score, 1)
+            match_score = round(SEMANTIC_RUBRIC_WEIGHT * rubric["total"] + SEMANTIC_RUBRIC_WEIGHT * semantic_score, 1)
 
             # 7. Compute keyword match details
             match_details = compute_match_details(cv_skills, jd_skills)
@@ -558,7 +570,7 @@ async def upload_cvs(
                 "email": email,
                 "phone": phone,
                 "cvUrl": s3_url,
-                "cvText": cv_text[:5000],
+                "cvText": cv_text[:CV_TEXT_MAX_CHARS],
                 "cvSkills": cv_skills,
                 "cvHash": cv_hash,
                 "matchScore": match_score,
@@ -683,12 +695,11 @@ async def get_candidate(
     # Enrich interviewReport with rich_report from disk for existing/legacy records
     session_id = data.get("interviewSessionId", "")
     if session_id:
-        import os as _os_gc, json as _json_gc
-        _rich_path = _os_gc.path.join("storage", "reports", f"{session_id}_rich_report.json")
-        if _os_gc.path.exists(_rich_path):
+        _rich_path = os.path.join("storage", "reports", f"{session_id}_rich_report.json")
+        if os.path.exists(_rich_path):
             try:
                 with open(_rich_path, "r", encoding="utf-8") as _f:
-                    _rich = _json_gc.load(_f)
+                    _rich = json.load(_f)
                 existing = data.get("interviewReport") or {}
                 for _key in ("summary", "strengths", "weaknesses", "communication",
                              "overall_score", "performance_level", "hiring_signal",
@@ -812,7 +823,7 @@ async def invite_to_interview(
         "type": "candidate_interview",
         "jobId": job_id,
         "candidateId": candidate_id,
-        "expiresAt": datetime.now(timezone.utc) + timedelta(days=7),
+        "expiresAt": datetime.now(timezone.utc) + timedelta(days=CANDIDATE_INVITE_EXPIRY_DAYS),
         "usedAt": None,
         "createdAt": fs_admin.SERVER_TIMESTAMP,
     })
@@ -897,8 +908,7 @@ async def complete_candidate_interview(token: str, sessionId: str = Form(...)):
     (synthesized by the AI backend and written to disk) — NEVER from the client —
     so a candidate cannot submit their own score.
     """
-    import json
-    import os as _os_c
+
 
     doc = get_doc("InvitationTokens", token)
     if not doc:
@@ -914,8 +924,8 @@ async def complete_candidate_interview(token: str, sessionId: str = Form(...)):
 
     # Authoritative report + score come from the server-side synthesized report,
     # produced only when the AI interview actually ran and completed.
-    _rich_path = _os_c.path.join("storage", "reports", f"{sessionId}_rich_report.json")
-    if not _os_c.path.exists(_rich_path):
+    _rich_path = os.path.join("storage", "reports", f"{sessionId}_rich_report.json")
+    if not os.path.exists(_rich_path):
         raise HTTPException(
             status_code=409,
             detail="Interview report not found — the interview was not completed on the server.",
@@ -941,8 +951,8 @@ async def complete_candidate_interview(token: str, sessionId: str = Form(...)):
     candidate = snap.to_dict()
     match_score = candidate.get("matchScore", 50)
 
-    # Compute total score: 40% CV match + 60% interview performance
-    total_score = round(0.4 * match_score + 0.6 * interview_score, 1)
+    # Compute total score: CV_SCORE_WEIGHT CV match + INTERVIEW_SCORE_WEIGHT interview
+    total_score = round(CV_SCORE_WEIGHT * match_score + INTERVIEW_SCORE_WEIGHT * interview_score, 1)
 
     ref.update({
         "interviewStatus": "completed",
@@ -981,7 +991,7 @@ async def get_analytics(company_id: str = Depends(get_current_company_id)):
     Uses pre-computed job stats for the overview numbers, and scans candidates
     for trends and recent activity.
     """
-    from datetime import datetime as _dt
+
 
     jobs = query_collection("Jobs", filters=[("companyId", "==", company_id)])
     jobs.sort(key=lambda j: j.get("createdAt") or "", reverse=True)
@@ -1035,7 +1045,7 @@ async def get_analytics(company_id: str = Depends(get_current_company_id)):
                     if hasattr(ts, "strftime"):
                         key = ts.strftime("%Y-%m")
                     else:
-                        key = _dt.fromisoformat(str(ts)).strftime("%Y-%m")
+                        key = datetime.fromisoformat(str(ts)).strftime("%Y-%m")
                     if key not in monthly_buckets:
                         monthly_buckets[key] = {"candidates": 0, "interviewed": 0}
                     monthly_buckets[key]["candidates"] += 1
@@ -1060,7 +1070,7 @@ async def get_analytics(company_id: str = Depends(get_current_company_id)):
     for m in sorted_months:
         label = m
         try:
-            label = _dt.strptime(m, "%Y-%m").strftime("%b %Y")
+            label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
         except Exception:
             pass
         monthly_trends.append({
@@ -1080,7 +1090,7 @@ async def get_analytics(company_id: str = Depends(get_current_company_id)):
 
     recent_activity_raw = sorted(recent_completed, key=_ts_sort_key, reverse=True)[:5]
     recent_activity = []
-    _now = _dt.now(timezone.utc)
+    _now = datetime.now(timezone.utc)
     for item in recent_activity_raw:
         ts = item.get("raw_ts")
         time_ago = ""
@@ -1148,7 +1158,7 @@ async def rank_candidates(
     Auth: Firebase ID token required (HR/company admin only).
     Scope: only candidates who belong to this company's job are returned.
     """
-    import torch
+
 
     # 1. Ownership check
     _get_authorized_job(job_id, company_id)
@@ -1174,7 +1184,7 @@ async def rank_candidates(
         }
 
     # 3. Load feature store + ranker
-    from recommender.feature_store import extract_candidate_features, build_ideal_profile
+
 
     ranker = registry.load_candidate_ranker()
 
@@ -1253,7 +1263,7 @@ def get_interview_context_for_token(token: str) -> dict:
 
     expires_at = doc.get("expiresAt")
     if expires_at:
-        from datetime import datetime, timezone
+
         exp_ts = expires_at.timestamp() if hasattr(expires_at, "timestamp") else expires_at
         if datetime.now(timezone.utc).timestamp() > exp_ts:
             raise HTTPException(status_code=410, detail="This interview invitation has expired.")
