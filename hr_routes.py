@@ -188,10 +188,10 @@ def _is_valid_cv_text(text: str) -> bool:
 @hr_router.post("/request-access")
 async def request_access(
     background_tasks: BackgroundTasks,
-    companyName: str = Form(...),
-    companySize: str = Form(...),
-    contactName: str = Form(...),
-    contactEmail: str = Form(...),
+    companyName: str = Form(..., max_length=200),
+    companySize: str = Form(..., max_length=50),
+    contactName: str = Form(..., max_length=200),
+    contactEmail: str = Form(..., max_length=254),
 ):
     """
     Submit a request for enterprise access.
@@ -413,8 +413,8 @@ async def accept_invitation(token: str, uid: str = Depends(verify_firebase_uid))
 
 @hr_router.post("/jobs")
 async def create_job(
-    title: str = Form(...),
-    description: str = Form(...),
+    title: str = Form(..., max_length=300),
+    description: str = Form(..., max_length=5000),
     company_id: str = Depends(get_current_company_id),
 ):
     """Create a new job posting. Extracts skills from the JD."""
