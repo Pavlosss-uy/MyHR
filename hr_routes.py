@@ -12,7 +12,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, HTTPException, Query, Depends, Header
+from fastapi import APIRouter, BackgroundTasks, Request, UploadFile, File, Form, HTTPException, Query, Depends, Header
 
 from firestore_client import (
     db,
@@ -47,6 +47,14 @@ from firebase_admin import firestore as fs_admin
 from recommender.feature_store import extract_candidate_features, build_ideal_profile
 
 hr_router = APIRouter(tags=["HR / B2B"])
+
+# ── Rate limiter (shared with server.py) ─────────────────────────────────────
+# Lazy-loaded: the limiter is created by server.py at app startup and attached
+# to app.state.  We import it here so HR routes can use @limiter.limit(...).
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 
 # ── Admin notification email ─────────────────────────────────────────────────
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "myhr2026@gmail.com")
@@ -252,15 +260,20 @@ async def request_access(
 
 
 @hr_router.get("/admin/pending-requests")
-async def list_pending_requests(_admin: str = Depends(verify_admin)):
-    """List all pending access requests (admin only)."""
+async def list_pending_requests(
+    _admin: str = Depends(verify_admin),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List pending access requests (admin only), with pagination."""
     requests = query_collection(
         "PendingRequests",
         filters=[("status", "==", "pending")],
     )
     # Sort client-side to avoid requiring a Firestore composite index
     requests.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
-    return {"requests": requests}
+    total = len(requests)
+    return {"requests": requests[offset : offset + limit], "total": total}
 
 
 @hr_router.post("/admin/accept-request/{request_id}")
@@ -443,15 +456,20 @@ async def create_job(
 
 
 @hr_router.get("/jobs")
-async def list_jobs(company_id: str = Depends(get_current_company_id)):
-    """List all jobs belonging to the authenticated user's company."""
+async def list_jobs(
+    company_id: str = Depends(get_current_company_id),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List jobs belonging to the authenticated user's company, with pagination."""
     jobs = query_collection(
         "Jobs",
         filters=[("companyId", "==", company_id)],
     )
     # Sort client-side to avoid requiring a composite Firestore index
     jobs.sort(key=lambda j: j.get("createdAt") or "", reverse=True)
-    return {"jobs": jobs}
+    total = len(jobs)
+    return {"jobs": jobs[offset : offset + limit], "total": total}
 
 
 @hr_router.get("/jobs/{job_id}")
@@ -1185,7 +1203,9 @@ async def get_analytics(company_id: str = Depends(get_current_company_id)):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @hr_router.post("/jobs/{job_id}/rank-candidates")
+@limiter.limit("10/minute")
 async def rank_candidates(
+    request: Request,
     job_id: str,
     company_id: str = Depends(get_current_company_id),
 ):
