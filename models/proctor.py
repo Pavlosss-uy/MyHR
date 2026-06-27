@@ -25,12 +25,15 @@ Runs synchronously; callers must wrap in `asyncio.to_thread` so the FastAPI even
 loop is never blocked. A lock serializes access to the shared detector.
 """
 
+import logging
 import os
 import time
 import threading
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # --- tuning ---
 _YUNET_PATH = os.path.join(os.path.dirname(__file__), "weights", "face_detection_yunet_2023mar.onnx")
@@ -87,12 +90,12 @@ def warmup() -> None:
     """Load the detector once at startup so the first frame is fast."""
     try:
         if _get_yunet() is not None:
-            print("[OK]   Proctor ready (YuNet landmark detector).")
+            logger.info("[OK]   Proctor ready (YuNet landmark detector).")
         else:
             _get_haar()
-            print("[WARN] YuNet model missing — proctor using Haar fallback (no tilt detection).")
+            logger.warning("[WARN] YuNet model missing — proctor using Haar fallback (no tilt detection).")
     except Exception as e:
-        print(f"[WARN] Proctor warmup skipped ({e}).")
+        logger.warning("[WARN] Proctor warmup skipped (%s).", e)
 
 
 def _head_pose_from_landmarks(face_row):

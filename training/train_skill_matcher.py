@@ -148,15 +148,19 @@ def main():
         full_dataset    = DummySkillDataset(num_samples=160)
         checkpoint_name = "skill_matcher_v1.pt"
 
-    # 80/20 train/val split
-    train_size  = int(0.8 * len(full_dataset))
-    val_size    = len(full_dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        full_dataset, [train_size, val_size]
-    )
+    # 70/15/15 train/val/test split
+    n = len(full_dataset)
+    perm = torch.randperm(n)
+    train_end = int(0.70 * n)
+    val_end   = int(0.85 * n)
+    train_dataset = torch.utils.data.Subset(full_dataset, perm[:train_end].tolist())
+    val_dataset   = torch.utils.data.Subset(full_dataset, perm[train_end:val_end].tolist())
+    test_dataset  = torch.utils.data.Subset(full_dataset, perm[val_end:].tolist())
 
+    print(f"Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
     val_loader   = DataLoader(val_dataset,   batch_size=16)
+    test_loader  = DataLoader(test_dataset,  batch_size=16)
 
     model     = SkillMatchSiameseNet().to(device)
     criterion = ContrastiveLoss(margin=2.0)
@@ -217,6 +221,12 @@ def main():
     writer.close()
     logger.finish()
     print("\nTraining Complete!")
+
+    # Held-out TEST SET evaluation
+    best_state = torch.load(f"models/checkpoints/{checkpoint_name}", weights_only=True)
+    model.load_state_dict(best_state)
+    test_acc = compute_pairwise_accuracy(model, test_loader, device)
+    print(f"\nTEST SET — Pairwise Accuracy={test_acc:.4f}")
 
     # Inference test
     print("\n--- Quick Inference Test ---")

@@ -10,8 +10,13 @@ import json
 import os
 import re
 import secrets
+import time as _time
 import uuid
 from datetime import datetime, timedelta, timezone
+
+# Analytics TTL cache — keyed by company_id; entries expire after _ANALYTICS_TTL seconds.
+_analytics_cache: dict[str, tuple[float, dict]] = {}
+_ANALYTICS_TTL = 300  # 5 minutes
 
 from fastapi import APIRouter, BackgroundTasks, Request, UploadFile, File, Form, HTTPException, Query, Depends, Header
 
@@ -727,11 +732,14 @@ async def list_candidates(
     job_id: str,
     sort_by: str = Query("matchScore"),
     status: str = Query(""),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     company_id: str = Depends(get_current_company_id),
 ):
     """
     List candidates for a job, sorted by match score.
-    Optional status filter: not_invited, invited, completed
+    Optional status filter: not_invited, invited, completed.
+    Supports limit/offset pagination (default: first 50, max 200).
     """
     _get_authorized_job(job_id, company_id)
     candidates = get_subcollection_docs(
@@ -752,7 +760,9 @@ async def list_candidates(
     elif sort_by == "name":
         candidates.sort(key=lambda c: c.get("name", ""))
 
-    return {"candidates": candidates, "total": len(candidates)}
+    total = len(candidates)
+    page = candidates[offset : offset + limit]
+    return {"candidates": page, "total": total, "limit": limit, "offset": offset}
 
 
 @hr_router.get("/jobs/{job_id}/candidates/{candidate_id}")
@@ -1067,15 +1077,8 @@ async def complete_candidate_interview(token: str, sessionId: str = Form(...)):
 #  MODULE: Analytics
 # ─────────────────────────────────────────────────────────────────────────────
 
-@hr_router.get("/analytics")
-async def get_analytics(company_id: str = Depends(get_current_company_id)):
-    """
-    Return real hiring analytics for the authenticated company.
-    Uses pre-computed job stats for the overview numbers, and scans candidates
-    for trends and recent activity.
-    """
-
-
+def _compute_analytics(company_id: str) -> dict:
+    """Compute analytics for company_id. Extracted for TTL caching."""
     jobs = query_collection("Jobs", filters=[("companyId", "==", company_id)])
     jobs.sort(key=lambda j: j.get("createdAt") or "", reverse=True)
 
@@ -1211,10 +1214,26 @@ async def get_analytics(company_id: str = Depends(get_current_company_id)):
     }
 
 
+@hr_router.get("/analytics")
+async def get_analytics(company_id: str = Depends(get_current_company_id)):
+    """
+    Return real hiring analytics for the authenticated company.
+    Results are cached per company for 5 minutes to avoid O(jobs×candidates) Firestore reads.
+    """
+    now = _time.monotonic()
+    cached = _analytics_cache.get(company_id)
+    if cached is not None:
+        ts, result = cached
+        if now - ts < _ANALYTICS_TTL:
+            return result
+
+    result = await asyncio.to_thread(_compute_analytics, company_id)
+    _analytics_cache[company_id] = (now, result)
+    return result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helper: retrieve CV text + JD for token-based interview start (used by server.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  MODULE: Candidate Ranking (MOD-5)
 # ─────────────────────────────────────────────────────────────────────────────

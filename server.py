@@ -1,14 +1,25 @@
 import asyncio
 import io
 import json
+import logging
 import os
 import re
+import time as _time
 import uuid
 import tempfile
+from contextlib import asynccontextmanager
 from typing import Tuple, Dict, Any
 
 from dotenv import load_dotenv
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+_SERVER_START_TIME = _time.monotonic()
 
 import PyPDF2
 import uvicorn
@@ -52,7 +63,24 @@ from agent import (
     MAX_QUESTIONS,
 )
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: warm up the proctor detector and (optionally) pre-load the emotion model.
+    try:
+        from models import proctor
+        proctor.warmup()
+    except Exception as e:
+        logger.warning("Proctor warmup skipped: %s", e)
+    try:
+        from models.registry import registry as _reg
+        _reg.load_emotion_model()
+    except Exception as e:
+        logger.warning("Emotion model pre-load skipped: %s", e)
+    yield
+    # Shutdown: nothing to clean up currently.
+
+
+app = FastAPI(lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
 # Task 3.2 — Rate limiting: prevent API abuse per IP address
@@ -81,22 +109,12 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-@app.on_event("startup")
-def _warmup_models():
-    """Initialize the OpenCV proctor (Haar cascade) at startup."""
-    try:
-        from models import proctor
-        proctor.warmup()
-    except Exception as e:
-        print(f"[WARN] proctor warmup skipped ({e}).")
-
-
 # B2B / HR endpoints
 try:
     from hr_routes import hr_router
     app.include_router(hr_router)
 except ImportError as _hr_err:
-    print(f"⚠️ HR routes not loaded (missing dependencies): {_hr_err}")
+    logger.warning("HR routes not loaded (missing dependencies): %s", _hr_err)
 
 UPLOAD_DIR = "./uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -300,9 +318,9 @@ def _cleanup_session_vectors(session_id: str):
     try:
         from ingest import pinecone_index
         pinecone_index.delete(delete_all=True, namespace=session_id)
-        print(f"🧹 Cleaned Pinecone namespace for {session_id}")
+        logger.info("Cleaned Pinecone namespace for %s", session_id)
     except Exception as e:
-        print(f"[WARN] Pinecone namespace cleanup failed for {session_id}: {e}")
+        logger.warning("Pinecone namespace cleanup failed for %s: %s", session_id, e)
 
 
 def _build_initial_state(
@@ -362,7 +380,7 @@ def _attach_tone_analysis(current_state: Dict[str, Any], audio_path: str, sessio
         "full_analysis": tone_report,
         "confidence": confidence,
     }
-    print(f"[EMOTION OUTPUT] session={session_id} tone={dominant_tone} confidence={confidence:.2f}")
+    logger.debug("[EMOTION OUTPUT] session=%s tone=%s confidence=%.2f", session_id, dominant_tone, confidence)
 
 
 def _build_closing_message(current_state: Dict[str, Any]) -> str:
@@ -499,7 +517,7 @@ async def start_interview(
     try:
         create_session_index(session_id, cv_text, jd, candidate_name=candidate_name_early, role=job_title_early)
     except Exception as e:
-        print(f"Ingestion Warning: {e}")
+        logger.warning("Ingestion warning: %s", e)
 
     try:
         skill_matcher = registry.load_skill_matcher()
@@ -510,7 +528,7 @@ async def start_interview(
         else:
             skill_score = 0.5
     except Exception as e:
-        print(f"Skill Match Warning: {e}")
+        logger.warning("Skill match warning: %s", e)
         skill_score = 0.5
 
     candidate_name = extract_candidate_name(cv_text, cv.filename)
@@ -575,7 +593,7 @@ async def start_interview_from_token(
     try:
         create_session_index(session_id, cv_text, jd, candidate_name=candidate_name, role=ctx["job_title"])
     except Exception as e:
-        print(f"Ingestion Warning: {e}")
+        logger.warning("Ingestion warning: %s", e)
 
     try:
         skill_matcher = registry.load_skill_matcher()
@@ -586,7 +604,7 @@ async def start_interview_from_token(
         else:
             skill_score = 0.5
     except Exception as e:
-        print(f"Skill Match Warning: {e}")
+        logger.warning("Skill match warning: %s", e)
         skill_score = 0.5
 
     initial_state = _build_initial_state(session_id, candidate_name, jd, "", skill_score)
@@ -740,7 +758,7 @@ async def live_interview_websocket(
                             if rich_report_ws:
                                 save_rich_report(session_id, rich_report_ws)
                         except Exception as _e:
-                            print(f"WS report synthesis warning: {_e}")
+                            logger.warning("WS report synthesis warning: %s", _e)
 
                     await websocket.send_json({"type": "ai_response_text", "text": closing})
                     await websocket.send_json(
@@ -780,13 +798,13 @@ async def live_interview_websocket(
                 audio_buffer.clear()
 
             except Exception as e:
-                print(f"⚠️ WebSocket interview turn failed: {e}")
+                logger.error("WebSocket interview turn failed: %s", e)
                 await websocket.send_json({"type": "error", "message": "Failed to process utterance"})
             finally:
                 _safe_remove(temp_path)
 
     except WebSocketDisconnect:
-        print(f"Client {session_id} disconnected.")
+        logger.info("Client %s disconnected.", session_id)
 
 
 MIN_REPORT_QUESTIONS = 2  # need at least this many answered questions for a valid report
@@ -829,7 +847,7 @@ async def end_interview(session_id: str):
     try:
         save_interview_report(session_id, candidate_name, evaluations)
     except Exception as e:
-        print(f"Report save warning: {e}")
+        logger.warning("Report save warning: %s", e)
 
     avg_score = round(sum(e["score"] for e in evaluations) / len(evaluations), 1)
 
@@ -843,9 +861,9 @@ async def end_interview(session_id: str):
         try:
             with open(_rich_report_path, "r", encoding="utf-8") as _f:
                 rich_report = _json.load(_f)
-            print(f"📂 Loaded existing rich report for {session_id}")
+            logger.debug("Loaded existing rich report for %s", session_id)
         except Exception as _e:
-            print(f"Rich report load warning: {_e}")
+            logger.warning("Rich report load warning: %s", _e)
 
     if not rich_report:
         try:
@@ -853,7 +871,7 @@ async def end_interview(session_id: str):
             if rich_report:
                 save_rich_report(session_id, rich_report)
         except Exception as e:
-            print(f"Report synthesis warning: {e}")
+            logger.warning("Report synthesis warning: %s", e)
 
     # Interview is over (incl. early end) — free the Pinecone namespace. Idempotent.
     _cleanup_session_vectors(session_id)
@@ -899,11 +917,11 @@ async def analyze_frame(
 
     # Log only flagged frames (multi-face / no-face / looking-away) to avoid spam.
     if result.get("multiple_faces"):
-        print(f"[PROCTOR] ⚠ multiple faces: {result['face_count']}")
+        logger.warning("[PROCTOR] multiple faces detected: %s", result["face_count"])
     elif not result.get("face_present"):
-        print("[PROCTOR] ⚠ no face in frame")
+        logger.warning("[PROCTOR] no face in frame")
     elif result.get("looking_away"):
-        print(f"[PROCTOR] ⚠ looking away (yaw={result.get('yaw')} vspan={result.get('vspan')})")
+        logger.warning("[PROCTOR] looking away (yaw=%s vspan=%s)", result.get("yaw"), result.get("vspan"))
 
     return result
 
@@ -938,7 +956,7 @@ async def submit_answer(
     try:
         upload_file_to_s3(audio, prefix=f"answers/{session_id}")
     except Exception as e:
-        print(f"S3 upload warning: {e}")
+        logger.warning("S3 upload warning: %s", e)
 
     transcription = transcribe_audio(temp_audio_path, content_type=content_type)
 
@@ -997,7 +1015,7 @@ async def submit_answer(
                     if rich_report_sa:
                         save_rich_report(session_id, rich_report_sa)
                 except Exception as _e:
-                    print(f"submit_answer report synthesis warning: {_e}")
+                    logger.warning("submit_answer report synthesis warning: %s", _e)
 
             closing_audio_path = generate_audio(closing)
             closing_audio_url = (
@@ -1114,6 +1132,23 @@ async def health():
     except Exception as e:
         models_status = {"error": str(e)}
     return {"status": "ok", "models": models_status}
+
+
+@app.get("/metrics")
+async def metrics():
+    """Operational metrics for monitoring — no auth required."""
+    uptime = round(_time.monotonic() - _SERVER_START_TIME, 1)
+    models_status = {}
+    try:
+        for name, filename in registry.versions.items():
+            path = os.path.join(registry.base_path, filename)
+            if name in registry.loaded_models:
+                models_status[name] = "loaded" if registry.loaded_models[name] is not None else "unavailable"
+            else:
+                models_status[name] = "present" if os.path.exists(path) else "missing"
+    except Exception as e:
+        models_status = {"error": str(e)}
+    return {"uptime_seconds": uptime, "models": models_status}
 
 
 if __name__ == "__main__":

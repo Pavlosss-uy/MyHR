@@ -16,9 +16,9 @@ except Exception:  # pragma: no cover
     spacy = None
 
 try:
-    from sentence_transformers import SentenceTransformer  # type: ignore
+    from models.scoring_model import get_shared_embedder as _get_shared_embedder
 except Exception:  # pragma: no cover
-    SentenceTransformer = None
+    _get_shared_embedder = None
 
 
 DISCOURSE_MARKERS = [
@@ -50,10 +50,10 @@ class AnswerFeatureExtractor:
         self._skill_matcher = self._load_skill_matcher()
 
     def _load_embedder(self):
-        if SentenceTransformer is None:
+        if _get_shared_embedder is None:
             return None
         try:
-            return SentenceTransformer("all-mpnet-base-v2")
+            return _get_shared_embedder()
         except Exception:
             return None
 
@@ -122,7 +122,9 @@ class AnswerFeatureExtractor:
             return None
         if self.embedder is not None:
             try:
-                return self.embedder.encode(text)
+                # EmbeddingExtractor wraps a SentenceTransformer; use the inner model for numpy output.
+                inner = getattr(self.embedder, "embedder", self.embedder)
+                return inner.encode(text)
             except Exception:
                 pass
         return Counter(self._tokenize(text))

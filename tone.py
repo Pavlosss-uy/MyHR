@@ -1,8 +1,8 @@
+import logging
 import traceback
 from models.registry import registry
 
-# Pre-load on import so the server is ready immediately
-registry.load_emotion_model()
+logger = logging.getLogger(__name__)
 
 _FALLBACK_TONE = "neutral"
 _FALLBACK_REPORT = {
@@ -39,10 +39,10 @@ def analyze_voice_tone(audio_path: str):
             "full_analysis": tone_report,
             "confidence": result.get("confidence", 0.5),
         }
-        print("[EMOTION OUTPUT]", emotion_result)
+        logger.debug("[EMOTION OUTPUT] %s", emotion_result)
         return dominant_tone, tone_report
 
     except Exception as e:
-        print(f"[EMOTION ERROR] analyze_voice_tone failed: {type(e).__name__}: {e}")
+        logger.error("[EMOTION ERROR] analyze_voice_tone failed: %s: %s", type(e).__name__, e)
         traceback.print_exc()
         return _FALLBACK_TONE, _FALLBACK_REPORT

@@ -306,25 +306,22 @@ def sync_user_email(uid: str, old_email: str, new_email: str) -> int:
             {"targetEmail": new_email, "emailUpdatedAt": timestamp},
         ))
 
-    # ── 2. Jobs/*/Candidates ──────────────────────────────────────────────────
-    for job_snap in db.collection("Jobs").stream():
-        cand_ref = job_snap.reference.collection("Candidates")
-        seen: set[str] = set()
-
-        # Query by UID first (authoritative — survives prior email changes),
-        # then by old email (catches records created before UID was stored).
-        for stream in (
-            cand_ref.where("uid", "==", uid).stream(),
-            cand_ref.where("email", "==", old_email).stream(),
-        ):
-            for snap in stream:
-                if snap.id in seen:
-                    continue
-                seen.add(snap.id)
-                ops.append((
-                    snap.reference,
-                    {"email": new_email, "emailUpdatedAt": timestamp},
-                ))
+    # ── 2. Jobs/*/Candidates — collection_group query (O(matches) not O(jobs×candidates)) ──
+    # Requires Firestore single-field collection-group indexes on `uid` and `email`,
+    # which are auto-created on first use. The `uid` field is stored at candidate ingestion.
+    seen: set[str] = set()
+    for stream in (
+        db.collection_group("Candidates").where("uid", "==", uid).stream(),
+        db.collection_group("Candidates").where("email", "==", old_email).stream(),
+    ):
+        for snap in stream:
+            if snap.id in seen:
+                continue
+            seen.add(snap.id)
+            ops.append((
+                snap.reference,
+                {"email": new_email, "emailUpdatedAt": timestamp},
+            ))
 
     # ── 3. Commit in chunks ───────────────────────────────────────────────────
     for i in range(0, len(ops), _BATCH_SIZE):

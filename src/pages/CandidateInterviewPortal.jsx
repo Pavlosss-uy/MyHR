@@ -1,9 +1,21 @@
-import { useState, useEffect, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useParams } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import CameraFeed from "@/components/CameraFeed";
-import { validateInterviewToken, completeCandidateInterview, startInterviewFromToken, submitAnswer } from "@/lib/interviewApi";
+import VoiceWaveform from "@/components/VoiceWaveform";
+import AudioQuestionPlayer from "@/components/AudioQuestionPlayer";
+import { useMediaDevices } from "@/hooks/useMediaDevices";
+import { useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { useVAD } from "@/hooks/useVAD";
+import {
+    validateInterviewToken,
+    completeCandidateInterview,
+    startInterviewFromToken,
+    submitAnswer,
+    analyzeFrame,
+} from "@/lib/interviewApi";
 import {
     Brain,
     Mic,
@@ -14,51 +26,659 @@ import {
     Loader2,
     AlertCircle,
     Clock,
-    Volume2,
+    PhoneOff,
+    Send,
+    MessageSquare,
     ArrowRight,
 } from "lucide-react";
 
 /**
- * Public candidate interview portal — no authentication required.
- * Token-based access from HR invitation email.
- * Key design constraint: NO report shown to candidate after completion.
+ * Public candidate interview portal — token-based, no auth required.
  *
- * Camera is requested when the interview starts (not on the welcome screen)
- * so the permission prompt doesn't surprise the candidate before they've read
- * the instructions.
+ * Design constraints:
+ *  - NO score, rating, or per-question feedback shown to the candidate.
+ *  - Proctoring runs silently; alerts are NOT surfaced to the candidate.
+ *  - Completion navigates to a thank-you screen, NOT a feedback report.
+ *
+ * Architecture: The outer component handles phases (loading/welcome/completed/error).
+ * The inner EnterpriseInterviewRoom mounts ONLY during the interview, which lets
+ * useMediaDevices and useVAD request permissions at the right moment (after the
+ * user has clicked "Begin Interview") rather than on the welcome screen.
  */
+
+// Aggregate per-frame proctor buffer for one answer (mirrors models/proctor.aggregate)
+function aggregateProctoring(frames) {
+    if (!frames || frames.length === 0) {
+        return { face_absent_pct: 0, looking_away_pct: 0, multiple_faces_detected: false, frames_analyzed: 0, suspicious: false };
+    }
+    const total   = frames.length;
+    const present = frames.filter((f) => f.face_present);
+    return {
+        face_absent_pct:         +((total - present.length) / total).toFixed(3),
+        looking_away_pct:        +(present.filter((f) => f.looking_away).length / total).toFixed(3),
+        multiple_faces_detected: frames.some((f) => f.multiple_faces),
+        frames_analyzed:         total,
+        suspicious:              frames.some((f) => f.multiple_faces) || (total - present.length) / total > 0.20,
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inner component — mounts only when interview is active
+// Uses the same hooks as InterviewRoom so camera/VAD/mic behave identically.
+// ─────────────────────────────────────────────────────────────────────────────
+const EnterpriseInterviewRoom = ({
+    token,
+    sessionId,
+    initialQuestion,
+    initialAudioUrl,
+    maxQuestionsInit,
+    onComplete,
+}) => {
+    // ── Media devices (requests camera+mic on mount — correct here) ──────────
+    const {
+        videoRef, stream, audioStream,
+        isCameraOn, isMicOn,
+        toggleCamera, toggleMic,
+        error: mediaError,
+    } = useMediaDevices();
+
+    const { isRecording, startRecording, stopRecording } = useAudioRecorder(stream);
+    const { isPlaying, speakQuestion, stopSpeaking }     = useAudioPlayer();
+    const { vadBlob, clearBlob, userSpeaking: vadSpeaking, listening: vadListening, setVADPaused } = useVAD();
+
+    // ── Interview state ──────────────────────────────────────────────────────
+    const [currentQuestion, setCurrentQuestion] = useState(initialQuestion);
+    const [audioUrl,        setAudioUrl]        = useState(initialAudioUrl);
+    const [questionNumber,  setQuestionNumber]  = useState(1);
+    const [maxQuestions,    setMaxQuestions]    = useState(maxQuestionsInit);
+    const [messages,        setMessages]        = useState([{ role: "ai", text: initialQuestion }]);
+    const [isSubmitting,    setIsSubmitting]    = useState(false);
+    const [isEnding,        setIsEnding]        = useState(false);
+    const [submitError,     setSubmitError]     = useState("");
+
+    // ── Timers ───────────────────────────────────────────────────────────────
+    const [elapsed,          setElapsed]          = useState(0);
+    const [recordingElapsed, setRecordingElapsed] = useState(0);
+
+    // ── Backend TTS audio ────────────────────────────────────────────────────
+    const audioRef = useRef(null);
+    const [isBackendPlaying, setIsBackendPlaying] = useState(false);
+
+    // ── Proctoring (silent) ──────────────────────────────────────────────────
+    const canvasRef        = useRef(null);
+    const proctorBufferRef = useRef([]);
+
+    // ── Refs ─────────────────────────────────────────────────────────────────
+    const transcriptRef       = useRef(null);
+    const evaluationsRef      = useRef([]);
+    const currentQuestionRef  = useRef(initialQuestion);
+
+    const fmt = (secs) => {
+        const m = Math.floor(secs / 60).toString().padStart(2, "0");
+        const s = (secs % 60).toString().padStart(2, "0");
+        return `${m}:${s}`;
+    };
+
+    useEffect(() => { currentQuestionRef.current = currentQuestion; }, [currentQuestion]);
+
+    // ── Timers ───────────────────────────────────────────────────────────────
+    useEffect(() => {
+        const t = setInterval(() => setElapsed((s) => s + 1), 1000);
+        return () => clearInterval(t);
+    }, []);
+
+    useEffect(() => {
+        let t;
+        if (isRecording) {
+            t = setInterval(() => setRecordingElapsed((s) => s + 1), 1000);
+        } else {
+            setRecordingElapsed(0);
+        }
+        return () => clearInterval(t);
+    }, [isRecording]);
+
+    // ── Auto-scroll transcript ───────────────────────────────────────────────
+    useEffect(() => {
+        if (transcriptRef.current) {
+            transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+        }
+    }, [messages]);
+
+    // ── Auto-play TTS when question changes ─────────────────────────────────
+    useEffect(() => {
+        if (!currentQuestion) return;
+        stopSpeaking();
+        if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.currentTime = 0;
+            setIsBackendPlaying(false);
+        }
+        if (audioUrl && audioRef.current) {
+            audioRef.current.src = audioUrl;
+            audioRef.current.play().catch(() => speakQuestion(currentQuestion));
+        } else {
+            const id = setTimeout(() => speakQuestion(currentQuestion), 500);
+            return () => clearTimeout(id);
+        }
+    }, [audioUrl, currentQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ── Mute VAD while TTS is playing (same as InterviewRoom) ───────────────
+    useEffect(() => {
+        const ttsActive = isBackendPlaying || isPlaying;
+        if (ttsActive) {
+            setVADPaused(true);
+        } else {
+            const t = setTimeout(() => setVADPaused(false), 400);
+            return () => clearTimeout(t);
+        }
+    }, [isBackendPlaying, isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ── Silent proctoring — frame every 2 s ─────────────────────────────────
+    useEffect(() => {
+        if (!isCameraOn || mediaError) return;
+        const interval = setInterval(async () => {
+            const video  = videoRef.current;
+            const canvas = canvasRef.current;
+            if (!video || !canvas || video.readyState < 2) return;
+            canvas.width  = 640;
+            canvas.height = 480;
+            canvas.getContext("2d").drawImage(video, 0, 0, 640, 480);
+            const base64 = canvas.toDataURL("image/jpeg", 0.75).split(",")[1];
+            try {
+                const result = await analyzeFrame(base64);
+                proctorBufferRef.current.push(result);
+            } catch { /* silent */ }
+        }, 2000);
+        return () => clearInterval(interval);
+    }, [isCameraOn, mediaError]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ── Core submit ──────────────────────────────────────────────────────────
+    const _doSubmit = useCallback(async (audioBlob) => {
+        setIsSubmitting(true);
+        setSubmitError("");
+        stopSpeaking();
+        if (audioRef.current) { audioRef.current.pause(); setIsBackendPlaying(false); }
+
+        const integrity = aggregateProctoring(proctorBufferRef.current);
+        proctorBufferRef.current = [];
+
+        try {
+            const result = await submitAnswer(sessionId, audioBlob, integrity);
+
+            if (result.transcription) {
+                setMessages((prev) => [...prev, { role: "user", text: result.transcription }]);
+            }
+
+            if (result.status === "retry") {
+                setSubmitError(result.message || "Didn't catch that — please answer again.");
+                return;
+            }
+
+            // Accumulate evaluations (score is never shown to candidate)
+            evaluationsRef.current = [
+                ...evaluationsRef.current,
+                {
+                    question: currentQuestionRef.current,
+                    answer:   result.transcription || "",
+                    score:    result.feedback?.score || 0,
+                },
+            ];
+
+            if (result.status === "completed" || questionNumber >= maxQuestions) {
+                const closing = result.closing_message
+                    || "Thank you for completing the interview. Your responses have been submitted to the hiring team.";
+                setMessages((prev) => [...prev, { role: "ai", text: closing }]);
+
+                // Persist to Firestore (fire-and-forget — error is non-fatal)
+                try {
+                    const evals    = evaluationsRef.current;
+                    const avgScore = evals.length > 0
+                        ? evals.reduce((s, e) => s + (e.score || 0), 0) / evals.length
+                        : 0;
+                    await completeCandidateInterview(token, sessionId, avgScore, {
+                        evaluations: evals,
+                        summary:    result.rich_report?.summary    || "",
+                        strengths:  result.rich_report?.strengths  || [],
+                        weaknesses: result.rich_report?.weaknesses || [],
+                    });
+                } catch (e) {
+                    console.error("Failed to save interview results:", e);
+                }
+
+                // Play closing TTS, then hand off to outer component
+                const estimatedMs = Math.min(10000, Math.max(3000, closing.length * 55));
+                let done = false;
+                const goComplete = () => { if (done) return; done = true; onComplete(); };
+
+                if (result.closing_audio_url && audioRef.current) {
+                    const cap = setTimeout(goComplete, 12000);
+                    audioRef.current.onended = () => { clearTimeout(cap); setTimeout(goComplete, 600); };
+                    audioRef.current.onerror = () => { clearTimeout(cap); speakQuestion(closing); setTimeout(goComplete, estimatedMs); };
+                    audioRef.current.src = result.closing_audio_url;
+                    audioRef.current.play().catch(() => { clearTimeout(cap); speakQuestion(closing); setTimeout(goComplete, estimatedMs); });
+                } else {
+                    speakQuestion(closing);
+                    setTimeout(goComplete, estimatedMs);
+                }
+            } else {
+                const nextQ = result.next_question || result.question || "";
+                setCurrentQuestion(nextQ);
+                setAudioUrl(result.audio_url || null);
+                if (result.question_number != null) setQuestionNumber(result.question_number);
+                else setQuestionNumber((n) => n + 1);
+                if (result.max_questions != null) setMaxQuestions(result.max_questions);
+                setMessages((prev) => [...prev, { role: "ai", text: nextQ }]);
+            }
+        } catch (err) {
+            setSubmitError(err.message || "Failed to submit. Please try again.");
+        } finally {
+            setIsSubmitting(false);
+        }
+    }, [sessionId, questionNumber, maxQuestions, token, stopSpeaking, onComplete]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ── Manual submit (mic button + Space) ──────────────────────────────────
+    const handleToggleRecording = useCallback(async () => {
+        if (isSubmitting || isRecording) return;
+        setSubmitError("");
+        try {
+            await startRecording();
+        } catch (err) {
+            const msg = err.name === "NotAllowedError"
+                ? "Microphone permission denied. Please allow access and try again."
+                : `Could not start recording: ${err.message}`;
+            setSubmitError(msg);
+        }
+    }, [isRecording, isSubmitting, startRecording]);
+
+    const handleSubmitAnswer = useCallback(async () => {
+        if (!isRecording || !sessionId || isSubmitting) return;
+        try {
+            const audioBlob = await stopRecording();
+            if (!audioBlob) throw new Error("No audio recorded.");
+            await _doSubmit(audioBlob);
+        } catch (err) {
+            if (!isSubmitting) {
+                setSubmitError(err.message || "Failed to submit. Please try again.");
+                setIsSubmitting(false);
+            }
+        }
+    }, [isRecording, sessionId, isSubmitting, stopRecording, _doSubmit]);
+
+    // ── VAD auto-submit ──────────────────────────────────────────────────────
+    useEffect(() => {
+        if (!vadBlob || isSubmitting || !sessionId || isRecording) return;
+        const blob = vadBlob;
+        clearBlob();
+        _doSubmit(blob);
+    }, [vadBlob]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ── End early ────────────────────────────────────────────────────────────
+    const handleEndInterview = useCallback(async () => {
+        if (isEnding) return;
+        setIsEnding(true);
+        stopSpeaking();
+        if (audioRef.current) { audioRef.current.pause(); setIsBackendPlaying(false); }
+        if (isRecording) await stopRecording();
+
+        try {
+            const evals    = evaluationsRef.current;
+            const avgScore = evals.length > 0
+                ? evals.reduce((s, e) => s + (e.score || 0), 0) / evals.length
+                : 0;
+            await completeCandidateInterview(token, sessionId, avgScore, {
+                evaluations: evals, summary: "", strengths: [], weaknesses: [],
+            });
+        } catch { /* non-fatal */ }
+        onComplete();
+    }, [isEnding, isRecording, sessionId, token, stopSpeaking, stopRecording, onComplete]);
+
+    // ── Space bar shortcut ───────────────────────────────────────────────────
+    useEffect(() => {
+        const handler = (e) => {
+            if (e.code !== "Space" || e.target.tagName === "BUTTON") return;
+            e.preventDefault();
+            if (isRecording) handleSubmitAnswer();
+            else handleToggleRecording();
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [isRecording, handleSubmitAnswer, handleToggleRecording]);
+
+    // ── Derived UI state ─────────────────────────────────────────────────────
+    const progressPct = Math.min(((questionNumber - 1) / maxQuestions) * 100, 100);
+
+    const statusLabel = isSubmitting
+        ? "Saving and analysing response…"
+        : isRecording
+        ? "Recording — press Submit when done"
+        : vadSpeaking
+        ? "Speaking detected — auto-submitting when you stop…"
+        : vadListening
+        ? "Listening… speak your answer"
+        : isMicOn
+        ? "Tap the mic to start your answer"
+        : "Microphone is muted";
+
+    const statusDot = isRecording
+        ? "bg-destructive animate-pulse"
+        : isMicOn
+        ? "bg-mint animate-pulse"
+        : "bg-destructive";
+
+    // ── Render ───────────────────────────────────────────────────────────────
+    return (
+        <div className="h-screen overflow-hidden bg-room flex flex-col">
+
+            {/* Hidden TTS audio element */}
+            <audio
+                ref={audioRef}
+                className="hidden"
+                onPlay={() => setIsBackendPlaying(true)}
+                onPause={() => setIsBackendPlaying(false)}
+                onEnded={() => setIsBackendPlaying(false)}
+            />
+            {/* Hidden canvas for silent frame capture */}
+            <canvas ref={canvasRef} className="hidden" />
+
+            {/* ── TOP BAR ───────────────────────────────────────────────────── */}
+            <header className="flex flex-col shrink-0 border-b border-room-border bg-room-surface/50 backdrop-blur-sm">
+                <div className="h-1 w-full bg-room-border">
+                    <motion.div
+                        className="h-full gradient-cobalt"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${progressPct}%` }}
+                        transition={{ duration: 0.5 }}
+                    />
+                </div>
+
+                <div className="flex items-center justify-between px-6 py-3">
+                    <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg gradient-cobalt flex items-center justify-center">
+                            <Brain className="w-4 h-4 text-primary-foreground" />
+                        </div>
+                        <span className="text-sm font-bold text-primary-foreground/90">
+                            My<span className="text-cobalt-light">HR</span>
+                        </span>
+                        <span className="hidden sm:inline text-xs text-primary-foreground/40 ml-1">
+                            — Live Interview
+                        </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        {isRecording && (
+                            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-destructive/10 border border-destructive/20">
+                                <div className="w-2 h-2 rounded-full bg-destructive animate-pulse" />
+                                <span className="text-xs font-medium text-destructive">
+                                    REC {fmt(recordingElapsed)}
+                                </span>
+                            </div>
+                        )}
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-room-surface border border-room-border">
+                            <Clock className="w-3.5 h-3.5 text-cobalt-lighter" />
+                            <span className="text-sm font-mono font-medium text-primary-foreground/80">
+                                {fmt(elapsed)}
+                            </span>
+                        </div>
+                        <div className="px-3 py-1.5 rounded-lg bg-room-surface border border-room-border">
+                            <span className="text-xs text-muted-foreground">
+                                Q{" "}
+                                <span className="font-semibold text-primary-foreground">{questionNumber}</span>
+                                <span className="text-primary-foreground/40 ml-1">of {maxQuestions}</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            {/* ── SPLIT BODY ────────────────────────────────────────────────── */}
+            <div className="flex-1 min-h-0 grid lg:grid-cols-[5fr_7fr] overflow-hidden">
+
+                {/* ══ LEFT: Camera + Controls ══════════════════════════════════ */}
+                <div className="flex flex-col p-4 gap-3 border-b lg:border-b-0 lg:border-r border-room-border overflow-hidden bg-room-surface/10">
+
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.96 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ duration: 0.5 }}
+                        className="relative flex-1 min-h-0 rounded-xl overflow-hidden"
+                    >
+                        <div className="absolute inset-0">
+                            <CameraFeed
+                                videoRef={videoRef}
+                                isCameraOn={isCameraOn}
+                                error={mediaError}
+                                proctorAlert={null}
+                            />
+                        </div>
+                    </motion.div>
+
+                    <AnimatePresence>
+                        {submitError && (
+                            <motion.div
+                                initial={{ opacity: 0, y: -6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0 }}
+                                className="flex items-center gap-2 px-3 py-2 rounded-xl bg-destructive/10 border border-destructive/20 shrink-0"
+                            >
+                                <AlertCircle className="w-4 h-4 text-destructive shrink-0" />
+                                <p className="text-xs text-destructive">{submitError}</p>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
+                    {/* Controls row */}
+                    <div className="flex items-center justify-center gap-3 shrink-0">
+                        {/* Camera toggle */}
+                        <button
+                            onClick={toggleCamera}
+                            title={isCameraOn ? "Turn off camera" : "Turn on camera"}
+                            className={`w-11 h-11 rounded-full flex items-center justify-center transition-all ${
+                                isCameraOn
+                                    ? "bg-room-surface border border-room-border text-primary-foreground/70 hover:bg-room-border"
+                                    : "bg-destructive/15 border border-destructive/30 text-destructive hover:bg-destructive/25"
+                            }`}
+                        >
+                            {isCameraOn ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
+                        </button>
+
+                        {/* Mic — reflects manual recording OR VAD speech detection */}
+                        <button
+                            onClick={handleToggleRecording}
+                            disabled={isSubmitting || !isMicOn}
+                            title={
+                                isRecording ? "Recording — press Submit to send"
+                                    : vadSpeaking ? "Listening to your answer…"
+                                    : "Start recording"
+                            }
+                            className={`w-14 h-14 rounded-full flex items-center justify-center transition-all disabled:opacity-50 ${
+                                isRecording
+                                    ? "bg-destructive/20 border-2 border-destructive text-destructive"
+                                    : vadSpeaking
+                                    ? "bg-destructive/20 border-2 border-destructive text-destructive animate-pulse"
+                                    : vadListening
+                                    ? "gradient-cobalt shadow-cobalt text-primary-foreground ring-2 ring-mint/50"
+                                    : "gradient-cobalt shadow-cobalt text-primary-foreground hover:brightness-110"
+                            }`}
+                        >
+                            {isSubmitting ? (
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                            ) : isRecording ? (
+                                <div className="w-5 h-5 rounded-sm bg-destructive" />
+                            ) : vadSpeaking ? (
+                                <Mic className="w-5 h-5 animate-pulse" />
+                            ) : (
+                                <Mic className="w-5 h-5" />
+                            )}
+                        </button>
+
+                        {/* Submit (visible while recording) */}
+                        <AnimatePresence>
+                            {isRecording && (
+                                <motion.button
+                                    key="submit"
+                                    initial={{ opacity: 0, scale: 0.8 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.8 }}
+                                    onClick={handleSubmitAnswer}
+                                    disabled={isSubmitting}
+                                    title="Submit answer (Space)"
+                                    className="w-11 h-11 rounded-full flex items-center justify-center bg-mint/20 border border-mint/30 text-mint hover:bg-mint/30 transition-all disabled:opacity-50"
+                                >
+                                    {isSubmitting ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                        <Send className="w-4 h-4" />
+                                    )}
+                                </motion.button>
+                            )}
+                        </AnimatePresence>
+
+                        {/* Mic toggle */}
+                        <button
+                            onClick={toggleMic}
+                            title={isMicOn ? "Mute microphone" : "Unmute microphone"}
+                            className={`w-11 h-11 rounded-full flex items-center justify-center transition-all ${
+                                isMicOn
+                                    ? "bg-room-surface border border-room-border text-primary-foreground/70 hover:bg-room-border"
+                                    : "bg-destructive/15 border border-destructive/30 text-destructive hover:bg-destructive/25"
+                            }`}
+                        >
+                            {isMicOn ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                        </button>
+
+                        {/* End interview */}
+                        <button
+                            onClick={handleEndInterview}
+                            disabled={isEnding}
+                            title="End interview"
+                            className="w-11 h-11 rounded-full flex items-center justify-center bg-destructive/10 border border-destructive/20 text-destructive hover:bg-destructive/20 transition-all disabled:opacity-50"
+                        >
+                            {isEnding ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                                <PhoneOff className="w-4 h-4" />
+                            )}
+                        </button>
+                    </div>
+
+                    {/* Status hint */}
+                    <div className="flex items-center justify-center gap-2 shrink-0 pb-1">
+                        <div className={`w-2 h-2 rounded-full transition-colors ${statusDot}`} />
+                        <span className="text-xs text-primary-foreground/50 text-center">
+                            {statusLabel}
+                        </span>
+                    </div>
+                </div>
+
+                {/* ══ RIGHT: Question + Waveform + Transcript ══════════════════ */}
+                <div className="flex flex-col p-4 gap-3 overflow-hidden">
+
+                    {/* Question player */}
+                    <div className="shrink-0">
+                        <AnimatePresence mode="wait">
+                            <AudioQuestionPlayer
+                                key={questionNumber}
+                                question={currentQuestion}
+                                questionNumber={questionNumber}
+                                isPlaying={isPlaying || isBackendPlaying}
+                                onTogglePlay={() => {
+                                    if (isPlaying || isBackendPlaying) {
+                                        stopSpeaking();
+                                        if (audioRef.current) audioRef.current.pause();
+                                        setIsBackendPlaying(false);
+                                    } else {
+                                        if (audioUrl && audioRef.current) {
+                                            audioRef.current.currentTime = 0;
+                                            audioRef.current.play().catch(() => speakQuestion(currentQuestion));
+                                        } else {
+                                            speakQuestion(currentQuestion);
+                                        }
+                                    }
+                                }}
+                                onReplay={() => {
+                                    stopSpeaking();
+                                    if (audioUrl && audioRef.current) {
+                                        audioRef.current.pause();
+                                        audioRef.current.currentTime = 0;
+                                        audioRef.current.play().catch(() => speakQuestion(currentQuestion));
+                                    } else {
+                                        speakQuestion(currentQuestion);
+                                    }
+                                }}
+                                audioUrl={audioUrl}
+                            />
+                        </AnimatePresence>
+                    </div>
+
+                    {/* Voice waveform */}
+                    <div className="shrink-0">
+                        <VoiceWaveform
+                            isActive={isMicOn && (isRecording || vadSpeaking)}
+                            audioStream={isMicOn ? audioStream : null}
+                        />
+                    </div>
+
+                    {/* Transcript */}
+                    {messages.length > 0 && (
+                        <div className="flex-1 min-h-0 flex flex-col rounded-xl bg-room-surface/40 border border-room-border overflow-hidden">
+                            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-room-border shrink-0">
+                                <MessageSquare className="w-3.5 h-3.5 text-cobalt-lighter" />
+                                <span className="text-xs font-semibold text-primary-foreground/50">
+                                    Transcript
+                                </span>
+                            </div>
+                            <div ref={transcriptRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+                                {messages.map((msg, idx) => (
+                                    <motion.div
+                                        key={idx}
+                                        initial={{ opacity: 0, y: 4 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        transition={{ duration: 0.25 }}
+                                        className={`flex gap-2 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
+                                    >
+                                        <div className={`w-5 h-5 rounded-full shrink-0 mt-0.5 flex items-center justify-center text-[9px] font-bold ${
+                                            msg.role === "ai"
+                                                ? "gradient-cobalt text-primary-foreground"
+                                                : "bg-room-border text-primary-foreground/60"
+                                        }`}>
+                                            {msg.role === "ai" ? "AI" : "U"}
+                                        </div>
+                                        <div className={`max-w-[85%] px-3 py-2 rounded-xl text-xs leading-relaxed ${
+                                            msg.role === "ai"
+                                                ? "bg-cobalt/10 text-cobalt-lighter rounded-tl-none"
+                                                : "bg-room-surface text-primary-foreground/70 rounded-tr-none"
+                                        }`}>
+                                            {msg.text}
+                                        </div>
+                                    </motion.div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Outer component — handles token validation and phase machine
+// Does NOT use any media hooks (no premature permission prompts)
+// ─────────────────────────────────────────────────────────────────────────────
 const CandidateInterviewPortal = () => {
     const { token } = useParams();
-    useNavigate();
 
-    // State machine: "loading" → "welcome" → "interview" → "completed" | "error"
-    const [phase, setPhase] = useState("loading");
-    const [error, setError] = useState("");
+    const [phase,   setPhase]   = useState("loading");
+    const [error,   setError]   = useState("");
+    const [context, setContext] = useState(null);
 
-    // Interview context
-    const [context, setContext]             = useState(null);
-    const [sessionId, setSessionId]         = useState(null);
-    const [currentQuestion, setCurrentQuestion] = useState("");
-    const [questionNumber, setQuestionNumber]   = useState(0);
-    const [maxQuestions, setMaxQuestions]       = useState(5);
-    const [audioUrl, setAudioUrl]               = useState(null);
+    // Passed to EnterpriseInterviewRoom as initial props
+    const [sessionId,     setSessionId]     = useState(null);
+    const [initQuestion,  setInitQuestion]  = useState("");
+    const [initAudioUrl,  setInitAudioUrl]  = useState(null);
+    const [initMaxQ,      setInitMaxQ]      = useState(5);
 
-    // Recording state
-    const [isRecording, setIsRecording]     = useState(false);
-    const [mediaRecorder, setMediaRecorder] = useState(null);
-    const [isSubmitting, setIsSubmitting]   = useState(false);
-
-    // Camera state (video-only stream, separate from the audio recording)
-    const videoRef        = useRef(null);
-    const [cameraStream, setCameraStream]   = useState(null);
-    const [isCameraOn, setIsCameraOn]       = useState(false);
-    const [cameraError, setCameraError]     = useState(null);
-    const [isMicOn, setIsMicOn]             = useState(true);
-
-    // Collected evaluations for the final report
-    const [evaluations, setEvaluations] = useState([]);
-
-    // Validate token on mount
+    // Validate token
     useEffect(() => {
         (async () => {
             try {
@@ -72,47 +692,14 @@ const CandidateInterviewPortal = () => {
         })();
     }, [token]);
 
-    // Bind video element whenever the camera stream changes
-    useEffect(() => {
-        if (videoRef.current && cameraStream) {
-            videoRef.current.srcObject = cameraStream;
-        }
-    }, [cameraStream]);
-
-    // Clean up camera tracks when interview ends
-    useEffect(() => {
-        if (phase === "completed" || phase === "error") {
-            if (cameraStream) {
-                cameraStream.getTracks().forEach((t) => t.stop());
-                setCameraStream(null);
-                setIsCameraOn(false);
-            }
-        }
-    }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    // Start the interview using the candidate's stored CV + JD from Firestore
     const handleStart = async () => {
         setPhase("loading");
-
-        // Request camera access (video-only) — gracefully degrade if denied
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
-            });
-            setCameraStream(stream);
-            setIsCameraOn(true);
-        } catch {
-            setCameraError("Camera permission denied. The interview will continue without video.");
-        }
-
-        // Start the interview session
         try {
             const startData = await startInterviewFromToken(token);
             setSessionId(startData.session_id);
-            setCurrentQuestion(startData.question || "Tell me about yourself.");
-            setAudioUrl(startData.audio_url || null);
-            setMaxQuestions(startData.max_questions || 5);
-            setQuestionNumber(1);
+            setInitQuestion(startData.question || "Tell me about yourself.");
+            setInitAudioUrl(startData.audio_url || null);
+            setInitMaxQ(startData.max_questions || 5);
             setPhase("interview");
         } catch (err) {
             setError(err.message || "Failed to start the interview. Please try again.");
@@ -120,91 +707,7 @@ const CandidateInterviewPortal = () => {
         }
     };
 
-    // Toggle camera on/off
-    const toggleCamera = () => {
-        if (!cameraStream) return;
-        cameraStream.getVideoTracks().forEach((t) => {
-            t.enabled = !t.enabled;
-        });
-        setIsCameraOn((v) => !v);
-    };
-
-    // Recording controls — audio-only, separate from the video stream
-    const startRecording = async () => {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const recorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
-            const chunks = [];
-
-            recorder.ondataavailable = (e) => chunks.push(e.data);
-            recorder.onstop = async () => {
-                stream.getTracks().forEach((t) => t.stop());
-                const blob = new Blob(chunks, { type: "audio/webm" });
-                await handleSubmitAnswer(blob);
-            };
-
-            recorder.start();
-            setMediaRecorder(recorder);
-            setIsRecording(true);
-            setIsMicOn(true);
-        } catch {
-            setError("Microphone access is required for the interview.");
-        }
-    };
-
-    const stopRecording = () => {
-        if (mediaRecorder && mediaRecorder.state === "recording") {
-            mediaRecorder.stop();
-            setIsRecording(false);
-        }
-    };
-
-    // Submit answer
-    const handleSubmitAnswer = async (audioBlob) => {
-        setIsSubmitting(true);
-        try {
-            const result = await submitAnswer(sessionId, audioBlob);
-
-            const newEntry = {
-                question: currentQuestion,
-                answer: result.transcription || "",
-                score: result.feedback?.score || 0,
-            };
-            const updatedEvals = [...evaluations, newEntry];
-            setEvaluations(updatedEvals);
-
-            if (result.status === "completed" || questionNumber >= maxQuestions) {
-                const avgScore = updatedEvals.length > 0
-                    ? updatedEvals.reduce((sum, e) => sum + (e.score || 0), 0) / updatedEvals.length
-                    : 0;
-
-                try {
-                    await completeCandidateInterview(token, sessionId, avgScore, {
-                        evaluations: updatedEvals,
-                        summary:    result.rich_report?.summary    || "",
-                        strengths:  result.rich_report?.strengths  || [],
-                        weaknesses: result.rich_report?.weaknesses || [],
-                    });
-                } catch (completeErr) {
-                    console.error("Failed to save interview results:", completeErr);
-                }
-
-                setPhase("completed");
-            } else {
-                setCurrentQuestion(result.next_question || result.question || "");
-                setAudioUrl(result.audio_url || null);
-                setQuestionNumber((n) => n + 1);
-                setMaxQuestions(result.max_questions || maxQuestions);
-            }
-        } catch (err) {
-            setError(`Answer submission failed: ${err.message}`);
-        } finally {
-            setIsSubmitting(false);
-        }
-    };
-
-    // ─── RENDER ────────────────────────────────────────────────────────────────
-
+    // ── Error ─────────────────────────────────────────────────────────────────
     if (phase === "error") {
         const isExpired = error.includes("expired");
         return (
@@ -227,6 +730,7 @@ const CandidateInterviewPortal = () => {
         );
     }
 
+    // ── Loading ───────────────────────────────────────────────────────────────
     if (phase === "loading") {
         return (
             <div className="min-h-screen flex items-center justify-center bg-background">
@@ -235,18 +739,15 @@ const CandidateInterviewPortal = () => {
         );
     }
 
+    // ── Welcome ───────────────────────────────────────────────────────────────
     if (phase === "welcome") {
         return (
             <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
                 <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,hsl(221_83%_53%/0.06),transparent_55%)]" />
                 <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom_right,hsl(160_60%_45%/0.05),transparent_55%)]" />
 
-                <motion.div
-                    initial={{ opacity: 0, y: 20, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{ duration: 0.5 }}
-                    className="relative w-full max-w-lg"
-                >
+                <motion.div initial={{ opacity: 0, y: 20, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+                    transition={{ duration: 0.5 }} className="relative w-full max-w-lg">
                     <div className="bg-card rounded-2xl border border-border p-8 lg:p-10 space-y-6 shadow-cobalt">
                         <div className="text-center space-y-3">
                             <div className="flex items-center justify-center gap-2.5">
@@ -297,135 +798,21 @@ const CandidateInterviewPortal = () => {
         );
     }
 
+    // ── Interview — render inner component (mounts media hooks now) ───────────
     if (phase === "interview") {
-        const progressPct = Math.min(((questionNumber - 1) / maxQuestions) * 100, 100);
-
         return (
-            <div className="min-h-screen bg-background">
-                {/* Progress bar */}
-                <div className="fixed top-0 left-0 right-0 z-50 h-1 bg-muted">
-                    <motion.div
-                        className="h-full gradient-cobalt"
-                        initial={{ width: 0 }}
-                        animate={{ width: `${progressPct}%` }}
-                        transition={{ duration: 0.5 }}
-                    />
-                </div>
-
-                <div className="pt-6 pb-12 min-h-screen flex flex-col items-center justify-center p-6 relative">
-                    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,hsl(222_80%_6%/0.03),transparent_70%)]" />
-
-                    <div className="relative w-full max-w-3xl space-y-4">
-                        {/* Header */}
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2.5">
-                                <div className="w-8 h-8 rounded-lg gradient-cobalt flex items-center justify-center">
-                                    <Brain className="w-4 h-4 text-primary-foreground" />
-                                </div>
-                                <span className="font-semibold text-foreground">
-                                    My<span className="text-gradient-cobalt">HR</span>
-                                </span>
-                            </div>
-                            <span className="text-sm font-medium text-muted-foreground">
-                                Question {questionNumber} of {maxQuestions}
-                            </span>
-                        </div>
-
-                        {/* Split layout: camera left, question right */}
-                        <div className="grid md:grid-cols-[2fr_3fr] gap-4">
-
-                            {/* Camera panel */}
-                            <div className="flex flex-col gap-3">
-                                <div className="aspect-[4/3] rounded-xl overflow-hidden">
-                                    <CameraFeed
-                                        videoRef={videoRef}
-                                        isCameraOn={isCameraOn && !!cameraStream}
-                                        error={cameraError}
-                                    />
-                                </div>
-
-                                {/* Camera error notice */}
-                                {cameraError && (
-                                    <p className="text-[11px] text-muted-foreground text-center leading-snug">
-                                        {cameraError}
-                                    </p>
-                                )}
-
-                                {/* Camera toggle — only if we have a stream */}
-                                {cameraStream && (
-                                    <button
-                                        onClick={toggleCamera}
-                                        className={`w-full flex items-center justify-center gap-2 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                                            isCameraOn
-                                                ? "bg-muted border-border text-muted-foreground hover:bg-muted/80"
-                                                : "bg-destructive/10 border-destructive/20 text-destructive hover:bg-destructive/20"
-                                        }`}
-                                    >
-                                        {isCameraOn
-                                            ? <><Camera className="w-3.5 h-3.5" /> Camera on</>
-                                            : <><CameraOff className="w-3.5 h-3.5" /> Camera off</>}
-                                    </button>
-                                )}
-                            </div>
-
-                            {/* Question + recording */}
-                            <motion.div
-                                key={questionNumber}
-                                initial={{ opacity: 0, y: 12 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                className="bg-card rounded-2xl border border-border p-6 space-y-6 shadow-sm flex flex-col"
-                            >
-                                <p className="text-base font-medium text-foreground leading-relaxed flex-1">
-                                    {currentQuestion}
-                                </p>
-
-                                {/* Audio playback */}
-                                {audioUrl && (
-                                    <div className="flex items-center gap-2 text-sm text-cobalt-light">
-                                        <Volume2 className="w-4 h-4" />
-                                        <audio src={audioUrl} autoPlay controls className="h-8 flex-1" />
-                                    </div>
-                                )}
-
-                                {/* Recording controls */}
-                                <div className="flex flex-col items-center gap-3 pt-2">
-                                    {isSubmitting ? (
-                                        <div className="flex flex-col items-center gap-2">
-                                            <Loader2 className="w-10 h-10 animate-spin text-cobalt" />
-                                            <p className="text-sm text-muted-foreground">Processing your answer…</p>
-                                        </div>
-                                    ) : isRecording ? (
-                                        <div className="flex flex-col items-center gap-2">
-                                            <button
-                                                onClick={stopRecording}
-                                                className="relative w-16 h-16 rounded-full bg-destructive flex items-center justify-center shadow-lg hover:bg-destructive/90 transition-colors"
-                                            >
-                                                <div className="absolute inset-0 rounded-full bg-destructive/30 animate-ping" />
-                                                <MicOff className="w-7 h-7 text-white relative z-10" />
-                                            </button>
-                                            <p className="text-xs text-destructive font-medium">Recording — tap to stop</p>
-                                        </div>
-                                    ) : (
-                                        <div className="flex flex-col items-center gap-2">
-                                            <button
-                                                onClick={startRecording}
-                                                className="w-16 h-16 rounded-full gradient-cobalt flex items-center justify-center shadow-cobalt-lg hover:shadow-cobalt transition-shadow"
-                                            >
-                                                <Mic className="w-7 h-7 text-white" />
-                                            </button>
-                                            <p className="text-xs text-muted-foreground">Tap the mic to answer</p>
-                                        </div>
-                                    )}
-                                </div>
-                            </motion.div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <EnterpriseInterviewRoom
+                token={token}
+                sessionId={sessionId}
+                initialQuestion={initQuestion}
+                initialAudioUrl={initAudioUrl}
+                maxQuestionsInit={initMaxQ}
+                onComplete={() => setPhase("completed")}
+            />
         );
     }
 
-    // Completed — NO report shown to candidate
+    // ── Completed — NO score, rating, or feedback shown to candidate ──────────
     if (phase === "completed") {
         return (
             <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">

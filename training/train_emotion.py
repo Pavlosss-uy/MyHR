@@ -229,12 +229,15 @@ def main():
     # --- 5-fold cross-validation ---
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     fold_weighted_f1s = []
+    best_fold_idx = -1
+    best_fold_f1  = -1.0
+    best_fold_cm  = None
 
     for fold, (train_idx, val_idx) in enumerate(
         skf.split(np.zeros(len(all_labels)), all_labels)
     ):
         print(f"\n{'='*60}")
-        print(f"  FOLD {fold+1}/5 (Running 1 fold for time efficiency)")
+        print(f"  FOLD {fold+1}/5")
         print(f"{'='*60}")
 
         train_loader = DataLoader(
@@ -248,20 +251,40 @@ def main():
 
         model = InterviewEmotionModel().to(device)
 
-        ckpt = checkpoint_path if fold == 0 else None
+        tmp_ckpt = f"models/checkpoints/emotion_fold{fold+1}_tmp.pt"
         fold_metrics, fold_cm = train_fold(
             model, train_loader, val_loader, device,
-            epochs=epochs, fold_tag=f"fold{fold+1}", checkpoint_path=ckpt
+            epochs=epochs, fold_tag=f"fold{fold+1}", checkpoint_path=tmp_ckpt
         )
 
         if fold_metrics:
-            fold_weighted_f1s.append(fold_metrics["weighted_f1"])
-            print(f"\n  Fold {fold+1} best weighted F1: {fold_metrics['weighted_f1']:.4f}")
+            f1 = fold_metrics["weighted_f1"]
+            fold_weighted_f1s.append(f1)
+            print(f"\n  Fold {fold+1} best weighted F1: {f1:.4f}")
             print(fold_metrics["report_str"])
 
-        # Save confusion matrix from fold 1 as the representative plot
-        if fold == 0 and fold_cm:
-            save_confusion_matrix(fold_cm, EMOTION_LABELS, cm_save_path)
+            if f1 > best_fold_f1:
+                best_fold_f1  = f1
+                best_fold_idx = fold
+                best_fold_cm  = fold_cm
+
+    # Promote best fold checkpoint to production path
+    if best_fold_idx >= 0:
+        import shutil
+        tmp_best = f"models/checkpoints/emotion_fold{best_fold_idx+1}_tmp.pt"
+        if os.path.exists(tmp_best):
+            shutil.copy2(tmp_best, checkpoint_path)
+            print(f"\n  Best fold: {best_fold_idx+1} (F1={best_fold_f1:.4f}) → promoted to {checkpoint_path}")
+
+    # Clean up per-fold temp checkpoints
+    for fold in range(5):
+        p = f"models/checkpoints/emotion_fold{fold+1}_tmp.pt"
+        if os.path.exists(p):
+            os.remove(p)
+
+    # Save confusion matrix from best fold
+    if best_fold_cm is not None:
+        save_confusion_matrix(best_fold_cm, EMOTION_LABELS, cm_save_path)
 
     if fold_weighted_f1s:
         mean_f1 = np.mean(fold_weighted_f1s)

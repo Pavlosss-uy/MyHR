@@ -1,11 +1,13 @@
+import logging
 import os
 import threading
 import torch
 import torch.nn as nn
 from sentence_transformers import SentenceTransformer
 
+logger = logging.getLogger(__name__)
+
 # --- 1. THE DEEP LEARNING ARCHITECTURE ---
-# RENAME: Changed from InterviewScorerMLP to CandidateScoringMLP to match your Registry
 class CandidateScoringMLP(nn.Module):
     def __init__(self, input_dim=1536): # 768(Q) + 768(A) — tone removed (was leaky proxy)
         super(CandidateScoringMLP, self).__init__()
@@ -19,7 +21,7 @@ class CandidateScoringMLP(nn.Module):
             nn.Linear(128, 32),
             nn.ReLU(),
             nn.Linear(32, 1),
-            nn.Sigmoid() 
+            nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -28,7 +30,7 @@ class CandidateScoringMLP(nn.Module):
 # --- 2. PURE EMBEDDING EXTRACTOR ---
 class EmbeddingExtractor:
     def __init__(self):
-        print("[AI] Loading Semantic Embedding Model for DL Scorer...")
+        logger.info("Loading Semantic Embedding Model for DL Scorer...")
         self.embedder = SentenceTransformer("all-mpnet-base-v2")
         self._cache: dict = {}  # Task 3.8 — in-process embedding cache
         self._cache_lock = threading.Lock()  # guards _cache against asyncio.to_thread races
@@ -56,28 +58,38 @@ class EmbeddingExtractor:
         if not answer or answer.strip() == "(No speech detected)":
             return torch.zeros(1, 1536)
 
-        # Convert words into semantic vectors (768 dims each)
         q_emb = self._encode_cached(question)
         a_emb = self._encode_cached(answer)
 
-        # Concatenate: 768 + 768 = 1536
         features = torch.cat([q_emb, a_emb], dim=0)
         return features.unsqueeze(0)
 
-# --- 3. INFERENCE PIPELINE ---
+
+# --- 3. SHARED SINGLETON (P7) ---
+# All modules should call get_shared_embedder() instead of creating their own
+# SentenceTransformer instance. This saves ~420 MB RAM per extra instance.
+_shared_embedding_extractor: "EmbeddingExtractor | None" = None
+
+def get_shared_embedder() -> "EmbeddingExtractor":
+    global _shared_embedding_extractor
+    if _shared_embedding_extractor is None:
+        _shared_embedding_extractor = EmbeddingExtractor()
+    return _shared_embedding_extractor
+
+
+# --- 4. INFERENCE PIPELINE ---
 class ScoringPipeline:
     def __init__(self):
-        # FIX: Ensure this matches the renamed class above
         self.model = CandidateScoringMLP(input_dim=1536)
-        self.extractor = EmbeddingExtractor()
-        
+        self.extractor = get_shared_embedder()
+
         checkpoint_path = os.path.join(os.path.dirname(__file__), 'checkpoints', 'scorer_v2.pt')
         if os.path.exists(checkpoint_path):
             self.model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
-            print("[OK] True Deep Learning Scoring Model (v2) Loaded Successfully!")
+            logger.info("[OK] True Deep Learning Scoring Model (v2) Loaded Successfully!")
         else:
-            print("[WARN] No trained v2 model found. Using random weights.")
-            
+            logger.warning("[WARN] No trained v2 model found. Using random weights.")
+
         self.model.eval()
 
     def predict_score(self, question: str, answer: str, tone_data: dict) -> int:
@@ -85,7 +97,7 @@ class ScoringPipeline:
             features = self.extractor.extract(question, answer, tone_data)
             score_tensor = self.model(features)
             score = int(score_tensor.item())
-            return min(max(score, 0), 100) 
+            return min(max(score, 0), 100)
 
 # Lazy singleton — import this module without triggering model loading.
 # Use ScoringPipeline() directly when you need the standalone pipeline.

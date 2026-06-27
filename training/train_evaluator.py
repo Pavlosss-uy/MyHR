@@ -17,6 +17,7 @@ Prerequisites:
     python training/generate_eval_data.py  (generates training data first)
 """
 
+import hashlib
 import os
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
@@ -44,6 +45,7 @@ from utils.trainer_logger import ExperimentLogger
 
 DATA_FILE = os.path.join(PROJECT_ROOT, "data", "eval_training_data.json")
 CHECKPOINT_PATH = os.path.join(PROJECT_ROOT, "models", "checkpoints", "evaluator_v1.pt")
+CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "embed_cache")
 
 # Training hyperparameters
 EPOCHS = 100
@@ -52,7 +54,9 @@ LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 0.01
 T_MAX = 50  # CosineAnnealing period
 EARLY_STOP_PATIENCE = 10
-VAL_SPLIT = 0.2
+# 70/15/15 split — held-out test set is excluded from training and early-stop selection
+TRAIN_SPLIT = 0.70
+VAL_SPLIT   = 0.15
 
 # Loss weights (must sum to 1.0)
 LOSS_WEIGHTS = {
@@ -63,6 +67,23 @@ LOSS_WEIGHTS = {
 
 # Random seed for reproducibility
 SEED = 42
+
+
+# ??? Embedding Cache ?????????????????????????????????????????????????????????
+
+def _cached_encode(embedder, texts: list, tag: str) -> np.ndarray:
+    """Encode texts with SentenceTransformer, using a file cache keyed by content hash."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    h = hashlib.md5("\n".join(texts).encode()).hexdigest()[:12]
+    cache_path = os.path.join(CACHE_DIR, f"{tag}_{h}.npy")
+    if os.path.exists(cache_path):
+        print(f"   [CACHE HIT] {tag} — loading from {os.path.basename(cache_path)}")
+        return np.load(cache_path)
+    embs = embedder.encode(
+        texts, convert_to_numpy=True, batch_size=32, show_progress_bar=True
+    ).astype(np.float32)
+    np.save(cache_path, embs)
+    return embs
 
 
 # ??? Data Loading ????????????????????????????????????????????????????????????
@@ -98,9 +119,7 @@ def load_data(data_path: str) -> tuple:
     print("   Re-encoding answers with all-mpnet-base-v2 (matches inference)...")
     _embedder = SentenceTransformer("all-mpnet-base-v2")
     answers = [s.get("answer", "") for s in samples]
-    features = _embedder.encode(
-        answers, convert_to_numpy=True, batch_size=32, show_progress_bar=True
-    ).astype(np.float32)
+    features = _cached_encode(_embedder, answers, "evaluator_answers")
 
     labels = {
         "relevance": np.array([s["relevance"] for s in samples], dtype=np.float32),
@@ -121,22 +140,25 @@ def load_data(data_path: str) -> tuple:
     return features, labels, quality_tiers
 
 
-def prepare_dataloaders(features, labels, quality_tiers, val_split=VAL_SPLIT, seed=SEED):
-    """Split data into train/val and create DataLoaders.
+def prepare_dataloaders(features, labels, quality_tiers, train_split=TRAIN_SPLIT, val_split=VAL_SPLIT, seed=SEED):
+    """Split data into train/val/test (70/15/15) and create DataLoaders.
 
     Uses WeightedRandomSampler on the training split so each quality tier
     is sampled at equal frequency regardless of raw class counts.  This
     directly addresses the 325 excellent / 10 poor imbalance in existing data.
+    The test split is returned separately and excluded from all training decisions.
     """
     np.random.seed(seed)
     n = len(features)
     indices = np.random.permutation(n)
-    val_size = int(n * val_split)
+    train_end = int(n * train_split)
+    val_end   = int(n * (train_split + val_split))
 
-    val_idx = indices[:val_size]
-    train_idx = indices[val_size:]
+    train_idx = indices[:train_end]
+    val_idx   = indices[train_end:val_end]
+    test_idx  = indices[val_end:]
 
-    print(f"\n? Train/Val split: {len(train_idx)}/{len(val_idx)}")
+    print(f"\nTrain/Val/Test split: {len(train_idx)}/{len(val_idx)}/{len(test_idx)}")
 
     # --- Build WeightedRandomSampler for training split ---
     from collections import Counter
@@ -163,11 +185,13 @@ def prepare_dataloaders(features, labels, quality_tiers, val_split=VAL_SPLIT, se
 
     train_ds = make_tensor_ds(train_idx)
     val_ds   = make_tensor_ds(val_idx)
+    test_ds  = make_tensor_ds(test_idx)
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler)
     val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False)
+    test_loader  = DataLoader(test_ds,  batch_size=BATCH_SIZE, shuffle=False)
 
-    return train_loader, val_loader, train_idx, val_idx
+    return train_loader, val_loader, test_loader, train_idx, val_idx, test_idx
 
 
 # ??? Training ????????????????????????????????????????????????????????????????
@@ -355,21 +379,23 @@ def main():
     print(f"   Trainable parameters: {trainable_params:,}")
 
     # Prepare data
-    train_loader, val_loader, _, val_idx = prepare_dataloaders(features, labels, quality_tiers)
+    train_loader, val_loader, test_loader, train_idx, val_idx, test_idx = prepare_dataloaders(features, labels, quality_tiers)
+
+    print(f"   Train: {len(train_idx)} | Val: {len(val_idx)} | Test: {len(test_idx)}")
 
     # Train
     model, best_epoch = train(model, train_loader, val_loader)
 
-    # Final evaluation
+    # Final evaluation on validation set
     print("\n" + "=" * 60)
-    print("  ? Final Evaluation on Validation Set")
+    print("  Final Evaluation on Validation Set")
     print("=" * 60)
 
     val_results = evaluate(model, val_loader)
 
     print(f"\n  Validation Loss: {val_results['loss']:.4f}")
     print(f"\n  Per-Head Metrics:")
-    print(f"  {'Head':<15} {'MSE':>8} {'Spearman ?':>12} {'p-value':>10} {'Target':>8}")
+    print(f"  {'Head':<15} {'MSE':>8} {'Spearman':>12} {'p-value':>10} {'Target':>8}")
     print(f"  {'-'*55}")
 
     target_met = True
@@ -377,15 +403,30 @@ def main():
         mse = val_results[f"{key}_mse"]
         rho = val_results[f"{key}_spearman"]
         p = val_results[f"{key}_spearman_p"]
-        status = "?" if rho > 0.65 else "??"
+        status = "OK" if rho > 0.65 else "LOW"
         if rho <= 0.65:
             target_met = False
         print(f"  {key:<15} {mse:>8.2f} {rho:>12.4f} {p:>10.4f} {status} > 0.65")
 
     if target_met:
-        print(f"\n  ? All heads exceed Spearman target of 0.65!")
+        print(f"\n  All heads exceed Spearman target of 0.65!")
     else:
-        print(f"\n  ??  Some heads below Spearman target. Consider more data or longer training.")
+        print(f"\n  Some heads below Spearman target. Consider more data or longer training.")
+
+    # Held-out TEST SET evaluation
+    print("\n" + "=" * 60)
+    print("  TEST SET Evaluation (held-out, never seen during training)")
+    print("=" * 60)
+
+    test_results = evaluate(model, test_loader)
+
+    print(f"\n  Test Loss: {test_results['loss']:.4f}")
+    for key in ["relevance", "clarity", "depth"]:
+        rho = test_results[f"{key}_spearman"]
+        mse = test_results[f"{key}_mse"]
+        print(f"  {key:<15} MSE={mse:.4f}  Spearman={rho:.4f}")
+    print(f"\nTEST SET — rel={test_results['relevance_spearman']:.4f}  "
+          f"cla={test_results['clarity_spearman']:.4f}  dep={test_results['depth_spearman']:.4f}")
 
     # MC Dropout uncertainty test (only if model supports it)
     if hasattr(model, "predict_with_uncertainty"):

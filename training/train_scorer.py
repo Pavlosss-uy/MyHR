@@ -17,6 +17,7 @@ Prerequisites:
     python training/generate_eval_data.py  (builds data/eval_training_data.json)
 """
 
+import hashlib
 import os
 import sys
 import json
@@ -32,6 +33,23 @@ from models.scoring_model import CandidateScoringMLP
 from training.metrics import regression_metrics, make_writer
 from utils.seeding import set_all_seeds
 from utils.trainer_logger import ExperimentLogger
+
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "embed_cache")
+
+
+def _cached_encode(embedder, texts: list, tag: str) -> np.ndarray:
+    """Encode texts with SentenceTransformer, using a file cache keyed by content hash."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    h = hashlib.md5("\n".join(texts).encode()).hexdigest()[:12]
+    cache_path = os.path.join(CACHE_DIR, f"{tag}_{h}.npy")
+    if os.path.exists(cache_path):
+        print(f"  [CACHE HIT] {tag} — loading from {os.path.basename(cache_path)}")
+        return np.load(cache_path)
+    embs = embedder.encode(texts, show_progress_bar=True, batch_size=16,
+                           convert_to_numpy=True).astype(np.float32)
+    np.save(cache_path, embs)
+    return embs
+
 
 def load_real_data(data_path: str):
     """
@@ -65,12 +83,10 @@ def load_real_data(data_path: str):
     questions = [s["question"] for s in valid]
     answers   = [s["answer"]   for s in valid]
 
-    print("Encoding questions...")
-    q_embs = embedder.encode(questions, show_progress_bar=True, batch_size=16,
-                              convert_to_numpy=True)
-    print("Encoding answers...")
-    a_embs = embedder.encode(answers,   show_progress_bar=True, batch_size=16,
-                              convert_to_numpy=True)
+    print("Encoding questions (cached)...")
+    q_embs = _cached_encode(embedder, questions, "scorer_questions")
+    print("Encoding answers (cached)...")
+    a_embs = _cached_encode(embedder, answers, "scorer_answers")
 
     X_list, y_list = [], []
     for i, s in enumerate(valid):
@@ -102,14 +118,19 @@ def train():
     set_all_seeds(42)
     X, y = load_real_data(data_path)
 
-    # 80/20 split
-    indices = torch.randperm(len(X))
-    split   = int(0.8 * len(X))
-    train_idx, val_idx = indices[:split], indices[split:]
+    # 70/15/15 split — test set held out entirely from training and early-stop selection
+    n = len(X)
+    perm = torch.randperm(n)
+    train_end = int(0.70 * n)
+    val_end   = int(0.85 * n)
+    train_idx = perm[:train_end]
+    val_idx   = perm[train_end:val_end]
+    test_idx  = perm[val_end:]
     X_train, y_train = X[train_idx], y[train_idx]
     X_val,   y_val   = X[val_idx],   y[val_idx]
+    X_test,  y_test  = X[test_idx],  y[test_idx]
 
-    print(f"\nTrain: {len(X_train)} | Val: {len(X_val)}")
+    print(f"\nTrain: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
 
     model     = CandidateScoringMLP(input_dim=1536)
     optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -177,6 +198,19 @@ def train():
     logger.finish()
     print(f"\n[OK] Training complete.  Best val loss: {best_val_loss:.4f}")
     print(f"     Checkpoint: {save_path}")
+
+    # --- Held-out TEST set evaluation ---
+    best_state = torch.load(save_path, weights_only=True)
+    model.load_state_dict(best_state)
+    model.eval()
+    with torch.no_grad():
+        test_preds = model(X_test) / 100.0
+        test_metrics = regression_metrics(
+            y_test.view(-1).tolist(),
+            test_preds.view(-1).tolist(),
+        )
+    print(f"\nTEST SET — MAE={test_metrics['mae']:.4f}  "
+          f"RMSE={test_metrics['rmse']:.4f}  Spearman={test_metrics['spearman_rho']:.4f}")
     print("\nNext step: the scorer is ready to use in agent.py (already wired).")
 
 

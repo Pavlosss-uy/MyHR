@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from typing import TypedDict, List, Literal, Dict
@@ -10,6 +11,8 @@ from models.feature_extractor import extractor
 from models.explainer import ModelExplainer
 from models.scoring_model import EmbeddingExtractor
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Lazy singleton — loaded once on first scored answer, not at import time
 _embedding_extractor: EmbeddingExtractor | None = None
@@ -87,6 +90,12 @@ MAX_QUESTIONS = 7   # Hard ceiling on questions per session
 # (in-zone 78.8% vs REINFORCE 64.9%); set DIFFICULTY_POLICY=reinforce for ablation.
 DIFFICULTY_POLICY = os.getenv("DIFFICULTY_POLICY", "ppo").strip().lower()
 _USE_PPO_DIFFICULTY = DIFFICULTY_POLICY != "reinforce"
+
+# Blend weights: LLM score / neural evaluator / MOD-1 scorer.
+# When MOD-1 is available (scorer checkpoint loaded), use 3-way blend.
+# When MOD-1 is unavailable, collapse to 2-way blend with matching LLM weight.
+_BLEND_3WAY: dict[str, float] = {"llm": 0.65, "neural": 0.20, "mod1": 0.15}
+_BLEND_2WAY: dict[str, float] = {"llm": 0.65, "neural": 0.35, "mod1": 0.0}
 
 def _strip_thinking(content: str) -> str:
     if not content:
@@ -183,7 +192,7 @@ def rewrite_query_node(state: AgentState):
     chain = REWRITE_QUERY_PROMPT | llm
     response = chain.invoke({"history": str(history[-3:]), "last_answer": last_answer})
 
-    print(f"Rewrote Query: {response.content}")
+    logger.debug("Rewrote Query: %s", response.content)
     return {"current_search_query": response.content.strip(), "loop_count": state.get("loop_count", 0)}
 
 def retrieve_node(state: AgentState):
@@ -195,7 +204,7 @@ def retrieve_node(state: AgentState):
         cv_chunk, jd_chunk = retrieve_context_split(session_id, query)
         context = f"{cv_chunk}\n\n{jd_chunk}".strip()
     except Exception as e:
-        print(f"Retrieval Error: {e}")
+        logger.error("Retrieval Error: %s", e)
         context = "No specific context found."
         cv_chunk = "No CV context found."
         jd_chunk = "No JD context found."
@@ -267,13 +276,13 @@ def generate_question_node(state: AgentState):
 
     # ── MODE: first_question ────────────────────────────────────────────────
     if interview_mode == "first_question":
-        print(f"Mode: FIRST_QUESTION (Diff: {next_diff})")
+        logger.debug("Mode: FIRST_QUESTION (Diff: %s)", next_diff)
 
         # Anti-hallucination: if retrieval gave no real CV, ask a CV-agnostic
         # opener instead of inventing the candidate's experience.
         cv_chunk = state.get("cv_chunk", "No CV context found.")
         if not _has_grounded_cv(cv_chunk):
-            print("⚠️ No grounded CV context — using a CV-agnostic opener (avoids hallucination).")
+            logger.warning("No grounded CV context — using a CV-agnostic opener (avoids hallucination).")
             content = _generic_question(0)
             return {
                 "last_question": content,
@@ -297,7 +306,7 @@ def generate_question_node(state: AgentState):
             content = _strip_thinking(response.content)
             if _is_valid_question(content):
                 break
-            print(f"  First-question attempt {attempt + 1} rejected: {content[:60]}...")
+            logger.debug("  First-question attempt %d rejected: %s...", attempt + 1, content[:60])
         else:
             # Fallback to a safe generic opener
             job_title = job_context.get('job_title', 'this role')
@@ -314,7 +323,7 @@ def generate_question_node(state: AgentState):
 
     # ── MODE: fallback (drill-down) ─────────────────────────────────────────
     if interview_mode == "fallback" or state.get("next_action") == "drill_down":
-        print(f"Mode: FALLBACK (Diff: {next_diff})")
+        logger.debug("Mode: FALLBACK (Diff: %s)", next_diff)
         chain = DRILL_DOWN_PROMPT | llm
         guidance = "The candidate struggled with the last question. Ask a concretely simpler version." + difficulty_guidance
 
@@ -334,7 +343,7 @@ def generate_question_node(state: AgentState):
 
             if _is_valid_question(content):
                 break
-            print(f"  Fallback attempt {attempt + 1} rejected: {content[:60]}...")
+            logger.debug("  Fallback attempt %d rejected: %s...", attempt + 1, content[:60])
 
         return {
             "last_question": content,
@@ -346,13 +355,13 @@ def generate_question_node(state: AgentState):
         }
 
     # ── MODE: normal (CoT) ───────────────────────────────────────────────────
-    print(f"Mode: NORMAL (Diff: {next_diff})")
+    logger.debug("Mode: NORMAL (Diff: %s)", next_diff)
 
     # Anti-hallucination: no real CV → ask a CV-agnostic question rather than
     # letting the LLM invent the candidate's projects/skills.
     cv_chunk_norm = state.get("cv_chunk", "No CV context found.")
     if not _has_grounded_cv(cv_chunk_norm):
-        print("⚠️ No grounded CV context — asking a generic question (avoids hallucination).")
+        logger.warning("No grounded CV context — asking a generic question (avoids hallucination).")
         content = _generic_question(state.get("question_number", 1))
         return {
             "last_question": content,
@@ -396,7 +405,7 @@ def generate_question_node(state: AgentState):
         content = _strip_thinking(response.content)
         if _is_valid_question(content):
             break
-        print(f"  Normal attempt {attempt + 1} rejected: {content[:60]}...")
+        logger.debug("  Normal attempt %d rejected: %s...", attempt + 1, content[:60])
     else:
         # Generic safe fallback
         content = "Walk me through a time you had to debug a difficult production issue — what was the problem and how did you resolve it?"
@@ -487,9 +496,9 @@ def evaluate_answer_node(state: AgentState):
             )
 
         except Exception as e:
-            print(f"SHAP Error: {e}")
+            logger.warning("SHAP Error: %s", e)
     else:
-        print("SHAP skipped — performance predictor unavailable.")
+        logger.debug("SHAP skipped — performance predictor unavailable.")
 
     # 6. LLM generates feedback text — guard against placeholder tone data
     if not tone_data or tone_data.get("primary_emotion") == "Processing...":
@@ -544,10 +553,10 @@ def evaluate_answer_node(state: AgentState):
             # so 0.5 as the "full relevance" ceiling is well-calibrated.
             relevance_factor = min(1.0, max(0.0, cosine_sim) / 0.5)
             adjusted_neural = neural_score * relevance_factor
-            print(f"MOD-1 Score: {mod1_score:.1f}/100")
-            print(f"Q↔A Cosine: {cosine_sim:.3f} | Relevance factor: {relevance_factor:.2f} | Neural: {neural_score:.1f} → {adjusted_neural:.1f}")
+            logger.debug("MOD-1 Score: %.1f/100", mod1_score)
+            logger.debug("Q↔A Cosine: %.3f | Relevance factor: %.2f | Neural: %.1f → %.1f", cosine_sim, relevance_factor, neural_score, adjusted_neural)
     except Exception as e:
-        print(f"MOD-1/relevance gate skipped ({e})")
+        logger.warning("MOD-1/relevance gate skipped (%s)", e)
 
     # --- Final blend: 65% LLM / 35% neural ---
     # Both neural models now discriminate quality (MOD-4 retrained on mpnet, MOD-1
@@ -555,17 +564,17 @@ def evaluate_answer_node(state: AgentState):
     # instead of the old ~20%. The Q↔A relevance gate stays on the evaluator
     # (adjusted_neural) so off-topic answers can't ride a high neural score.
     # The old neural-flat / divergence special-cases are gone — clean & predictable.
+    w = _BLEND_3WAY if mod1_score is not None else _BLEND_2WAY
+    blended_score = round(
+        w["llm"] * llm_score + w["neural"] * adjusted_neural + w["mod1"] * (mod1_score or 0.0), 1
+    )
     if mod1_score is not None:
-        w = {"llm": 0.65, "neural": 0.20, "mod1": 0.15}
-        blended_score = round(
-            w["llm"] * llm_score + w["neural"] * adjusted_neural + w["mod1"] * mod1_score, 1
+        logger.debug(
+            "Blend 65/20/15 — LLM %.0f / Eval %.0f / MOD-1 %.0f → %.1f",
+            llm_score, adjusted_neural, mod1_score, blended_score,
         )
-        print(f"Blend 65/20/15 — LLM {llm_score:.0f} / Eval {adjusted_neural:.0f} / "
-              f"MOD-1 {mod1_score:.0f} → {blended_score}")
     else:
-        w = {"llm": 0.65, "neural": 0.35, "mod1": 0.0}
-        blended_score = round(w["llm"] * llm_score + w["neural"] * adjusted_neural, 1)
-        print(f"Blend 65/35 — LLM {llm_score:.0f} / Eval {adjusted_neural:.0f} → {blended_score}")
+        logger.debug("Blend 65/35 — LLM %.0f / Eval %.0f → %.1f", llm_score, adjusted_neural, blended_score)
 
     report_entry = {
         "question": state["last_question"],
@@ -591,8 +600,8 @@ def evaluate_answer_node(state: AgentState):
     }
 
     mod1_str = f" | MOD-1: {mod1_score:.1f}/100" if mod1_score is not None else ""
-    print(f"LLM Score: {llm_score}/100 | Neural Score: {neural_score}/100{mod1_str} | Blended: {blended_score}/100")
-    print(f"Predicted Market Positioning: {job_prediction}/10.0")
+    logger.info("LLM Score: %s/100 | Neural Score: %s/100%s | Blended: %s/100", llm_score, neural_score, mod1_str, blended_score)
+    logger.debug("Predicted Market Positioning: %s/10.0", job_prediction)
 
     return {
         "evaluations": state.get("evaluations", []) + [report_entry],
@@ -919,7 +928,7 @@ def synthesize_report(session_state: dict, candidate_name: str, job_title: str) 
         return _normalize_report(raw, evaluations, avg_score)
 
     except Exception as e:
-        print(f"Report synthesis error: {e}")
+        logger.error("Report synthesis error: %s", e)
         # Build a complete fallback that still satisfies the full required schema
         fallback = {
             "overall_score": avg_score,
@@ -959,13 +968,13 @@ def decide_next_step(state: AgentState):
 
     # Hard ceiling
     if n >= MAX_QUESTIONS:
-        print(f"Stopping: max questions reached ({MAX_QUESTIONS})")
+        logger.info("Stopping: max questions reached (%s)", MAX_QUESTIONS)
         return END
 
     # Topic exhaustion: candidate struggled on 3+ distinct topics
     failed_topics = state.get("failed_topics", [])
     if len(failed_topics) >= 3:
-        print(f"Early stop: candidate struggled on {len(failed_topics)} topics")
+        logger.info("Early stop: candidate struggled on %d topics", len(failed_topics))
         return END
 
     # Early-stop logic (only after MIN_QUESTIONS answered)
@@ -976,19 +985,19 @@ def decide_next_step(state: AgentState):
 
         # Strong performance — stop only after at least 5 answers with high recent average
         if n >= 5 and avg_recent >= 78:
-            print(f"Early stop: strong performance after {n} questions (avg recent={avg_recent:.1f})")
+            logger.info("Early stop: strong performance after %d questions (avg recent=%.1f)", n, avg_recent)
             return END
 
         # Consistently very low — no value in continuing after 5+ questions
         if n >= 5 and len(recent) == 3 and avg_recent < 35:
-            print(f"Early stop: consistently low scores after {n} questions (avg recent={avg_recent:.1f})")
+            logger.info("Early stop: consistently low scores after %d questions (avg recent=%.1f)", n, avg_recent)
             return END
 
         # Stable signal — score variance is flat, little new information gained
         if n >= 6:
             score_range = max(scores) - min(scores)
             if score_range < 20:
-                print(f"Early stop: stable signal after {n} questions (range={score_range:.1f})")
+                logger.info("Early stop: stable signal after %d questions (range=%.1f)", n, score_range)
                 return END
 
     # Normal routing

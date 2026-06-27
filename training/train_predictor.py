@@ -65,14 +65,18 @@ def main():
     else:
         print("WARNING: Real data not found, falling back to DummyPerformanceDataset")
         dataset = DummyPerformanceDataset(num_samples=1000)
-    train_size = int(0.8 * len(dataset))
-    val_size   = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size]
-    )
+    n = len(dataset)
+    perm = torch.randperm(n)
+    train_end = int(0.70 * n)
+    val_end   = int(0.85 * n)
+    train_dataset = torch.utils.data.Subset(dataset, perm[:train_end].tolist())
+    val_dataset   = torch.utils.data.Subset(dataset, perm[train_end:val_end].tolist())
+    test_dataset  = torch.utils.data.Subset(dataset, perm[val_end:].tolist())
 
+    print(f"Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     val_loader   = DataLoader(val_dataset,   batch_size=32)
+    test_loader  = DataLoader(test_dataset,  batch_size=32)
 
     # 2. Model, optimizer, scheduler
     model     = PerformancePredictor(input_dim=8).to(device)
@@ -168,6 +172,20 @@ def main():
         f"\nCheckpoint saved: models/checkpoints/performance_predictor_v1.pt"
         f"\nBest val loss: {best_loss:.4f}  |  Best Spearman r: {best_spearman:.4f}"
     )
+
+    # Held-out TEST SET evaluation
+    best_state = torch.load("models/checkpoints/performance_predictor_v1.pt", weights_only=True)
+    model.load_state_dict(best_state)
+    model.eval()
+    test_preds, test_true = [], []
+    with torch.no_grad():
+        for features, target_score in test_loader:
+            features = features.to(device)
+            preds = model(features)
+            test_preds.extend(preds.squeeze(-1).cpu().tolist())
+            test_true.extend(target_score.squeeze(-1).tolist())
+    test_metrics = regression_metrics(test_true, test_preds)
+    print(f"\nTEST SET — MAE={test_metrics['mae']:.4f}  RMSE={test_metrics['rmse']:.4f}  Spearman={test_metrics['spearman_rho']:.4f}")
 
     # 4. Quick inference test
     print("\n--- Quick Inference Test ---")

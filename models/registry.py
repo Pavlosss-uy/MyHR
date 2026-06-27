@@ -1,7 +1,10 @@
 import importlib
+import logging
 import os
 import sys
 import torch
+
+logger = logging.getLogger(__name__)
 
 # Check once at import time whether stable_baselines3 is available
 _ppo_available = importlib.util.find_spec("stable_baselines3") is not None
@@ -51,14 +54,14 @@ class ModelRegistry:
         """Load checkpoint into model in-place. Returns True on success."""
         path = self._get_path(model_name)
         if not os.path.exists(path):
-            print(f"[WARN] Registry: checkpoint not found — {path}")
+            logger.warning("Registry: checkpoint not found — %s", path)
             return False
         try:
             state = torch.load(path, map_location=self.device, weights_only=True)
             model.load_state_dict(state)
             return True
         except Exception as e:
-            print(f"[WARN] Registry: could not load '{model_name}' checkpoint ({e})")
+            logger.warning("Registry: could not load '%s' checkpoint (%s)", model_name, e)
             return False
 
     # ------------------------------------------------------------------
@@ -71,9 +74,9 @@ class ModelRegistry:
         if "emotion" not in self.loaded_models:
             model = InterviewEmotionModel().to(self.device)
             if self._load_state(model, "emotion"):
-                print("[OK]   Emotion model loaded.")
+                logger.info("[OK]   Emotion model loaded.")
             else:
-                print("[WARN] Emotion model unavailable — using HuggingFace pretrained backbone only.")
+                logger.warning("[WARN] Emotion model unavailable — using HuggingFace pretrained backbone only.")
             model.eval()
             self.loaded_models["emotion"] = model
         return self.loaded_models["emotion"]
@@ -90,11 +93,11 @@ class ModelRegistry:
                         torch.load(path, map_location=self.device, weights_only=True),
                         strict=False,
                     )
-                    print("[OK]   Skill matcher checkpoint loaded.")
+                    logger.info("[OK]   Skill matcher checkpoint loaded.")
                 except Exception as e:
-                    print(f"[WARN] Skill matcher checkpoint skipped ({e}). Using pretrained embeddings.")
+                    logger.warning("Skill matcher checkpoint skipped (%s). Using pretrained embeddings.", e)
             else:
-                print("[WARN] Skill matcher checkpoint missing — using pretrained SentenceTransformer embeddings.")
+                logger.warning("[WARN] Skill matcher checkpoint missing — using pretrained SentenceTransformer embeddings.")
             model.eval()
             self.loaded_models["skill_matcher"] = model
         return self.loaded_models["skill_matcher"]
@@ -107,9 +110,9 @@ class ModelRegistry:
         if "difficulty" not in self.loaded_models:
             model = AdaptiveDifficultyEngine(state_dim=3).to(self.device)
             if self._load_state(model, "difficulty"):
-                print("[OK]   Difficulty engine loaded.")
+                logger.info("[OK]   Difficulty engine loaded.")
             else:
-                print("[WARN] Difficulty engine using random-init weights — difficulty adaptation disabled.")
+                logger.warning("[WARN] Difficulty engine using random-init weights — difficulty adaptation disabled.")
             model.eval()
             self.loaded_models["difficulty"] = model
         return self.loaded_models["difficulty"]
@@ -124,10 +127,10 @@ class ModelRegistry:
                 from stable_baselines3 import PPO
                 ppo_path = os.path.join(self.base_path, self.versions["difficulty_ppo"])
                 model = PPO.load(ppo_path, device=self.device)
-                print("[OK]   PPO difficulty engine loaded.")
+                logger.info("[OK]   PPO difficulty engine loaded.")
                 self.loaded_models["difficulty_ppo"] = model
             except Exception as e:
-                print(f"[WARN] PPO difficulty engine failed ({e}), falling back to REINFORCE.")
+                logger.warning("PPO difficulty engine failed (%s), falling back to REINFORCE.", e)
                 return self.load_difficulty_engine(use_ppo=False)
         return self.loaded_models["difficulty_ppo"]
 
@@ -136,23 +139,23 @@ class ModelRegistry:
         if "scorer" not in self.loaded_models:
             model = CandidateScoringMLP().to(self.device)
             if self._load_state(model, "scorer"):
-                print("[OK]   Candidate scorer (MOD-1) loaded.")
+                logger.info("[OK]   Candidate scorer (MOD-1) loaded.")
                 model.eval()
                 self.loaded_models["scorer"] = model
             else:
-                print("[WARN] Candidate scorer unavailable — MOD-1 signal will be omitted.")
+                logger.warning("[WARN] Candidate scorer unavailable — MOD-1 signal will be omitted.")
                 self.loaded_models["scorer"] = None
         return self.loaded_models["scorer"]
 
     def load_evaluator(self):
         """Returns MultiHeadEvaluator (always — falls back to random-init weights)."""
         if "evaluator" not in self.loaded_models:
-            print("Loading Multi-Head Evaluator...")
+            logger.info("Loading Multi-Head Evaluator...")
             # input_dim=768: receives all-mpnet-base-v2 answer embedding, not the 8-D feature vector
             model = MultiHeadEvaluator(input_dim=768).to(self.device)
 
             try:
-                checkpoint = torch.load(self._get_path("evaluator"), map_location=self.device)
+                checkpoint = torch.load(self._get_path("evaluator"), map_location=self.device, weights_only=True)
                 # Guard against checkpoints trained with a different input_dim
                 saved_dim = checkpoint.get("input_dim") if isinstance(checkpoint, dict) else None
                 if saved_dim is not None and saved_dim != 768:
@@ -166,8 +169,10 @@ class ModelRegistry:
                 # tag — warn loudly so the mismatch is visible.
                 embedder = checkpoint.get("embedder") if isinstance(checkpoint, dict) else None
                 if embedder is None:
-                    print("[WARN] Evaluator checkpoint has no embedder tag — it may predate the "
-                          "mpnet alignment fix. Retrain via training/train_evaluator.py.")
+                    logger.warning(
+                        "[WARN] Evaluator checkpoint has no embedder tag — it may predate the "
+                        "mpnet alignment fix. Retrain via training/train_evaluator.py."
+                    )
                 elif embedder != "all-mpnet-base-v2":
                     raise ValueError(
                         f"Checkpoint embedder='{embedder}' != inference embedder 'all-mpnet-base-v2'. "
@@ -175,9 +180,9 @@ class ModelRegistry:
                     )
                 state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
                 model.load_state_dict(state_dict)
-                print("[OK]   Evaluator checkpoint loaded (input_dim=768, embedder=all-mpnet-base-v2).")
+                logger.info("[OK]   Evaluator checkpoint loaded (input_dim=768, embedder=all-mpnet-base-v2).")
             except Exception as e:
-                print(f"[WARN] No weights found for evaluator ({e}), using randomly initialised weights.")
+                logger.warning("No weights found for evaluator (%s), using randomly initialised weights.", e)
             model.eval()
             self.loaded_models["evaluator"] = model
         return self.loaded_models["evaluator"]
@@ -187,11 +192,11 @@ class ModelRegistry:
         if "predictor" not in self.loaded_models:
             model = PerformancePredictor(input_dim=8).to(self.device)
             if self._load_state(model, "predictor"):
-                print("[OK]   Performance predictor (MOD-6) loaded.")
+                logger.info("[OK]   Performance predictor (MOD-6) loaded.")
                 model.eval()
                 self.loaded_models["predictor"] = model
             else:
-                print("[WARN] Performance predictor checkpoint not found — omitting performance forecast from report.")
+                logger.warning("[WARN] Performance predictor checkpoint not found — omitting performance forecast from report.")
                 self.loaded_models["predictor"] = None
         return self.loaded_models["predictor"]
 
@@ -205,11 +210,11 @@ class ModelRegistry:
                     model.load_state_dict(
                         torch.load(path, map_location=self.device, weights_only=True)
                     )
-                    print("[OK]   Candidate ranker loaded.")
+                    logger.info("[OK]   Candidate ranker loaded.")
                 except Exception as e:
-                    print(f"[WARN] Candidate ranker checkpoint skipped ({e}). Rankings use random projections.")
+                    logger.warning("Candidate ranker checkpoint skipped (%s). Rankings use random projections.", e)
             else:
-                print("[WARN] Candidate ranker checkpoint missing — train with training/train_ranker.py.")
+                logger.warning("[WARN] Candidate ranker checkpoint missing — train with training/train_ranker.py.")
             model.eval()
             self.loaded_models["ranker"] = model
         return self.loaded_models["ranker"]
@@ -229,9 +234,9 @@ class ModelRegistry:
             "ranker":        self.versions["ranker"],
             "predictor":     self.versions["predictor"],
         }
-        print("\n" + "=" * 55)
-        print("  ModelRegistry — Startup Health Check")
-        print("=" * 55)
+        logger.info("=" * 55)
+        logger.info("  ModelRegistry — Startup Health Check")
+        logger.info("=" * 55)
         for name, filename in checkpoints.items():
             path = os.path.join(self.base_path, filename)
             if name in self.loaded_models:
@@ -241,9 +246,9 @@ class ModelRegistry:
             else:
                 status = "MISSING checkpoint"
             tag = "[OK]  " if status == "loaded" or "present" in status else "[WARN]"
-            print(f"  {tag} {name:<16} {status}")
+            logger.info("  %s %-16s %s", tag, name, status)
             results[name] = status
-        print("=" * 55 + "\n")
+        logger.info("=" * 55)
         return results
 
 
