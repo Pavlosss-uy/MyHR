@@ -22,6 +22,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, UploadFile, File, Form,
 
 from firestore_client import (
     db,
+    get_db,
     add_doc,
     get_doc,
     set_doc,
@@ -218,13 +219,14 @@ async def request_access(
     if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email):
         raise HTTPException(status_code=422, detail="Invalid email address.")
 
-    # NOTE: Corporate email validation disabled for testing.
-    # Uncomment for production:
-    # if not _is_corporate_email(email):
-    #     raise HTTPException(
-    #         status_code=422,
-    #         detail="Please use your corporate email address. Free email providers are not accepted.",
-    #     )
+    # Corporate-email gate: enterprise access requires a corporate domain.
+    # Set BYPASS_EMAIL_CHECK=true in local/dev to allow free providers (gmail/…) for testing.
+    if not os.getenv("BYPASS_EMAIL_CHECK"):
+        if not _is_corporate_email(email):
+            raise HTTPException(
+                status_code=422,
+                detail="Please use your corporate email address. Free email providers are not accepted.",
+            )
 
     # Check for duplicate pending requests
     existing = query_collection(
@@ -250,7 +252,7 @@ async def request_access(
     })
 
     # Notify admin about new request
-    base = os.getenv("MYHR_BASE_URL", "http://localhost:8080")
+    base = os.getenv("MYHR_BASE_URL", "http://localhost:5173")
     background_tasks.add_task(
         send_in_background,
         ADMIN_EMAIL,
@@ -719,6 +721,11 @@ async def upload_cvs(
     # Atomically update job stats
     _update_job_stats(job_id, [c["matchScore"] for c in processed])
 
+    # Invalidate stale analytics and schedule a background refresh
+    if processed:
+        _invalidate_analytics_cache(company_id)
+        asyncio.create_task(asyncio.to_thread(_refresh_analytics_bg, company_id))
+
     return {
         "processed": len(processed),
         "failed": len(failed),
@@ -1065,6 +1072,13 @@ async def complete_candidate_interview(token: str, sessionId: str = Form(...)):
         "updatedAt": fs_admin.SERVER_TIMESTAMP,
     })
 
+    # Invalidate stale analytics and schedule a background refresh
+    job_doc = get_doc("Jobs", job_id)
+    cid = job_doc.get("companyId") if job_doc else None
+    if cid:
+        _invalidate_analytics_cache(cid)
+        asyncio.create_task(asyncio.to_thread(_refresh_analytics_bg, cid))
+
     return {
         "status": "completed",
         "totalScore": total_score,
@@ -1214,11 +1228,41 @@ def _compute_analytics(company_id: str) -> dict:
     }
 
 
+def _save_analytics_doc(company_id: str, data: dict) -> None:
+    """Persist computed analytics to Firestore so it survives server restarts."""
+    try:
+        set_doc("CompanyStats", company_id, {
+            **data,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.warning("Failed to persist analytics doc for %s: %s", company_id, exc)
+
+
+def _invalidate_analytics_cache(company_id: str) -> None:
+    """Drop the in-memory analytics cache for a company so the next request recomputes."""
+    _analytics_cache.pop(company_id, None)
+
+
+def _refresh_analytics_bg(company_id: str) -> None:
+    """Background task: recompute and persist analytics, then warm the in-memory cache."""
+    try:
+        data = _compute_analytics(company_id)
+        _analytics_cache[company_id] = (_time.monotonic(), data)
+        _save_analytics_doc(company_id, data)
+    except Exception as exc:
+        logger.warning("Background analytics refresh failed for %s: %s", company_id, exc)
+
+
 @hr_router.get("/analytics")
 async def get_analytics(company_id: str = Depends(get_current_company_id)):
     """
-    Return real hiring analytics for the authenticated company.
-    Results are cached per company for 5 minutes to avoid O(jobs×candidates) Firestore reads.
+    Return hiring analytics for the authenticated company.
+
+    Priority:
+      1. In-memory TTL cache (< 5 min) — instant.
+      2. Pre-computed Firestore doc (CompanyStats/{company_id}) — survives restarts.
+      3. Live O(jobs×candidates) computation — fallback, result is then cached + persisted.
     """
     now = _time.monotonic()
     cached = _analytics_cache.get(company_id)
@@ -1227,8 +1271,20 @@ async def get_analytics(company_id: str = Depends(get_current_company_id)):
         if now - ts < _ANALYTICS_TTL:
             return result
 
+    # Try pre-computed Firestore doc first
+    try:
+        stored = get_doc("CompanyStats", company_id)
+        if stored:
+            result = {k: v for k, v in stored.items() if k != "updatedAt"}
+            _analytics_cache[company_id] = (now, result)
+            return result
+    except Exception as exc:
+        logger.warning("Could not read CompanyStats doc: %s", exc)
+
+    # Fallback: live computation
     result = await asyncio.to_thread(_compute_analytics, company_id)
     _analytics_cache[company_id] = (now, result)
+    await asyncio.to_thread(_save_analytics_doc, company_id, result)
     return result
 
 

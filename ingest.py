@@ -14,10 +14,22 @@ from llama_index.vector_stores.pinecone import PineconeVectorStore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from pinecone import Pinecone, ServerlessSpec
 
-# Tell LlamaIndex to use a local HuggingFace embedding model instead of OpenAI
-Settings.embed_model = HuggingFaceEmbedding(
-    model_name="sentence-transformers/all-mpnet-base-v2"
-)
+_EMBED_MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
+_embedder_initialized = False
+
+
+def init_embedder() -> None:
+    """Lazy-initialize the LlamaIndex embedding model.
+
+    Called once from server.py's lifespan on startup so the ~400 MB
+    all-mpnet-base-v2 model doesn't block the import phase.
+    Safe to call multiple times — a no-op after the first call.
+    """
+    global _embedder_initialized
+    if _embedder_initialized:
+        return
+    Settings.embed_model = HuggingFaceEmbedding(model_name=_EMBED_MODEL_NAME)
+    _embedder_initialized = True
 
 # ---------------------------------------------------------------------------
 # Task 3.5 — Prompt injection guard

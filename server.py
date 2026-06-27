@@ -65,7 +65,13 @@ from agent import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: warm up the proctor detector and (optionally) pre-load the emotion model.
+    # Startup: initialize heavy models once so imports stay fast.
+    try:
+        from ingest import init_embedder
+        await asyncio.to_thread(init_embedder)
+        logger.info("LlamaIndex embedder (all-mpnet-base-v2) initialized.")
+    except Exception as e:
+        logger.warning("Embedder init skipped: %s", e)
     try:
         from models import proctor
         proctor.warmup()

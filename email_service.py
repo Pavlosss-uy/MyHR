@@ -6,14 +6,11 @@ directly to FastAPI's BackgroundTasks.  Starlette automatically runs sync
 background tasks in a thread-pool executor, so it never blocks the event loop
 and HTTP responses are returned immediately.
 
-Transport: Gmail SMTP via STARTTLS (smtp.gmail.com:587).
-Use a 16-character Google App Password — NOT your normal Gmail password.
-Generate one at: https://myaccount.google.com/apppasswords
+Transport priority:
+  1. Gmail SMTP  — set SMTP_USER + SMTP_PASS (16-char Google App Password)
+  2. Resend API  — set RESEND_API_KEY (requires verified domain to send to others)
 
-Required environment variables
-  SMTP_USER    Full Gmail address        e.g. myhr2026@gmail.com
-  SMTP_PASS    16-char Google App Pass   e.g. xxxx xxxx xxxx xxxx
-  EMAIL_FROM   Display name + address    e.g. MyHR <myhr2026@gmail.com>
+Generate a Gmail App Password at: https://myaccount.google.com/apppasswords
 """
 
 import html
@@ -23,13 +20,16 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+import resend
+
 logger = logging.getLogger(__name__)
 
-_SMTP_HOST = "smtp.gmail.com"
-_SMTP_PORT = 587
 _SMTP_USER = os.getenv("SMTP_USER", "")
 _SMTP_PASS = os.getenv("SMTP_PASS", "")
-_FROM      = os.getenv("EMAIL_FROM", f"MyHR <{_SMTP_USER}>")
+_FROM_SMTP = os.getenv("EMAIL_FROM", f"MyHR <{_SMTP_USER}>") if _SMTP_USER else "MyHR"
+
+resend.api_key = os.getenv("RESEND_API_KEY", "")
+_FROM_RESEND = os.getenv("EMAIL_FROM", "MyHR <onboarding@resend.dev>")
 
 MYHR_BASE_URL = os.getenv("MYHR_BASE_URL", "http://localhost:5173")
 
@@ -38,34 +38,43 @@ MYHR_BASE_URL = os.getenv("MYHR_BASE_URL", "http://localhost:5173")
 
 def send_in_background(to: str, subject: str, html_body: str) -> None:
     """
-    Synchronous Gmail SMTP dispatch over STARTTLS.
-    Always pass this to FastAPI BackgroundTasks — never call it directly from
-    an async route, because smtplib is blocking and must run in a thread pool.
+    Synchronous email dispatch — tries Gmail SMTP first, then Resend.
+    Always pass this to FastAPI BackgroundTasks; never call directly from async code.
     """
-    if not _SMTP_USER or not _SMTP_PASS:
-        logger.warning("SMTP_USER/SMTP_PASS not configured — skipping: %s | %s", to, subject)
-        return
+    if _SMTP_USER and _SMTP_PASS:
+        _send_smtp(to, subject, html_body)
+    elif resend.api_key:
+        _send_resend(to, subject, html_body)
+    else:
+        logger.warning("No email transport configured (set SMTP_USER+SMTP_PASS or RESEND_API_KEY) — skipping: %s", to)
+
+
+def _send_smtp(to: str, subject: str, html_body: str) -> None:
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
-        msg["From"]    = _FROM
-        msg["To"]      = to
+        msg["From"] = _FROM_SMTP
+        msg["To"] = to
         msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-        with smtplib.SMTP(_SMTP_HOST, _SMTP_PORT) as smtp:
+        with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
             smtp.ehlo()
             smtp.starttls()
             smtp.ehlo()
             smtp.login(_SMTP_USER, _SMTP_PASS)
             smtp.sendmail(_SMTP_USER, [to], msg.as_string())
-
-        logger.info("sent → %s | %s", to, subject)
+        logger.info("sent (smtp) → %s | %s", to, subject)
     except smtplib.SMTPAuthenticationError:
-        logger.error("authentication failed — check SMTP_USER and SMTP_PASS (use an App Password, not your Gmail password)")
-    except smtplib.SMTPRecipientsRefused:
-        logger.error("recipient refused → %s", to)
+        logger.error("SMTP auth failed — use a Google App Password, not your Gmail password")
     except Exception as exc:
-        logger.error("failed → %s | %s", to, exc)
+        logger.error("SMTP failed → %s | %s", to, exc)
+
+
+def _send_resend(to: str, subject: str, html_body: str) -> None:
+    try:
+        resend.Emails.send({"from": _FROM_RESEND, "to": [to], "subject": subject, "html": html_body})
+        logger.info("sent (resend) → %s | %s", to, subject)
+    except Exception as exc:
+        logger.error("Resend failed → %s | %s", to, exc)
 
 
 # ── Shared layout shell ───────────────────────────────────────────────────────

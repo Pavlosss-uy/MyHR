@@ -102,6 +102,12 @@ export const AuthProvider = ({ children }) => {
         setUser({ ...auth.currentUser });
     };
 
+    const forceRole = (role) => {
+        setUserRole(role);
+        sessionStorage.setItem(ROLE_KEY, role);
+        localStorage.setItem(ROLE_KEY, role);
+    };
+
     const logout = async () => {
         sessionStorage.removeItem(ROLE_KEY);
         setUserRole(null);
@@ -121,6 +127,7 @@ export const AuthProvider = ({ children }) => {
                 updateUserProfile,
                 updateUserEmail,
                 refreshUser,
+                forceRole,
                 logout,
             }}
         >

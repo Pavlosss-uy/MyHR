@@ -1,0 +1,450 @@
+<div align="center">
+
+# Chapter Four
+
+# System Implementation
+
+</div>
+
+<br/>
+
+**Chapter Outline**
+
+- 4.1 Hybrid RAG Pipeline
+- 4.2 LangGraph Interview Agent
+- 4.3 AI/ML Model Layer
+- 4.4 Enterprise Layer
+- 4.5 Training Layer
+- 4.6 Database Design
+- 4.7 API Reference
+- 4.8 Authentication & Authorization
+- 4.9 Configuration
+
+This chapter describes the detailed implementation of each component. In keeping with the
+documentation standard, it presents **flowcharts and pseudocode** rather than source listings,
+followed by a short results-and-discussion note for each component.
+
+---
+
+## 4.1 Hybrid RAG Pipeline
+
+**Modules:** `ingest.py` (indexing) and `retriever.py` (retrieval).
+
+When an interview starts, the candidate's CV and the JD are turned into a private, searchable
+index scoped to the interview session. Before indexing, every document passes through two
+safety filters: **PII redaction** (Microsoft Presidio replaces names, phones, emails, and
+similar entities with typed tokens, so raw personal data is never persisted in the vector
+store) and a **prompt-injection sanitizer** (regular-expression patterns that strip attempts to
+override the system's instructions). The cleaned text is split into overlapping chunks
+(`chunk_size = 512`, `chunk_overlap = 50`), each CV chunk is prefixed with a small header
+carrying the candidate name and role, and the chunks are written to two stores in parallel:
+**Pinecone** (dense vectors, `all-mpnet-base-v2`, 768-D, namespaced by session) and a **local
+BM25 store** (raw chunk text for sparse retrieval).
+
+**Figure 4.1 — Hybrid RAG Pipeline.**
+
+```mermaid
+flowchart TB
+    A["CV text + JD text"] --> B["PII redaction (Presidio)"]
+    B --> C["Prompt-injection sanitizer"]
+    C --> D["Chunk (512 / overlap 50)<br/>+ CV header injection"]
+    D --> E1["Pinecone index<br/>(dense, 768-D, per-session namespace)"]
+    D --> E2["Local BM25 store<br/>(sparse, raw chunks)"]
+    Q["Query (topic / role)"] --> F1["Dense retrieve (top 20)"]
+    Q --> F2["BM25 retrieve (top 20)"]
+    E1 --> F1
+    E2 --> F2
+    F1 --> G["Reciprocal Rank Fusion (k = 60)"]
+    F2 --> G
+    G --> H["Cross-encoder rerank"]
+    H --> I["Top grounded passages → agent"]
+```
+
+At retrieval time, the query is run against both stores; the two ranked lists are merged with
+**Reciprocal Rank Fusion** (`score += 1 / (k + rank + 1)`, `k = 60`); and the fused shortlist
+is re-scored by the cross-encoder reranker for final ordering.
+
+**Pseudocode — hybrid retrieval.**
+
+```
+function retrieve(query, session_id):
+    dense  = pinecone_index(session_id).search(query, top_k = 20)
+    sparse = bm25(session_id).search(query, top_k = 20)
+    fused  = {}
+    for rank, doc in enumerate(dense):  fused[doc] += 1 / (60 + rank + 1)
+    for rank, doc in enumerate(sparse): fused[doc] += 1 / (60 + rank + 1)
+    shortlist = sort(fused, descending)
+    return cross_encoder_rerank(query, shortlist)
+```
+
+*Results & discussion.* The hybrid design retrieves both exact-term matches (BM25 — useful for
+specific technologies named in a JD) and semantic matches (dense — useful for paraphrased
+experience). The embedder is initialized lazily at server startup so the ~400 MB model does
+not block import; the same embedder is used everywhere to avoid train/inference mismatch.
+
+---
+
+## 4.2 LangGraph Interview Agent
+
+**Module:** `agent.py`. The interview is a LangGraph **state graph** compiled with a
+checkpointer so each session's state survives between turns.
+
+**Figure 4.2 — LangGraph Agent State Graph.**
+
+```mermaid
+stateDiagram-v2
+    [*] --> rewrite
+    rewrite --> retrieve
+    retrieve --> grade
+    grade --> generate: context sufficient
+    grade --> rewrite: insufficient (re-query)
+    generate --> [*]: emit question, await answer
+    [*] --> process_answer: answer received
+    process_answer --> generate: continue interview
+    process_answer --> [*]: end interview
+```
+
+- **rewrite** — reformulates the current topic into an effective retrieval query.
+- **retrieve** — runs the hybrid RAG pipeline (4.1) to gather grounded evidence.
+- **grade** — checks whether the retrieved context is good enough; a conditional edge
+  (`check_grade`) loops back to re-query if not.
+- **generate** — prompts the Groq LLM (`llama-3.3-70b-versatile`) to produce the next question
+  from the grounded context.
+- **process_answer** — evaluates the candidate's answer, updates running performance, adapts
+  difficulty, and a conditional edge (`decide_next_step`) decides whether to ask another
+  question or end.
+
+### Answer scoring and the blend
+
+When an answer arrives, three independent signals are computed and combined.
+
+**Figure 4.3 — Answer Scoring & Blend Flow.**
+
+```mermaid
+flowchart TB
+    ANS["Candidate answer"] --> LLMJ["LLM judgment (0–100)"]
+    ANS --> EVAL["MultiHeadEvaluator<br/>relevance / clarity / depth"]
+    ANS --> MOD1["CandidateScoringMLP (MOD-1)"]
+    QA["Q ↔ A cosine similarity"] --> GATE{"Relevance gate:<br/>answer on-topic?"}
+    EVAL --> GATE
+    MOD1 --> GATE
+    LLMJ --> BLEND["Weighted blend"]
+    GATE -->|on-topic| BLEND
+    GATE -->|off-topic| SUPPRESS["Suppress neural contribution"]
+    SUPPRESS --> BLEND
+    BLEND --> SCORE["Final answer score"]
+```
+
+The blend weights are explicit in the code: when all three signals are available, the final
+score is **65% LLM + 20% neural evaluator + 15% MOD-1** (`_BLEND_3WAY`); when MOD-1 is
+unavailable, the system falls back to **65% LLM + 35% evaluator** (`_BLEND_2WAY`). A **relevance
+gate** based on the cosine similarity between the question and the answer suppresses the neural
+contribution when the answer is off-topic, preventing a fluent but irrelevant answer from being
+rewarded by the neural models.
+
+**Pseudocode — answer evaluation.**
+
+```
+function evaluate_answer(question, answer):
+    llm   = llm_judge(question, answer)            # 0–100
+    eval3 = evaluator(question, answer)            # relevance, clarity, depth
+    mod1  = scoring_mlp(question, answer)          # 0–100
+    if cosine(question, answer) < threshold:       # relevance gate
+        neural = downweighted(eval3, mod1)
+    else:
+        neural = combine(eval3, mod1)
+    if mod1 available:  return 0.65*llm + 0.20*eval_score + 0.15*mod1
+    else:               return 0.65*llm + 0.35*eval_score
+```
+
+*Results & discussion.* The blend keeps the LLM as the primary judge while letting
+purpose-trained models temper its opinion, and the relevance gate guards against the most
+common failure mode (off-topic fluency). Proctoring signals are aggregated per answer and an
+answer is flagged "suspicious" if multiple faces appear, the face is absent for more than 20%
+of frames, or the candidate looks away for more than 30% of frames.
+
+---
+
+## 4.3 AI/ML Model Layer
+
+**Modules:** `models/` with the lazy loader in `models/registry.py`. The registry checks each
+checkpoint at startup (a health check), but loads each model into memory only on first use, and
+guards against dimension and embedder mismatches.
+
+**Table 4.1 — Neural Model Layer.**
+
+| # | Model | File | Input | Output | Role |
+|---|-------|------|-------|--------|------|
+| MOD-1 | CandidateScoringMLP | `scoring_model.py` | Q+A embeddings (1536-D) | Score 0–100 | Deep answer scoring in the blend |
+| MOD-4 | MultiHeadEvaluator | `multi_head_evaluator.py` | Answer embedding (768-D) | relevance, clarity, depth | Multi-dimensional answer evaluation |
+| — | SkillMatchSiamese | `skill_matcher.py` | CV skills, JD skills | Match similarity | CV↔JD skill matching for ranking |
+| — | NeuralCandidateRanker | `candidate_ranker.py` | 7-D candidate features | Ranking score | Order candidates within a job |
+| — | AdaptiveDifficulty | `difficulty_engine.py` | Performance state (3-D/6-D) | Difficulty action | RL-based question difficulty |
+| — | EmotionModel | `emotion_model.py` | Face/tone features | Emotion estimate | Affective context for the report |
+| — | PerformancePredictor | `performance_predictor.py` | Interview features | Market-positioning estimate | Auxiliary report signal |
+| — | CrossEncoderScorer | `cross_encoder_scorer.py` | (query, passage) | Relevance | RAG reranking |
+
+Supporting modules include `proctor.py` (OpenCV YuNet face/attention detection),
+`feature_extractor.py` (feature assembly), and `explainer.py` (score explanation helpers).
+
+*Results & discussion.* On held-out test sets (Chapter 4.5), the MultiHeadEvaluator reaches
+Spearman ≈ 0.95 on each of relevance, clarity, and depth, and the scoring MLP reaches
+MAE ≈ 0.067 with Spearman ≈ 0.93 — i.e. both models order answers very close to the reference
+labels. The candidate ranker is currently trained on synthetically generated comparative data
+and is therefore treated as a *tiebreaker* alongside the rubric and interview scores rather than
+an absolute measure (see Chapter 6).
+
+---
+
+## 4.4 Enterprise Layer
+
+**Module:** `hr_routes.py` (the `hr_router`), with `cv_parser.py` for CV processing and
+`firestore_client.py` for persistence.
+
+The enterprise layer implements the hiring funnel. Key implementation details:
+
+- **Batch CV upload** (`POST /jobs/{id}/upload-cvs`) parses each file, extracts contact details
+  and skills, runs the neural **skill matcher** against the JD, computes a **rubric score**, and
+  persists each candidate. Uploads are capped at **5 MiB** per file (`MAX_CV_BYTES`), and
+  duplicate CVs are skipped by content hash and email.
+- **Rubric scoring** (`cv_parser.compute_rubric_score`) scores a CV on four axes — technical
+  stack, architecture, experience, and preferred/extra signals — assigns an experience tier
+  (senior/mid/junior), and applies a **knock-out rule** (`framework_cap`): if a CV has zero
+  skill overlap against a JD that lists at least five extractable skills, its score is capped at
+  40, preventing irrelevant CVs from scoring highly.
+- **Atomic job statistics** are updated within a Firestore transaction so concurrent uploads do
+  not lose updates.
+- **Pre-computed analytics.** `GET /analytics` reads a pre-computed `CompanyStats` document
+  rather than scanning every candidate on each request; the document is refreshed in the
+  background after CV uploads and interview completions, with an in-memory time-to-live cache as
+  a fast path. This avoids an O(jobs × candidates) scan on every dashboard load.
+- **Ownership checks.** Every job-scoped route verifies that the job belongs to the caller's
+  company before returning data, enforcing tenant isolation.
+
+**Pseudocode — batch CV upload.**
+
+```
+function upload_cvs(job_id, files, company_id):
+    job = authorize_job(job_id, company_id)
+    for file in files:
+        if size(file) > 5 MiB: skip
+        text   = parse(file)
+        if duplicate(hash(text)) or duplicate(email(text)): skip
+        skills = extract_skills(text)
+        match  = skill_matcher(skills, job.skills)
+        score  = rubric_score(text, job.description, job.skills)
+        persist_candidate(job_id, {skills, match, score, ...})
+    update_job_stats(job_id)         # atomic transaction
+    refresh_analytics(company_id)    # background
+```
+
+---
+
+## 4.5 Training Layer
+
+**Module:** `training/`. The training layer is offline and produces the checkpoints consumed by
+the other layers.
+
+**Figure 4.4 — Training Pipeline.**
+
+```mermaid
+flowchart LR
+    GEN["Data generation<br/>generate_*_data.py"] --> SPLIT["70 / 15 / 15 split<br/>train / val / test"]
+    SPLIT --> TRAIN["Train (seeds, AdamW,<br/>cosine LR, early stop)"]
+    TRAIN --> LOG["MLflow + TensorBoard"]
+    TRAIN --> VAL["Validate (select best epoch)"]
+    VAL --> TEST["Held-out TEST evaluation"]
+    TEST --> CKPT["Checkpoint → models/checkpoints"]
+    CKPT --> STUDY["Human-rating study<br/>(Spearman + Cohen's κ)"]
+```
+
+Each trainer (`train_evaluator.py`, `train_scorer.py`, `train_ranker.py`,
+`train_skill_matcher.py`, `train_difficulty.py` / `train_difficulty_ppo.py`,
+`train_emotion.py`, `train_predictor.py`, `train_cross_encoder.py`) shares the same hygiene:
+fixed random seeds, an AdamW optimizer with cosine-annealing learning-rate schedule, early
+stopping with best-state restoration, dual MLflow + TensorBoard logging, and rank-aware metrics
+(Spearman, NDCG, F1). Models are trained on a **70/15/15** split and final numbers are reported
+on the **held-out test fold**, not the validation fold used for early stopping.
+
+To prevent a train/inference embedding mismatch, the evaluator's training answers are
+re-encoded with the same `all-mpnet-base-v2` embedder used in production, and the checkpoint is
+stamped with the embedder identity so the registry can reject a mismatched model.
+
+**Representative held-out TEST metrics.**
+
+| Model | Metric | Value |
+|-------|--------|-------|
+| MultiHeadEvaluator | Spearman (relevance) | ≈ 0.95 |
+| MultiHeadEvaluator | Spearman (clarity) | ≈ 0.95 |
+| MultiHeadEvaluator | Spearman (depth) | ≈ 0.95 |
+| CandidateScoringMLP | MAE | ≈ 0.067 |
+| CandidateScoringMLP | Spearman | ≈ 0.93 |
+
+A **human-rating study** (`human_rating_study.py`) compares the system's scores against human
+ratings on a stratified sample of answers, reporting Spearman's correlation (≈ 0.95) and
+Cohen's κ (≈ 0.50). A **fairness audit** and a **RAG evaluation** harness are also provided.
+
+*Results & discussion.* The held-out methodology and consistent embedder give the reported
+metrics credibility. As noted in Chapter 6, the human study currently has a single rater and
+should be extended to several raters for inter-rater reliability.
+
+---
+
+## 4.6 Database Design
+
+MyHR persists all enterprise state in **Cloud Firestore**, a document database. Collections and
+their relationships are shown below.
+
+**Figure 4.5 — Database Relationships.**
+
+```mermaid
+erDiagram
+    COMPANIES ||--o{ JOBS : owns
+    JOBS ||--o{ CANDIDATES : contains
+    COMPANIES ||--o{ COMPANYSTATS : "1:1 analytics"
+    PENDINGREQUESTS ||--|| COMPANIES : "approval creates"
+    INVITATIONTOKENS }o--|| COMPANIES : "scoped to"
+    USERS }o--o{ COMPANIES : "adminUIDs membership"
+
+    COMPANIES { string id; string name; array adminUIDs; string domain; object settings }
+    JOBS { string id; string companyId; string title; string description; array extractedSkills; object stats }
+    CANDIDATES { string id; string name; string email; number matchScore; number interviewScore; number totalScore; string interviewStatus }
+    USERS { string uid; string role }
+    PENDINGREQUESTS { string id; string companyName; string contactEmail; string status }
+    INVITATIONTOKENS { string token; string type; string companyId; string jobId; string candidateId; datetime expiresAt }
+    COMPANYSTATS { string companyId; object stats; array monthly_trends; datetime updatedAt }
+```
+
+**Table 4.2 — Firestore Collections.**
+
+| Collection | Purpose | Key fields |
+|------------|---------|-----------|
+| `Companies` | Tenant record | `name`, `adminUIDs`, `domain`, `settings` |
+| `Jobs` | Job postings | `companyId`, `title`, `description`, `extractedSkills`, `stats` |
+| `Jobs/{id}/Candidates` | Candidates per job (subcollection) | `name`, `email`, `matchScore`, `interviewScore`, `totalScore`, `interviewStatus` |
+| `Users` | Portal role registry | `uid`, `role` (`candidate`) |
+| `PendingRequests` | Enterprise access requests | `companyName`, `contactEmail`, `status` |
+| `InvitationTokens` | Access & interview tokens | `type`, `companyId`, `jobId`, `candidateId`, `expiresAt`, `usedAt` |
+| `CompanyStats` | Pre-computed analytics | `stats`, `monthly_trends`, `updatedAt` |
+
+The total candidate score combines the CV match and the interview at a fixed weighting —
+**40% CV match + 60% interview** (`CV_SCORE_WEIGHT = 0.4`, `INTERVIEW_SCORE_WEIGHT = 0.6`).
+
+---
+
+## 4.7 API Reference
+
+The backend exposes two routers: interview/system endpoints in `server.py`, and the enterprise
+router in `hr_routes.py`.
+
+**Table 4.3 — API Reference: Interview & System Endpoints (`server.py`).**
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/start_interview` | Token/session | Start a (practice) interview session |
+| POST | `/candidate-interview/{token}/start` | Public token | Start a token-based candidate interview |
+| WS | `/ws/interview/{session_id}` | Session | Live audio/video interview channel |
+| GET | `/end_interview/{session_id}` | Session | End an interview and finalize |
+| POST | `/analyze_frame` | Session | Proctoring: analyze a single video frame |
+| POST | `/submit_answer` | Session | Submit and evaluate an answer |
+| POST | `/candidates/rank` | Internal | Rank candidates with the neural ranker |
+| GET | `/health` | Public | Liveness/health check |
+| GET | `/metrics` | Public | In-process metrics |
+
+**Table 4.4 — API Reference: Enterprise Endpoints (`hr_routes.py`).**
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/request-access` | Public | Submit enterprise access request |
+| GET | `/admin/pending-requests` | Admin | List pending requests |
+| POST | `/admin/accept-request/{id}` | Admin | Approve request, create company + invite |
+| POST | `/admin/reject-request/{id}` | Admin | Reject a request |
+| GET | `/invite/{token}/validate` | Public token | Validate a company-access invite |
+| POST | `/invite/{token}/accept` | Firebase | Link user to company (grants HR role) |
+| POST | `/jobs` | HR | Create a job |
+| GET | `/jobs` | HR | List company jobs |
+| GET | `/jobs/{id}` | HR | Get a job |
+| POST | `/jobs/{id}/upload-cvs` | HR | Batch upload + score CVs |
+| GET | `/jobs/{id}/candidates` | HR | List candidates (paged/filtered) |
+| GET | `/jobs/{id}/candidates/{cid}` | HR | Get a candidate (with report) |
+| DELETE | `/jobs/{id}/candidates/{cid}` | HR | Remove a candidate |
+| POST | `/user/role` | Firebase | Self-register as candidate |
+| GET | `/user/role/{uid}` | Public | Resolve a user's role |
+| POST | `/jobs/{id}/invite-interview/{cid}` | HR | Email an interview invite |
+| GET | `/candidate-interview/{token}/validate` | Public token | Validate interview token |
+| POST | `/candidate-interview/{token}/complete` | Public token | Finalize interview (server-scored) |
+| GET | `/analytics` | HR | Company hiring analytics |
+| POST | `/jobs/{id}/rank-candidates` | HR | Neural ranking of candidates |
+
+---
+
+## 4.8 Authentication & Authorization
+
+**Modules:** `firestore_client.py`, `hr_routes.py`, and `src/contexts/AuthContext.jsx` on the
+frontend. Identity is provided by **Firebase Authentication**; the backend verifies the
+Firebase **ID token** on protected routes.
+
+Three roles exist:
+
+- **Candidate** — self-registerable (`POST /user/role` accepts only `candidate`). Candidates can
+  run practice interviews.
+- **HR (enterprise)** — *not* self-assignable. The role is granted only by accepting a company
+  invitation, which adds the user's UID to the company's `adminUIDs` array; the role resolver
+  (`GET /user/role/{uid}`) reports `hr` precisely when the UID appears in some company's
+  `adminUIDs`. An email already registered as a candidate cannot also become enterprise, and
+  vice-versa — one email maps to one role.
+- **Super-admin** — a fixed allowlist email with platform privileges (approving requests).
+
+Public interview links use cryptographically strong tokens (`secrets.token_urlsafe`) with an
+expiry, validated server-side; the corporate-email gate restricts enterprise sign-up to
+corporate domains (with a `BYPASS_EMAIL_CHECK` escape hatch for local testing). Interview scores
+are computed only from the server-side synthesized report, so a candidate cannot submit their
+own score.
+
+**Figure 4.6 — Authentication & RBAC Flow.**
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant FE as React SPA
+    participant FB as Firebase Auth
+    participant API as FastAPI
+    participant FS as Firestore
+
+    U->>FE: Sign in / sign up
+    FE->>FB: Authenticate
+    FB-->>FE: ID token
+    FE->>API: Request + Bearer ID token
+    API->>FB: Verify token → uid
+    API->>FS: Resolve role (adminUIDs / Users)
+    FS-->>API: role (candidate | hr | admin)
+    API-->>FE: Authorized response (role-gated)
+```
+
+---
+
+## 4.9 Configuration
+
+Configuration is supplied via environment variables (a local `.env` file in development).
+
+**Table 4.5 — Environment Variables.**
+
+| Variable | Purpose |
+|----------|---------|
+| `GROQ_API_KEY` | Groq LLM access (`llama-3.3-70b-versatile`) |
+| `DEEPGRAM_API_KEY` | Speech-to-text / text-to-speech |
+| `PINECONE_API_KEY` | Pinecone vector index |
+| `OPENAI_API_KEY` | Optional LLM/embedding access |
+| `FIREBASE_SERVICE_ACCOUNT_PATH` | Firebase Admin SDK credentials |
+| `VITE_FIREBASE_*` | Frontend Firebase web config |
+| `RESEND_API_KEY` | Resend email transport |
+| `SMTP_USER`, `SMTP_PASS` | Gmail SMTP transport (App Password) |
+| `MYHR_BASE_URL` | Frontend base URL for email links (e.g. `http://localhost:8080`) |
+| `AWS_*`, `S3_BUCKET_NAME`, `MINIO_ENDPOINT` | Object storage (MinIO/S3) configuration |
+| `REDIS_URL` | Redis connection (caching) |
+| `DATABASE_URL` | Relational database URL (auxiliary) |
+| `BYPASS_EMAIL_CHECK` | Dev escape hatch for the corporate-email gate |
+
+The email service tries Gmail SMTP first (when `SMTP_USER`/`SMTP_PASS` are set), then falls
+back to the Resend API, and logs a warning if neither is configured. The LLM embedder is loaded
+lazily at startup so model loading does not block application import.

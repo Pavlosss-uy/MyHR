@@ -52,6 +52,11 @@ _init_firebase()
 db = firestore.client()
 
 
+def get_db():
+    """Return the module-level Firestore client."""
+    return db
+
+
 # ---------- Helper functions ----------
 
 def get_doc(collection: str, doc_id: str) -> dict | None:
@@ -95,7 +100,7 @@ def query_collection(
 
     if filters:
         for field, op, value in filters:
-            ref = ref.where(field, op, value)
+            ref = ref.where(filter=firestore.FieldFilter(field, op, value))
 
     if order_by:
         direction = (

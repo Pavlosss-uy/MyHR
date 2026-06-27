@@ -6,7 +6,8 @@ import {
     updateProfile,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import { validateInvitation, acceptInvitation, registerUserRole } from "@/lib/interviewApi";
+import { validateInvitation, acceptInvitation } from "@/lib/interviewApi";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,6 +16,7 @@ import { Brain, ArrowRight, Lock, User, Loader2, AlertCircle, CheckCircle2, Cloc
 const AcceptInvitation = () => {
     const { token } = useParams();
     const navigate = useNavigate();
+    const { forceRole } = useAuth();
 
     const [loading, setLoading] = useState(true);
     const [validating, setValidating] = useState(true);
@@ -49,21 +51,18 @@ const AcceptInvitation = () => {
         const password = (data.get("password") ?? "").trim();
 
         try {
-            // Create the Firebase account
+            sessionStorage.setItem("myhr_role", "hr");
+
             const credential = await createUserWithEmailAndPassword(auth, email, password);
             await updateProfile(credential.user, { displayName: name || email.split("@")[0] });
 
-            // Link user to company and register role
             await acceptInvitation(token, credential.user.uid);
-            await registerUserRole(credential.user.uid, "hr");
-
-            // Store role and redirect
-            sessionStorage.setItem("myhr_role", "hr");
-            localStorage.setItem("myhr_role", "hr");
+            forceRole("hr");
             navigate("/hr/dashboard", { replace: true });
         } catch (err) {
+            sessionStorage.removeItem("myhr_role");
             const messages = {
-                "auth/email-already-in-use": "An account with this email already exists. Try signing in.",
+                "auth/email-already-in-use": "This email is already registered. Enterprise access requires a dedicated email address — please ask the admin to invite a different email.",
                 "auth/weak-password": "Password must be at least 6 characters.",
                 "auth/invalid-email": "Please enter a valid email address.",
             };
