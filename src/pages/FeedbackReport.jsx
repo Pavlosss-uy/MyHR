@@ -18,6 +18,9 @@ import {
     TrendingUp,
     Award,
     Mic,
+    ShieldAlert,
+    ShieldCheck,
+    Shield,
 } from "lucide-react";
 import {
     PieChart,
@@ -336,6 +339,10 @@ const FeedbackReport = () => {
     const recommendations = ca.recommendations || [];
 
     const hasToneSection = dominantTone || toneData.length > 0 || observations.length > 0;
+
+    // ── Integrity data ────────────────────────────────────────────────────────
+    const integrityAssessment = rr.integrity_assessment || null;
+    const hasIntegritySection = !!integrityAssessment;
 
     return (
         <div className="min-h-screen bg-background">
@@ -814,6 +821,72 @@ const FeedbackReport = () => {
                                 </div>
                             )}
 
+                        </div>
+                    </motion.div>
+                )}
+
+                {/* ── Interview Integrity ─────────────────────────────────── */}
+                {hasIntegritySection && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.65 }}
+                        className="bg-card rounded-xl border border-border shadow-sm mb-8 overflow-hidden"
+                    >
+                        <div className={`p-4 border-b ${
+                            integrityAssessment.grade === 'Clean' ? 'bg-mint/10 border-mint/20' :
+                            integrityAssessment.grade === 'Minor Concerns' ? 'bg-yellow-500/10 border-yellow-500/20' :
+                            integrityAssessment.grade === 'Flagged' ? 'bg-orange-500/10 border-orange-500/20' :
+                            'bg-destructive/10 border-destructive/20'
+                        }`}>
+                            <div className="flex items-center gap-3">
+                                <div className={`p-2 rounded-lg ${
+                                    integrityAssessment.grade === 'Clean' ? 'bg-mint/20 text-mint' :
+                                    integrityAssessment.grade === 'Minor Concerns' ? 'bg-yellow-500/20 text-yellow-500' :
+                                    integrityAssessment.grade === 'Flagged' ? 'bg-orange-500/20 text-orange-500' :
+                                    'bg-destructive/20 text-destructive'
+                                }`}>
+                                    {integrityAssessment.grade === 'Clean' ? <ShieldCheck className="w-5 h-5" /> : 
+                                     integrityAssessment.grade === 'Minor Concerns' ? <Shield className="w-5 h-5" /> :
+                                     <ShieldAlert className="w-5 h-5" />}
+                                </div>
+                                <div>
+                                    <h3 className={`font-semibold ${
+                                        integrityAssessment.grade === 'Clean' ? 'text-mint' :
+                                        integrityAssessment.grade === 'Minor Concerns' ? 'text-yellow-500' :
+                                        integrityAssessment.grade === 'Flagged' ? 'text-orange-500' :
+                                        'text-destructive'
+                                    }`}>
+                                        Integrity Assessment: {integrityAssessment.grade}
+                                    </h3>
+                                    <p className="text-xs text-muted-foreground mt-0.5">
+                                        Based on camera proctoring analysis during the session
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div className="p-5 space-y-4">
+                            <p className="text-sm text-foreground leading-relaxed">
+                                {integrityAssessment.summary}
+                            </p>
+                            
+                            {integrityAssessment.details && integrityAssessment.details.length > 0 && (
+                                <div className="space-y-2">
+                                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Specific Observations</p>
+                                    <ul className="space-y-2">
+                                        {integrityAssessment.details.map((detail, i) => (
+                                            <li key={i} className="flex items-start gap-2.5 text-xs text-muted-foreground leading-relaxed">
+                                                <span className={`shrink-0 mt-1 w-1.5 h-1.5 rounded-full ${
+                                                    integrityAssessment.grade === 'Clean' ? 'bg-mint' :
+                                                    'bg-warning'
+                                                }`} />
+                                                {detail}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
                         </div>
                     </motion.div>
                 )}

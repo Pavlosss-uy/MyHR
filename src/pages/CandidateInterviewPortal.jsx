@@ -8,7 +8,9 @@ import AudioQuestionPlayer from "@/components/AudioQuestionPlayer";
 import { useMediaDevices } from "@/hooks/useMediaDevices";
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
+import { useProctoring } from "@/hooks/useProctoring";
 import { useVAD } from "@/hooks/useVAD";
+import { toast } from "sonner";
 import {
     validateInterviewToken,
     completeCandidateInterview,
@@ -46,22 +48,6 @@ import {
  * user has clicked "Begin Interview") rather than on the welcome screen.
  */
 
-// Aggregate per-frame proctor buffer for one answer (mirrors models/proctor.aggregate)
-function aggregateProctoring(frames) {
-    if (!frames || frames.length === 0) {
-        return { face_absent_pct: 0, looking_away_pct: 0, multiple_faces_detected: false, frames_analyzed: 0, suspicious: false };
-    }
-    const total   = frames.length;
-    const present = frames.filter((f) => f.face_present);
-    return {
-        face_absent_pct:         +((total - present.length) / total).toFixed(3),
-        looking_away_pct:        +(present.filter((f) => f.looking_away).length / total).toFixed(3),
-        multiple_faces_detected: frames.some((f) => f.multiple_faces),
-        frames_analyzed:         total,
-        suspicious:              frames.some((f) => f.multiple_faces) || (total - present.length) / total > 0.20,
-    };
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Inner component — mounts only when interview is active
 // Uses the same hooks as InterviewRoom so camera/VAD/mic behave identically.
@@ -84,7 +70,23 @@ const EnterpriseInterviewRoom = ({
 
     const { isRecording, startRecording, stopRecording } = useAudioRecorder(stream);
     const { isPlaying, speakQuestion, stopSpeaking }     = useAudioPlayer();
-    const { vadBlob, clearBlob, userSpeaking: vadSpeaking, listening: vadListening, setVADPaused } = useVAD();
+
+    // ── VAD countdown state (defined before useVAD so setters are stable) ────
+    const [preAnswerCountdown, setPreAnswerCountdown] = useState(null); // 3|2|1|null
+    const [noSpeechTimer,      setNoSpeechTimer]      = useState(null); // 45→0|null
+    const [pendingBlob,        setPendingBlob]         = useState(null);
+    const [silenceCountdown,   setSilenceCountdown]   = useState(null); // 3|2|1|0|null
+    const hasSpokeRef   = useRef(false);
+    const wasPlayingRef = useRef(false);
+
+    const { vadBlob, clearBlob, userSpeaking: vadSpeaking, listening: vadListening, setVADPaused } = useVAD({
+        onSpeechStart: () => {
+            hasSpokeRef.current = true;
+            setNoSpeechTimer(null);
+            setSilenceCountdown(null);
+            setPendingBlob(null);
+        },
+    });
 
     // ── Interview state ──────────────────────────────────────────────────────
     const [currentQuestion, setCurrentQuestion] = useState(initialQuestion);
@@ -104,9 +106,25 @@ const EnterpriseInterviewRoom = ({
     const audioRef = useRef(null);
     const [isBackendPlaying, setIsBackendPlaying] = useState(false);
 
-    // ── Proctoring (silent) ──────────────────────────────────────────────────
-    const canvasRef        = useRef(null);
-    const proctorBufferRef = useRef([]);
+    // ── Proctoring (centralised hook) ────────────────────────────────────────
+    const canvasRef = useRef(null);
+    const {
+        proctorAlert,
+        warningTier,
+        warningMessage,
+        suspicionScore,
+        gazeScore,
+        violationCount,
+        violationLog,
+        getAnswerIntegrity,
+        resetAnswerBuffer,
+        setQuestionNumber: setProctoringQuestion,
+    } = useProctoring(videoRef, canvasRef, isCameraOn, mediaError, { showWarnings: true });
+
+    // Sync question number with proctoring
+    useEffect(() => {
+        setProctoringQuestion(questionNumber);
+    }, [questionNumber, setProctoringQuestion]);
 
     // ── Refs ─────────────────────────────────────────────────────────────────
     const transcriptRef       = useRef(null);
@@ -162,35 +180,50 @@ const EnterpriseInterviewRoom = ({
         }
     }, [audioUrl, currentQuestion]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // ── Mute VAD while TTS is playing (same as InterviewRoom) ───────────────
+    // ── Mute VAD while TTS playing; start pre-answer countdown when it ends ──
     useEffect(() => {
         const ttsActive = isBackendPlaying || isPlaying;
         if (ttsActive) {
+            wasPlayingRef.current = true;
             setVADPaused(true);
-        } else {
-            const t = setTimeout(() => setVADPaused(false), 400);
-            return () => clearTimeout(t);
+            setPreAnswerCountdown(null);
+            setSilenceCountdown(null);
+            setPendingBlob(null);
+        } else if (wasPlayingRef.current) {
+            wasPlayingRef.current = false;
+            // Show "Get ready" countdown; VAD stays paused until countdown hits 0
+            setPreAnswerCountdown(3);
         }
     }, [isBackendPlaying, isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // ── Silent proctoring — frame every 2 s ─────────────────────────────────
+    // ── Pre-answer countdown: 3→2→1→0 → enable VAD + start anti-cheat timer ─
     useEffect(() => {
-        if (!isCameraOn || mediaError) return;
-        const interval = setInterval(async () => {
-            const video  = videoRef.current;
-            const canvas = canvasRef.current;
-            if (!video || !canvas || video.readyState < 2) return;
-            canvas.width  = 640;
-            canvas.height = 480;
-            canvas.getContext("2d").drawImage(video, 0, 0, 640, 480);
-            const base64 = canvas.toDataURL("image/jpeg", 0.75).split(",")[1];
-            try {
-                const result = await analyzeFrame(base64);
-                proctorBufferRef.current.push(result);
-            } catch { /* silent */ }
-        }, 2000);
-        return () => clearInterval(interval);
-    }, [isCameraOn, mediaError]); // eslint-disable-line react-hooks/exhaustive-deps
+        if (preAnswerCountdown === null) return;
+        if (preAnswerCountdown === 0) {
+            setPreAnswerCountdown(null);
+            setVADPaused(false);
+            hasSpokeRef.current = false;
+            setNoSpeechTimer(45);
+            return;
+        }
+        const t = setTimeout(() => setPreAnswerCountdown((c) => c - 1), 1000);
+        return () => clearTimeout(t);
+    }, [preAnswerCountdown]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ── Anti-cheat: auto-submit empty if candidate stays silent for 45s ──────
+    useEffect(() => {
+        if (noSpeechTimer === null) return;
+        if (noSpeechTimer === 0) {
+            setNoSpeechTimer(null);
+            if (!isSubmitting && sessionId)
+                _doSubmit(new Blob([], { type: "audio/wav" }));
+            return;
+        }
+        const t = setTimeout(() => setNoSpeechTimer((c) => c - 1), 1000);
+        return () => clearTimeout(t);
+    }, [noSpeechTimer]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ── Proctoring frame capture is now handled by useProctoring ────────────
 
     // ── Core submit ──────────────────────────────────────────────────────────
     const _doSubmit = useCallback(async (audioBlob) => {
@@ -199,8 +232,8 @@ const EnterpriseInterviewRoom = ({
         stopSpeaking();
         if (audioRef.current) { audioRef.current.pause(); setIsBackendPlaying(false); }
 
-        const integrity = aggregateProctoring(proctorBufferRef.current);
-        proctorBufferRef.current = [];
+        const integrity = getAnswerIntegrity();
+        resetAnswerBuffer();
 
         try {
             const result = await submitAnswer(sessionId, audioBlob, integrity);
@@ -240,7 +273,7 @@ const EnterpriseInterviewRoom = ({
                         summary:    result.rich_report?.summary    || "",
                         strengths:  result.rich_report?.strengths  || [],
                         weaknesses: result.rich_report?.weaknesses || [],
-                    });
+                    }, violationLog);
                 } catch (e) {
                     console.error("Failed to save interview results:", e);
                 }
@@ -304,13 +337,35 @@ const EnterpriseInterviewRoom = ({
         }
     }, [isRecording, sessionId, isSubmitting, stopRecording, _doSubmit]);
 
-    // ── VAD auto-submit ──────────────────────────────────────────────────────
+    // ── VAD speech ended → start 3s submission countdown instead of instant submit
     useEffect(() => {
         if (!vadBlob || isSubmitting || !sessionId || isRecording) return;
+        hasSpokeRef.current = true;
+        setNoSpeechTimer(null);
         const blob = vadBlob;
         clearBlob();
-        _doSubmit(blob);
+        setPendingBlob(blob);
+        setSilenceCountdown(3);
     }, [vadBlob]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ── Silence countdown tick → auto-submit at 0 ────────────────────────────
+    useEffect(() => {
+        if (silenceCountdown === null) return;
+        if (silenceCountdown === 0) {
+            const blob = pendingBlob;
+            setPendingBlob(null);
+            setSilenceCountdown(null);
+            if (blob && !isSubmitting && sessionId) _doSubmit(blob);
+            return;
+        }
+        const t = setTimeout(() => setSilenceCountdown((c) => c - 1), 1000);
+        return () => clearTimeout(t);
+    }, [silenceCountdown]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const cancelCountdown = useCallback(() => {
+        setSilenceCountdown(null);
+        setPendingBlob(null);
+    }, []);
 
     // ── End early ────────────────────────────────────────────────────────────
     const handleEndInterview = useCallback(async () => {
@@ -327,7 +382,7 @@ const EnterpriseInterviewRoom = ({
                 : 0;
             await completeCandidateInterview(token, sessionId, avgScore, {
                 evaluations: evals, summary: "", strengths: [], weaknesses: [],
-            });
+            }, violationLog);
         } catch { /* non-fatal */ }
         onComplete();
     }, [isEnding, isRecording, sessionId, token, stopSpeaking, stopRecording, onComplete]);
@@ -349,17 +404,27 @@ const EnterpriseInterviewRoom = ({
 
     const statusLabel = isSubmitting
         ? "Saving and analysing response…"
+        : silenceCountdown !== null
+        ? `Submitting in ${silenceCountdown}s — keep talking or submit now`
+        : preAnswerCountdown !== null
+        ? `Answer starts in ${preAnswerCountdown}…`
+        : noSpeechTimer !== null && noSpeechTimer <= 20 && !hasSpokeRef.current
+        ? `No answer detected — auto-submitting in ${noSpeechTimer}s`
         : isRecording
         ? "Recording — press Submit when done"
         : vadSpeaking
-        ? "Speaking detected — auto-submitting when you stop…"
+        ? "Speaking detected…"
         : vadListening
         ? "Listening… speak your answer"
         : isMicOn
         ? "Tap the mic to start your answer"
         : "Microphone is muted";
 
-    const statusDot = isRecording
+    const statusDot = isSubmitting || silenceCountdown !== null
+        ? "bg-warning animate-pulse"
+        : preAnswerCountdown !== null
+        ? "bg-cobalt animate-pulse"
+        : isRecording
         ? "bg-destructive animate-pulse"
         : isMicOn
         ? "bg-mint animate-pulse"
@@ -447,7 +512,11 @@ const EnterpriseInterviewRoom = ({
                                 videoRef={videoRef}
                                 isCameraOn={isCameraOn}
                                 error={mediaError}
-                                proctorAlert={null}
+                                proctorAlert={proctorAlert}
+                                warningTier={warningTier}
+                                warningMessage={warningMessage}
+                                gazeScore={gazeScore}
+                                violationCount={violationCount}
                             />
                         </div>
                     </motion.div>
@@ -560,6 +629,45 @@ const EnterpriseInterviewRoom = ({
                             )}
                         </button>
                     </div>
+
+                    {/* ── Pre-answer countdown ────────────────────────────── */}
+                    <AnimatePresence>
+                        {preAnswerCountdown !== null && (
+                            <motion.div
+                                key="pre-answer"
+                                initial={{ opacity: 0, y: 6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0 }}
+                                className="shrink-0 flex flex-col items-center gap-1 py-2"
+                            >
+                                <p className="text-xs text-primary-foreground/50">Get ready to answer…</p>
+                                <p className="text-5xl font-bold text-cobalt-light">{preAnswerCountdown}</p>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
+                    {/* ── Submission countdown ─────────────────────────────── */}
+                    <AnimatePresence>
+                        {silenceCountdown !== null && !isSubmitting && (
+                            <motion.div
+                                key="sub-countdown"
+                                initial={{ opacity: 0, y: 6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0 }}
+                                className="shrink-0 flex items-center gap-3 bg-warning/10 border border-warning/30 rounded-xl px-4 py-2.5"
+                            >
+                                <p className="text-xs flex-1 text-primary-foreground/70">
+                                    Submitting in <span className="font-bold text-warning">{silenceCountdown}s</span>…
+                                </p>
+                                <Button size="sm" variant="outline" className="text-xs h-7 px-3" onClick={cancelCountdown}>
+                                    Keep Talking
+                                </Button>
+                                <Button size="sm" variant="hero" className="text-xs h-7 px-3" onClick={() => setSilenceCountdown(0)}>
+                                    Submit Now
+                                </Button>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
 
                     {/* Status hint */}
                     <div className="flex items-center justify-center gap-2 shrink-0 pb-1">

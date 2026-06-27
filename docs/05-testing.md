@@ -10,17 +10,43 @@
 
 **Chapter Outline**
 
-- 5.1 Installation
-- 5.2 Running the System
-- 5.3 Automated Test Suite
-- 5.4 End-to-End Walkthrough
+- 5.1 Testing Strategy
+- 5.2 Installation
+- 5.3 Running the System
+- 5.4 Automated Test Suite
+- 5.5 End-to-End Walkthrough
 
-This chapter explains how to install, configure, run, and test MyHR, and walks through the
-end-to-end golden path with screenshots.
+This chapter explains the testing strategy, how to install, configure, run, and test MyHR, and
+walks through the end-to-end golden path with screenshots.
 
 ---
 
-## 5.1 Installation
+## 5.1 Testing Strategy
+
+MyHR is tested at several levels, chosen to give the most confidence per unit of effort given a
+system that mixes deterministic business logic with non-deterministic AI components.
+
+| Level | What is tested | How |
+|-------|----------------|-----|
+| **Unit** | Pure logic: CV parsing, skill extraction, rubric scoring, the corporate-email gate, secure token generation, CV-text validation | `pytest` against the functions directly (`test_cv_parser.py`, `test_hr_helpers.py`) |
+| **Integration** | Cross-module behaviour of the enterprise helpers | `pytest` (`test_integration.py`) with a fake model registry fixture |
+| **API** | Endpoint contracts (status codes, auth gating, payload shape) | Manual and `pytest` against FastAPI's `/docs` and routes |
+| **AI / model** | Model quality on held-out test folds (Spearman, NDCG, MAE) | Training-layer evaluators (`training/evaluate_*.py`) reported in Chapter 6 |
+| **RAG** | Retrieval grounding quality | `training/evaluate_rag.py` |
+| **Frontend** | React component behaviour | **Vitest** + React Testing Library |
+| **Manual / UAT** | End-to-end golden path (Section 5.5) | Human walkthrough with screenshots |
+
+A deliberate design choice is that the **non-deterministic AI is evaluated statistically** (on
+test sets, by correlation metrics) rather than with brittle exact-output assertions, while the
+**deterministic logic** (parsing, scoring rules, auth gates) is pinned with fast, exact unit
+tests. The two heavy concerns — security gating and CV scoring — receive the most unit coverage
+because they are both deterministic and high-risk. Performance, load, and full security
+penetration testing are identified as future work (Chapter 7); they are **not applicable in the
+current implementation** beyond the per-route rate limiting already provided by SlowAPI.
+
+---
+
+## 5.2 Installation
 
 MyHR has a Python backend and a Node.js frontend. Both must be installed.
 
@@ -54,7 +80,7 @@ frontend (e.g. `http://localhost:8080`).
 
 ---
 
-## 5.2 Running the System
+## 5.3 Running the System
 
 The backend and frontend run as two processes.
 
@@ -88,11 +114,11 @@ flowchart LR
 
 For a production deployment, the frontend is built with `npm run build` (output in `dist/`) and
 served as static assets, while the backend runs under a production ASGI server; object storage,
-caching, and observability would be hardened as described in Chapter 6.
+caching, and observability would be hardened as described in Chapter 7.
 
 ---
 
-## 5.3 Automated Test Suite
+## 5.4 Automated Test Suite
 
 The backend ships with a `pytest` suite under `tests/`.
 
@@ -119,7 +145,7 @@ tests.
 
 ---
 
-## 5.4 End-to-End Walkthrough
+## 5.5 End-to-End Walkthrough
 
 The following golden path exercises the full system. Screenshot placeholders mark where to
 insert captured images before submission.

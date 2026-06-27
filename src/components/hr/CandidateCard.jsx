@@ -9,7 +9,7 @@ const statusBadge = {
     completed: { label: "Completed", style: "bg-mint/10 text-mint-dark" },
 };
 
-const CandidateCard = ({ candidate, index = 0, inviting = false, ignoring = false, onViewDetails, onViewReport, onInvite, onIgnore }) => {
+const CandidateCard = ({ candidate, index = 0, inviting = false, ignoring = false, jobClosed = false, onViewDetails, onViewReport, onInvite, onIgnore }) => {
     const { name, email, matchScore, matchDetails, interviewStatus, totalScore } = candidate;
     const badge = statusBadge[interviewStatus] || statusBadge.not_invited;
     const matched = matchDetails?.matched || [];
@@ -111,7 +111,7 @@ const CandidateCard = ({ candidate, index = 0, inviting = false, ignoring = fals
                     <Eye className="w-3.5 h-3.5 mr-1" />
                     View Details
                 </Button>
-                {interviewStatus === "not_invited" && (
+                {interviewStatus === "not_invited" && !jobClosed && (
                     <Button variant="hero" size="sm" className="flex-1" onClick={() => onInvite?.(candidate)} disabled={inviting}>
                         {inviting
                             ? <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />Sending…</>

@@ -19,6 +19,7 @@
 - 4.7 API Reference
 - 4.8 Authentication & Authorization
 - 4.9 Configuration
+- 4.10 Proctoring, Speech & Anti-Cheating
 
 This chapter describes the detailed implementation of each component. In keeping with the
 documentation standard, it presents **flowcharts and pseudocode** rather than source listings,
@@ -192,7 +193,7 @@ Spearman ≈ 0.95 on each of relevance, clarity, and depth, and the scoring MLP 
 MAE ≈ 0.067 with Spearman ≈ 0.93 — i.e. both models order answers very close to the reference
 labels. The candidate ranker is currently trained on synthetically generated comparative data
 and is therefore treated as a *tiebreaker* alongside the rubric and interview scores rather than
-an absolute measure (see Chapter 6).
+an absolute measure (see Chapter 7).
 
 ---
 
@@ -285,7 +286,7 @@ ratings on a stratified sample of answers, reporting Spearman's correlation (≈
 Cohen's κ (≈ 0.50). A **fairness audit** and a **RAG evaluation** harness are also provided.
 
 *Results & discussion.* The held-out methodology and consistent embedder give the reported
-metrics credibility. As noted in Chapter 6, the human study currently has a single rater and
+metrics credibility. As noted in Chapter 7, the human study currently has a single rater and
 should be extended to several raters for inter-rater reliability.
 
 ---
@@ -448,3 +449,96 @@ Configuration is supplied via environment variables (a local `.env` file in deve
 The email service tries Gmail SMTP first (when `SMTP_USER`/`SMTP_PASS` are set), then falls
 back to the Resend API, and logs a warning if neither is configured. The LLM embedder is loaded
 lazily at startup so model loading does not block application import.
+
+---
+
+## 4.10 Proctoring, Speech & Anti-Cheating
+
+**Modules:** `models/proctor.py` (computer-vision proctoring), the Deepgram integration in
+`server.py` (speech), and the candidate portal hooks `src/hooks/useVAD.js` and
+`src/pages/CandidateInterviewPortal.jsx` (anti-cheating).
+
+### Computer-vision proctoring
+
+Proctoring runs silently throughout the interview and never surfaces to the candidate. For each
+captured video frame, the proctor estimates three things: **how many faces are present**,
+**whether the candidate is looking away**, and **whether the eyes are closed / gaze is extreme**.
+It uses a three-tier detection chain so it degrades gracefully on machines without the heavier
+dependency:
+
+1. **MediaPipe FaceMesh** (`refine_landmarks=True`) provides **478 facial landmarks**, including
+   the iris contours (landmarks 468–477). From these the proctor computes an **Iris Position
+   Ratio (IPR)** — the horizontal position of the iris centre between the eye corners — and an
+   **Eye Aspect Ratio (EAR)** for closed-eye / extreme-downward-gaze detection. The final gaze
+   score is a weighted combination of iris position (0.55) and head pose (0.45).
+2. **YuNet** (`cv2.FaceDetectorYN`, an ONNX detector) provides fast, reliable **face counting**
+   and a head-pose fallback when MediaPipe is unavailable.
+3. **Haar cascade** is the final fallback.
+
+**Figure 4.7 — Proctoring Detection Pipeline.**
+
+```mermaid
+flowchart TB
+    F["Video frame (BGR)"] --> Q{"Quality OK?<br/>(brightness/blur)"}
+    Q -->|No| EMPTY["Empty result (skip)"]
+    Q -->|Yes| MP{"MediaPipe<br/>available?"}
+    MP -->|Yes| MESH["FaceMesh 478 landmarks"]
+    MESH --> IRIS["IPR (iris) + EAR (eyelids)"]
+    MESH --> FACES["Face count"]
+    MP -->|No| YUNET["YuNet head-pose + face count"]
+    IRIS --> SCORE["gaze_score = 0.55·iris + 0.45·head"]
+    YUNET --> SCORE
+    FACES --> AGG["Per-answer aggregation"]
+    SCORE --> AGG
+    AGG --> FLAG{"multiple faces, or<br/>face absent >20%, or<br/>looking away >30%?"}
+    FLAG -->|Yes| SUS["Mark answer suspicious"]
+    FLAG -->|No| OK["Clean"]
+```
+
+Observations are **aggregated per answer**. An answer is flagged *suspicious* if multiple faces
+appear, the face is absent for more than 20% of its frames, or the candidate looks away for more
+than 30% of its frames. As shown in Chapter 4.2, a suspicious answer incurs a score penalty
+(−5, or −8 when multiple faces are detected) at blend time.
+
+### Speech (STT / TTS)
+
+The interview is voice-native. Each question is synthesized to speech with **Deepgram TTS** and
+played to the candidate; each spoken answer is captured in the browser, sent to the backend, and
+transcribed with **Deepgram STT** before being passed to the scoring pipeline. The transcript is
+what the LLM judge and the neural evaluators actually score, so a candidate may answer by voice
+or by typing with identical downstream handling.
+
+### Anti-cheating in the candidate portal
+
+Two browser-side problems are addressed in the portal. First, **silence is not the same as a
+finished answer** — a candidate pausing to think must not have an incomplete answer submitted.
+Second, **a candidate must not be able to skip a question by staying completely silent**. The
+portal solves both with a small recording state machine built around browser **Voice Activity
+Detection (VAD)** (Silero VAD via `@ricky0123/vad-web`):
+
+- After a question's audio finishes, a mandatory **3-second "get ready" countdown** is shown
+  before the microphone becomes active. This also makes it impossible to start answering before
+  the question has fully played.
+- The VAD's silence tolerance (`redemptionFrames`) is set so that a natural ~250 ms mid-sentence
+  pause does **not** end the answer.
+- When the candidate does fall silent after speaking, a **3-second submission countdown** appears
+  with **"Keep Talking"** and **"Submit Now"** controls; speaking again cancels it. Only when the
+  countdown reaches zero (or *Submit Now* is pressed) is the audio submitted.
+- If the candidate never speaks at all, a **45-second no-speech timeout** auto-submits an empty
+  answer, so silent non-participation cannot be used to dodge a question.
+
+**Figure 4.8 — Anti-Cheating Recording State Machine.** *(See also Figure 3.9.)*
+
+```
+TTS ends ──▶ [PRE-ANSWER COUNTDOWN 3..2..1] ──▶ [LISTENING]
+   [LISTENING] ──speech──▶ [RECORDING] ──silence──▶ [SUBMIT COUNTDOWN 3..2..1]
+   [SUBMIT COUNTDOWN] ──speaks again / Keep Talking──▶ [RECORDING]
+   [SUBMIT COUNTDOWN] ──reaches 0 / Submit Now──▶ submit
+   [LISTENING] ──no speech for 45 s──▶ submit empty (anti-cheat)
+```
+
+*Results & discussion.* Separating "the candidate is thinking" from "the candidate is done"
+removed the most common usability complaint (premature submission) while the mandatory pre-answer
+countdown and the no-speech timeout together close the two obvious ways to game a hands-off
+interview. Because the logic lives in the portal's state, it applies identically to the
+enterprise candidate portal and the practice interview room.

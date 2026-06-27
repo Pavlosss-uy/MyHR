@@ -8,13 +8,16 @@ import { MicVAD, utils } from "@ricky0123/vad-web";
  *   baseAssetPath  "/"  →  /vad.worklet.bundle.min.js + /silero_vad_legacy.onnx
  *   onnxWASMBasePath "/" →  /ort-wasm-simd-threaded*.wasm
  */
-export function useVAD() {
+export function useVAD({ onSpeechStart: onSpeechStartCb } = {}) {
     const [vadBlob,      setVadBlob]      = useState(null);
     const [userSpeaking, setUserSpeaking] = useState(false);
     const [listening,    setListening]    = useState(false);
     const [vadError,     setVadError]     = useState(null);
     const vadRef    = useRef(null);
     const pausedRef = useRef(false);
+    // Stable ref so the MicVAD closure always calls the latest callback
+    const cbRef = useRef(onSpeechStartCb);
+    cbRef.current = onSpeechStartCb;
 
     useEffect(() => {
         let destroyed = false;
@@ -29,7 +32,9 @@ export function useVAD() {
                 ort.env.wasm.numThreads = 1;
             },
             onSpeechStart: () => {
-                if (!destroyed && !pausedRef.current) setUserSpeaking(true);
+                if (destroyed || pausedRef.current) return;
+                setUserSpeaking(true);
+                cbRef.current?.();
             },
             onSpeechEnd: (audio) => {
                 if (destroyed) return;
@@ -46,7 +51,7 @@ export function useVAD() {
             positiveSpeechThreshold: 0.80,
             negativeSpeechThreshold: 0.30,
             minSpeechFrames:    3,
-            redemptionFrames:   8,
+            redemptionFrames:   25,
             preSpeechPadFrames: 2,
         })
             .then((vad) => {

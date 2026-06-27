@@ -4,12 +4,13 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import Navbar from "@/components/Navbar";
 import CircularProgress from "@/components/CircularProgress";
 import { Button } from "@/components/ui/button";
-import { getCandidate } from "@/lib/interviewApi";
+import { getCandidate, regenerateCandidateReport } from "@/lib/interviewApi";
 import {
     ArrowLeft, Mail, Phone, Briefcase, Star, CheckCircle2, AlertCircle,
     Loader2, Brain, XCircle, Mic, BarChart3, Send, ThumbsUp, ThumbsDown,
-    Lightbulb, TrendingUp, BookOpen, Award,
+    Lightbulb, TrendingUp, BookOpen, Award, ShieldCheck, ShieldAlert, RefreshCw,
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import {
     PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
@@ -100,9 +101,11 @@ const CandidateProfile = () => {
     const [searchParams] = useSearchParams();
     const jobId = searchParams.get("jobId") || "";
 
-    const [candidate, setCandidate] = useState(null);
-    const [loading, setLoading]     = useState(true);
-    const [error, setError]         = useState("");
+    const [candidate, setCandidate]       = useState(null);
+    const [loading, setLoading]           = useState(true);
+    const [error, setError]               = useState("");
+    const [regenerating, setRegenerating] = useState(false);
+    const { toast } = useToast();
 
     useEffect(() => {
         if (!jobId || !id) { setError("Missing job or candidate reference."); setLoading(false); return; }
@@ -117,6 +120,19 @@ const CandidateProfile = () => {
             }
         })();
     }, [id, jobId]);
+
+    const handleRegenerate = async () => {
+        setRegenerating(true);
+        try {
+            const updated = await regenerateCandidateReport(jobId, id);
+            setCandidate(updated);
+            toast({ title: "Report regenerated", description: "Interview report has been rebuilt from session data." });
+        } catch (err) {
+            toast({ title: "Regeneration failed", description: err.message, variant: "destructive" });
+        } finally {
+            setRegenerating(false);
+        }
+    };
 
     if (loading) return (
         <div className="min-h-screen bg-background flex items-center justify-center">
@@ -216,9 +232,9 @@ const CandidateProfile = () => {
                         <div className="flex-1">
                             <div className="flex flex-col md:flex-row md:items-center gap-3 mb-3">
                                 <h1 className="text-2xl font-bold text-foreground">{candidate.name}</h1>
-                                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${rec.color}`}>{rec.label}</span>
-                                {ir.performance_level && <PerformanceBadge level={ir.performance_level} />}
-                                {ir.hiring_signal     && <HiringBadge signal={ir.hiring_signal} />}
+                                {interviewDone && (
+                                    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${rec.color}`}>{rec.label}</span>
+                                )}
                             </div>
                             <div className="grid sm:grid-cols-2 gap-3 text-sm text-muted-foreground">
                                 {candidate.email && <div className="flex items-center gap-2"><Mail className="w-4 h-4" />{candidate.email}</div>}
@@ -292,15 +308,41 @@ const CandidateProfile = () => {
 
                 {interviewDone && (
                     <>
+                        {/* Regenerate banner — shown when report is missing or score is 0 */}
+                        {(!ir.summary && !questionScores.length) && (
+                            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.28 }}
+                                className="bg-warning/10 border border-warning/30 rounded-xl p-4 mb-6 flex items-center justify-between gap-4">
+                                <div>
+                                    <p className="text-sm font-semibold text-warning">Interview report not available</p>
+                                    <p className="text-xs text-muted-foreground mt-0.5">The report may not have been generated. Click Re-generate to rebuild it from session data.</p>
+                                </div>
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="gap-2 border-warning text-warning hover:bg-warning/10 shrink-0"
+                                    onClick={handleRegenerate}
+                                    disabled={regenerating}
+                                >
+                                    {regenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                                    Re-generate Report
+                                </Button>
+                            </motion.div>
+                        )}
+
                         {/* Score overview + question score bars */}
                         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}
                             className="bg-card rounded-xl border border-border shadow-sm p-8 mb-6">
                             <div className="flex flex-col md:flex-row items-center gap-8">
                                 <CircularProgress value={Math.round(avgScore)} size={140} strokeWidth={10}
-                                    label="Interview Score" sublabel={scoreLabel} color={scoreColor} />
+                                    label="Interview Score" color={scoreColor} />
                                 <div className="flex-1 w-full">
                                     {ir.summary && (
                                         <p className="text-sm text-muted-foreground leading-relaxed mb-4 italic">{ir.summary}</p>
+                                    )}
+                                    {ir._scoring_note && (
+                                        <p className="text-xs text-muted-foreground italic mb-3 border-l-2 border-warning/40 pl-3">
+                                            {ir._scoring_note}
+                                        </p>
                                     )}
                                     {questionScores.length > 0 && (
                                         <>
@@ -513,6 +555,63 @@ const CandidateProfile = () => {
                                             {safeStr(topic)}
                                         </span>
                                     ))}
+                                </div>
+                            </motion.div>
+                        )}
+
+                        {/* Proctoring / Integrity */}
+                        {ir.integrity?.available && (
+                            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.63 }}
+                                className="bg-card rounded-xl border border-border shadow-sm mb-6">
+                                <SectionHeader
+                                    icon={ir.integrity.integrity_grade === "Clean" ? ShieldCheck : ShieldAlert}
+                                    label="Interview Integrity"
+                                    color={
+                                        ir.integrity.integrity_grade === "Critical" ? "text-destructive"
+                                        : ir.integrity.integrity_grade === "Flagged" ? "text-warning"
+                                        : ir.integrity.integrity_grade === "Minor Concerns" ? "text-yellow-500"
+                                        : "text-mint"
+                                    }
+                                />
+                                <div className="p-5 space-y-4">
+                                    {/* Grade badge */}
+                                    <div className="flex items-center gap-3 flex-wrap">
+                                        <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                                            ir.integrity.integrity_grade === "Critical"    ? "bg-destructive/10 text-destructive border-destructive/30"
+                                            : ir.integrity.integrity_grade === "Flagged"  ? "bg-warning/10 text-warning border-warning/30"
+                                            : ir.integrity.integrity_grade === "Minor Concerns" ? "bg-yellow-500/10 text-yellow-600 border-yellow-500/30"
+                                            : "bg-mint/10 text-mint border-mint/30"
+                                        }`}>
+                                            {ir.integrity.integrity_grade}
+                                        </span>
+                                        {ir.integrity.suspicious && (
+                                            <span className="text-xs text-warning flex items-center gap-1">
+                                                <AlertCircle className="w-3.5 h-3.5" /> Flagged for review
+                                            </span>
+                                        )}
+                                    </div>
+
+                                    {/* Metrics grid */}
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                        {[
+                                            { label: "Face Absent", value: `${Math.round(ir.integrity.face_absent_pct * 100)}%`, warn: ir.integrity.face_absent_pct > 0.20 },
+                                            { label: "Looking Away", value: `${Math.round(ir.integrity.looking_away_pct * 100)}%`, warn: ir.integrity.looking_away_pct > 0.30 },
+                                            { label: "Total Violations", value: ir.integrity.total_violations ?? 0, warn: (ir.integrity.total_violations ?? 0) > 5 },
+                                            { label: "Suspicion Score", value: `${Math.round(ir.integrity.max_suspicion_score ?? 0)}/100`, warn: (ir.integrity.max_suspicion_score ?? 0) > 40 },
+                                        ].map(({ label, value, warn }) => (
+                                            <div key={label} className={`rounded-lg p-3 border text-center ${warn ? "bg-warning/5 border-warning/20" : "bg-muted/30 border-border"}`}>
+                                                <p className={`text-base font-bold ${warn ? "text-warning" : "text-foreground"}`}>{value}</p>
+                                                <p className="text-[10px] text-muted-foreground mt-0.5 uppercase tracking-wide">{label}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {ir.integrity.multiple_faces_detected && (
+                                        <p className="text-xs text-destructive flex items-center gap-1.5">
+                                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                            Multiple faces were detected during the interview.
+                                        </p>
+                                    )}
                                 </div>
                             </motion.div>
                         )}

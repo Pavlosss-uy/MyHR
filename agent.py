@@ -333,6 +333,7 @@ def generate_question_node(state: AgentState):
             response = chain.invoke({
                 "history": state.get("conversation_history", []),
                 "guidance": guidance,
+                "jd_signals": jd_signals,
                 "asked_questions": "\n".join(f"- {q}" for q in asked_questions) or "None yet.",
             })
             content = _strip_thinking(response.content)
@@ -447,8 +448,8 @@ def evaluate_answer_node(state: AgentState):
     # 3. Neural Evaluation (MOD-4) — evaluator expects 768-D all-mpnet-base-v2 answer embedding
     answer_text = state.get("last_answer", "")
     if extractor.embedder is not None:
-        answer_emb = extractor.embedder.encode(answer_text, convert_to_numpy=True)
-        answer_emb_tensor = torch.tensor(answer_emb, dtype=torch.float32).unsqueeze(0)
+        # extractor.embedder is an EmbeddingExtractor; use its cached encode method
+        answer_emb_tensor = extractor.embedder._encode_cached(answer_text).unsqueeze(0).float()
     else:
         # Fallback: zero vector so the call doesn't crash when the embedder failed to load
         answer_emb_tensor = torch.zeros(1, 768, dtype=torch.float32)
@@ -576,6 +577,19 @@ def evaluate_answer_node(state: AgentState):
     else:
         logger.debug("Blend 65/35 — LLM %.0f / Eval %.0f → %.1f", llm_score, adjusted_neural, blended_score)
 
+    # --- Proctoring Score Penalty ---
+    # Apply penalty for violations detected during this answer.
+    integrity_data = state.get("proctoring_data", {})
+    integrity_penalty = 0.0
+    if integrity_data.get("multiple_faces_detected"):
+        integrity_penalty = 8.0
+    elif integrity_data.get("suspicious"):
+        integrity_penalty = 5.0
+        
+    if integrity_penalty > 0:
+        blended_score = max(0.0, round(blended_score - integrity_penalty, 1))
+        logger.warning("[PROCTOR] Applying -%s penalty to answer due to violations. New score: %s", integrity_penalty, blended_score)
+
     report_entry = {
         "question": state["last_question"],
         "answer": state["last_answer"],
@@ -592,7 +606,8 @@ def evaluate_answer_node(state: AgentState):
         "criteria_breakdown": res.criteria_breakdown.model_dump(),
         "overall_confidence": res.overall_confidence,
         "tone_data": tone_data,
-        "integrity": state.get("proctoring_data", {}),
+        "integrity": integrity_data,
+        "integrity_penalty": integrity_penalty,
         "feature_values": feature_values_list,
         "shap_values": shap_values_list,
         "feature_importance": shap_summary,
@@ -796,9 +811,13 @@ def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
         "Strong No":  "No",
     }
     existing_signal = raw.get("hiring_signal", "")
+    # Inject the computed hiring_signal and integrity back into the report
+    raw["hiring_signal"] = raw.get("hiring_signal", "Borderline")
+    raw["integrity"] = _aggregate_session_integrity(evaluations)
+
     if existing_signal in legacy_map:
         raw["hiring_signal"] = legacy_map[existing_signal]
-    elif existing_signal not in ("Yes", "Borderline", "No"):
+    elif raw["hiring_signal"] not in ("Yes", "Borderline", "No"):
         # Generate from score if missing or unrecognised
         raw["hiring_signal"] = (
             "Yes"       if avg_score >= 85 else
@@ -808,9 +827,6 @@ def _normalize_report(raw: dict, evaluations: list, avg_score: float) -> dict:
 
     # Ensure tone_analysis always present (alias may have been set above; fill defaults if not)
     raw.setdefault("tone_analysis", raw.get("communication_analysis", {}))
-
-    # --- Proctoring: aggregate per-answer integrity into a session summary ---
-    raw["integrity"] = _aggregate_session_integrity(evaluations)
 
     return raw
 
@@ -835,13 +851,30 @@ def _aggregate_session_integrity(evaluations: list) -> dict:
     mean_away = round(sum(float(p.get("looking_away_pct", 0.0)) for p in per_answer) / n, 3)
     multi = any(bool(p.get("multiple_faces_detected", False)) for p in per_answer)
     flagged = sum(1 for p in per_answer if p.get("suspicious", False))
+    total_violations = sum(int(p.get("violation_count", 0)) for p in per_answer)
+    max_suspicion_score = max((float(p.get("suspicion_score", 0)) for p in per_answer), default=0.0)
+
+    # Calculate overall integrity grade
+    is_suspicious = bool(multi or max_absent > 0.20 or mean_away > 0.30 or flagged > 0)
+    
+    if multi or flagged > 2 or max_suspicion_score > 60:
+        grade = "Critical"
+    elif is_suspicious or total_violations > 5:
+        grade = "Flagged"
+    elif total_violations > 1:
+        grade = "Minor Concerns"
+    else:
+        grade = "Clean"
 
     return {
         "face_absent_pct": round(max_absent, 3),
         "looking_away_pct": mean_away,
         "multiple_faces_detected": multi,
         "answers_flagged": flagged,
-        "suspicious": bool(multi or max_absent > 0.20 or mean_away > 0.30 or flagged > 0),
+        "total_violations": total_violations,
+        "max_suspicion_score": max_suspicion_score,
+        "suspicious": is_suspicious,
+        "integrity_grade": grade,
         "available": True,
     }
 
@@ -854,12 +887,83 @@ def synthesize_report(session_state: dict, candidate_name: str, job_title: str) 
       - saved to storage via save_rich_report
       - served on any later retrieval
     No further transformation or re-generation occurs after this call.
+
+    When evaluations are missing (e.g. due to a scoring crash), the function
+    falls back to synthesising a qualitative report from conversation_history.
     """
     evaluations = session_state.get("evaluations", [])
     if not evaluations:
-        return {}
+        # Fallback: build a minimal transcript from conversation_history so the
+        # LLM can still produce a qualitative report (no ML-based score available).
+        conversation_history = session_state.get("conversation_history", [])
+        if not conversation_history:
+            return {}
+
+        # Build numbered Q&A pairs from alternating AI/Candidate lines
+        qa_pairs = []
+        pending_q = None
+        for line in conversation_history:
+            if line.startswith("AI:"):
+                if pending_q:
+                    qa_pairs.append({"question": pending_q, "answer": "(no answer recorded)", "score": 0})
+                pending_q = line[3:].strip()
+            elif line.startswith("Candidate:") and pending_q:
+                qa_pairs.append({"question": pending_q, "answer": line[10:].strip(), "score": 0})
+                pending_q = None
+        if pending_q:
+            qa_pairs.append({"question": pending_q, "answer": "(no answer recorded)", "score": 0})
+
+        if not qa_pairs:
+            return {}
+
+        # Synthesize using the same prompt with a note that scoring was unavailable
+        transcript_lines = []
+        for i, e in enumerate(qa_pairs, 1):
+            transcript_lines.append(
+                f"Q{i}: {e['question']}\n"
+                f"Answer: {e['answer']}\n"
+                f"Score: N/A (scoring system was unavailable for this session)\n"
+            )
+        transcript = "\n---\n".join(transcript_lines)
+
+        # Use 50 as a neutral placeholder score — LLM will determine real hiring signal
+        fallback_avg = 50.0
+        inputs = {
+            "candidate_name": candidate_name,
+            "job_title": job_title,
+            "average_score": fallback_avg,
+            "transcript": transcript,
+            "tone_summary": "Tone analysis not available for this session.",
+            "integrity_summary": "Integrity data not available.",
+        }
+        try:
+            chain = REPORT_SYNTHESIS_PROMPT | llm
+            response = chain.invoke(inputs)
+            content = _strip_thinking(response.content)
+            import json as _json_mod
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            raw = _json_mod.loads(json_match.group() if json_match else content)
+            raw["overall_score"] = raw.get("overall_score") or fallback_avg
+            raw["_scoring_note"] = "Numeric scores were unavailable for this session; qualitative report only."
+            fake_evals = [{"score": 0, "question": e["question"], "answer": e["answer"]} for e in qa_pairs]
+            return _normalize_report(raw, fake_evals, fallback_avg)
+        except Exception as exc:
+            logger.error("synthesize_report fallback (no evals) error: %s", exc)
+            return {}
 
     avg_score = round(sum(e["score"] for e in evaluations) / len(evaluations), 1)
+
+    # Apply proctoring penalty (capped at −10 points, never pushes below 0)
+    # Critical = multiple faces or extreme absence → −10; Flagged → −5; Minor → −2
+    _integrity = _aggregate_session_integrity(evaluations)
+    _grade = _integrity.get("integrity_grade", "Clean")
+    _proctor_penalty = {"Critical": 10.0, "Flagged": 5.0, "Minor Concerns": 2.0}.get(_grade, 0.0)
+    if _proctor_penalty:
+        avg_score = round(max(0.0, avg_score - _proctor_penalty), 1)
+        logger.info(
+            "synthesize_report: integrity grade=%s, applied -%s penalty → adjusted score=%.1f",
+            _grade, _proctor_penalty, avg_score,
+        )
 
     # Build a readable transcript including classification for the prompt
     transcript_lines = []
@@ -904,15 +1008,25 @@ def synthesize_report(session_state: dict, candidate_name: str, job_title: str) 
     else:
         tone_summary = "Tone analysis not available for this session."
 
+    # Determine pass/fail signal
+    avg_score = sum(e.get("score", 0) for e in evaluations) / len(evaluations)
+    hiring_signal = "Yes" if avg_score >= 85 else "Borderline" if avg_score >= 70 else "No"
+    
+    # Prepare integrity summary for the LLM
+    integrity_summary = _aggregate_session_integrity(evaluations)
+
+    inputs = {
+        "candidate_name": candidate_name,
+        "job_title": job_title,
+        "average_score": avg_score,
+        "transcript": transcript,
+        "integrity_summary": str(integrity_summary),
+        "tone_summary": tone_summary,
+    }
+
     try:
         chain = REPORT_SYNTHESIS_PROMPT | llm
-        response = chain.invoke({
-            "candidate_name": candidate_name,
-            "job_title": job_title,
-            "average_score": avg_score,
-            "transcript": transcript,
-            "tone_summary": tone_summary,
-        })
+        response = chain.invoke(inputs)
 
         content = _strip_thinking(response.content)
 

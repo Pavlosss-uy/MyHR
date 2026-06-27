@@ -302,6 +302,26 @@ export async function getJob(jobId) {
     return apiFetch(`/jobs/${jobId}`);
 }
 
+/** Update job title, description, and/or status */
+export async function updateJob(jobId, { title, description, status } = {}) {
+    const form = new FormData();
+    if (title       !== undefined) form.append("title",       title);
+    if (description !== undefined) form.append("description", description);
+    if (status      !== undefined) form.append("status",      status);
+
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/jobs/${jobId}`, {
+        method: "PATCH",
+        body: form,
+        headers: authHeaders,
+    });
+    if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "Failed to update job.");
+    }
+    return res.json();
+}
+
 /** Upload multiple CVs for a job */
 export async function uploadCVs(jobId, files) {
     const form = new FormData();
@@ -338,6 +358,11 @@ export async function getCandidate(jobId, candidateId) {
 /** Invite a candidate to an AI interview */
 export async function inviteToInterview(jobId, candidateId) {
     return apiFetch(`/jobs/${jobId}/invite-interview/${candidateId}`, { method: "POST" });
+}
+
+/** Re-synthesise the interview report for a completed candidate (fixes missing / 0-score reports) */
+export async function regenerateCandidateReport(jobId, candidateId) {
+    return apiFetch(`/jobs/${jobId}/candidates/${candidateId}/regenerate-report`, { method: "POST" });
 }
 
 /** Soft-delete a candidate (sets status to 'ignored', hides from all lists) */
@@ -412,11 +437,12 @@ export async function validateInterviewToken(token) {
 }
 
 /** Complete a candidate interview (saves to HR dashboard) */
-export async function completeCandidateInterview(token, sessionId, interviewScore, interviewReport) {
+export async function completeCandidateInterview(token, sessionId, interviewScore, interviewReport, violationLog = []) {
     const form = new FormData();
     form.append("sessionId", sessionId);
     form.append("interviewScore", interviewScore.toString());
     form.append("interviewReport", JSON.stringify(interviewReport));
+    form.append("violationLog", JSON.stringify(violationLog));
 
     const res = await fetch(`${API_BASE}/candidate-interview/${token}/complete`, {
         method: "POST",

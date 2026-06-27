@@ -47,7 +47,32 @@
       "Bash(grep -n \"validateInterviewToken\\\\|startInterviewFromToken\\\\|completeCandidateInterview\" src/lib/interviewApi.js)",
       "Bash(grep -n \"validateInterviewToken\\\\|startInterviewFromToken\\\\|completeCandidateInterview\" src/lib/interviewApi.ts)",
       "Bash(grep -n \"proxy\\\\|/api\\\\|8000\" vite.config.js)",
-      "Bash(grep -n \"proxy\\\\|/api\\\\|8000\" vite.config.ts)"
+      "Bash(grep -n \"proxy\\\\|/api\\\\|8000\" vite.config.ts)",
+      "Bash(pandoc --version)",
+      "PowerShell(pandoc --version 2>&1)",
+      "PowerShell(winget install --id JohnMacFarlane.Pandoc --silent --accept-source-agreements --accept-package-agreements 2>&1)",
+      "PowerShell(python -c \"import pypandoc; print\\(pypandoc.get_pandoc_version\\(\\)\\)\" 2>&1)",
+      "PowerShell(pip install pypandoc 2>&1)",
+      "PowerShell(python -c \"import pypandoc; pypandoc.download_pandoc\\(\\)\" 2>&1)",
+      "PowerShell(python -c \"import pypandoc; print\\(pypandoc.get_pandoc_version\\(\\)\\)\")",
+      "Skill(code-review)",
+      "Skill(code-review:*)",
+      "Bash(python -c \"from prompts import FIRST_QUESTION_PROMPT, COT_QUESTION_PROMPT, DRILL_DOWN_PROMPT; print\\('prompts OK'\\); print\\('DRILL_DOWN vars:', DRILL_DOWN_PROMPT.input_variables\\)\")",
+      "Bash(python -c \"from prompts import REPORT_SYNTHESIS_PROMPT; print\\('vars:', REPORT_SYNTHESIS_PROMPT.input_variables\\)\")",
+      "Bash(python -c \"import agent; print\\('agent.py OK'\\)\")",
+      "Bash(python -m py_compile agent.py)",
+      "Bash(grep -nA3 '_BLEND_3WAY =' agent.py)",
+      "Bash(ls -la docs/)",
+      "Bash(ls docs/*.md)",
+      "Bash(grep -c '```mermaid' DOCUMENTATION.md)",
+      "Bash(grep -c '```' DOCUMENTATION.md)",
+      "Bash(npm ping *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(npm init *)",
+      "Bash(npm i *)",
+      "Bash(node build.mjs)",
+      "Bash(node build-docx.mjs)",
+      "Bash(unzip -l DOCUMENTATION.docx)"
     ]
   }
 }

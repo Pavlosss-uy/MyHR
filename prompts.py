@@ -17,46 +17,60 @@ CANDIDATE CV HIGHLIGHTS:
 {cv_chunk}
 </cv>
 
-ROLE KEY REQUIREMENTS (use as reference only — do NOT reproduce in your question):
+ROLE KEY REQUIREMENTS — these define the topics this interview MUST cover:
 <jd>
 {jd_signals}
 </jd>
 
 INSTRUCTIONS:
-1. Ask ONE short, specific opening question grounded in a concrete detail from the candidate's CV (a project, tool, framework, or achievement).
+1. Your question MUST target a skill, concept, or domain from the JD requirements above.
+   - FIRST: scan the CV for any experience that overlaps with the JD (e.g. CV shows OOP projects → ask about OOP; CV shows DSA coursework → ask about a specific data structure used).
+   - If there IS overlap: ask about that CV detail, framed around the JD skill it demonstrates.
+   - If there is NO overlap: ignore unrelated CV projects entirely and open with a direct JD-based question (e.g. "Walk me through how you'd implement a balanced BST.").
+   - NEVER ask about a CV project or technology that is NOT relevant to the JD requirements.
 2. The question must be under 35 words. Natural and conversational — like a real interviewer asking it aloud.
 3. NEVER open with: "Can you introduce yourself", "Tell me about yourself", "What is a variable", "What is a loop", "How do you print".
 4. NEVER use: "Let's dive in", "No worries", "That's okay", "Take your time".
-5. NEVER reproduce or paraphrase the JD text in your question. The JD is context only.
+5. NEVER reproduce or paraphrase the JD text verbatim in your question.
 6. Do NOT ask multiple questions. ONE focused question only.
 7. No Markdown. No bullet lists. Be direct and professional. Keep it brief.
 8. Use <thinking>...</thinking> for internal reasoning before your output.
+   In your thinking, explicitly name: (a) which JD skill you are targeting, (b) whether there is a relevant CV detail for it.
 
 OUTPUT FORMAT:
 [single interview question — max 35 words]
 
 --- FEW-SHOT EXAMPLES ---
 
-Example 1 — ML Engineer candidate:
-cv_chunk: "Deployed BERT-based NER model in production. Reduced latency by 40% using ONNX quantization."
+Example 1 — OOP/DSA role, CV has a relevant OOP project:
+jd_signals: "Strong OOP (Encapsulation, Inheritance, Polymorphism, Abstraction). Data Structures: Arrays, Linked Lists, Trees, Graphs."
+cv_chunk: "Built a university course-management system in Java using class hierarchies and interfaces."
 <thinking>
-Strong CV signal on model optimization. Ask about a specific tradeoff — short and direct.
+JD skill: OOP — Inheritance, Polymorphism.
+Relevant CV detail: Java class hierarchies in course-management system. Good overlap.
+Ask about a concrete OOP decision in that project.
 </thinking>
-When you quantized your BERT model with ONNX, how did you validate the accuracy trade-off before shipping to production?
+In your course-management system, how did you use inheritance to handle different user roles without duplicating logic?
 
-Example 2 — Backend Engineer candidate:
+Example 2 — OOP/DSA role, CV has an unrelated ML project:
+jd_signals: "OOP concepts. Data Structures (Linked Lists, Trees, Graphs). Algorithms (Sorting, Recursion, Complexity)."
+cv_chunk: "Developed a multimodal sentiment analysis engine using transformers and PyTorch."
+<thinking>
+JD skill: OOP, DSA, Algorithms.
+CV detail: ML/PyTorch project — NOT relevant to OOP or DSA role.
+Ignore the ML project. Open directly on a JD skill instead.
+</thinking>
+Can you walk me through how you'd implement a singly linked list in your preferred language, and what operations you'd expose?
+
+Example 3 — Backend Engineer, CV has direct overlap:
+jd_signals: "REST APIs, system design, high-throughput services."
 cv_chunk: "Built order processing service handling 50k req/min with Kafka and Redis."
 <thinking>
-High-throughput system experience. Probe one specific design decision — keep it punchy.
+JD skill: high-throughput system design.
+CV detail: 50k req/min order service — strong overlap.
+Ask about a specific design decision.
 </thinking>
 Your order processing service hit 50k requests per minute — what drove your Kafka partitioning strategy?
-
-Example 3 — Data Engineer candidate:
-cv_chunk: "Migrated on-prem ETL pipelines to AWS Glue and Redshift. Reduced pipeline runtime by 60%."
-<thinking>
-Cloud migration with measurable results. Ask about one specific challenge they'd have faced.
-</thinking>
-When you moved those ETL pipelines to AWS Glue, how did you handle schema changes without breaking Redshift consumers?
 """
 )
 
@@ -107,7 +121,10 @@ INSTRUCTIONS:
    - Weak answer    → "Alright, let's shift to a different angle."
    - Off-topic answer → "Interesting — let me redirect us back to the technical side."
    - First question → (skip the reaction entirely, just ask the question)
-3. Ask ONE concise, specific question (under 30 words) from a DIFFERENT sub-topic than anything in ALREADY ASKED.
+3. Ask ONE concise, specific question (under 30 words) covering a JD skill from the <jd> block that has NOT yet appeared in ALREADY ASKED.
+   - Prioritise: pick the most important un-covered JD requirement first.
+   - Use CV details only if they directly illustrate the JD skill being probed.
+   - NEVER ask about a CV technology that is outside the JD scope.
 4. NEVER use: "No worries", "That's okay", "That happens", "Let's dive in", "Take your time", "No problem".
 5. NEVER repeat or paraphrase a previous question.
 6. NEVER summarise or echo back the candidate's answer.
@@ -200,18 +217,25 @@ Conversation History:
 
 Interviewer Guidance: {guidance}
 
+ROLE KEY REQUIREMENTS — the simpler question must remain within this scope:
+<jd>
+{jd_signals}
+</jd>
+
 ALREADY ASKED — do NOT repeat or closely paraphrase any of these:
 {asked_questions}
 
 INSTRUCTIONS:
 1. You MUST start your response with exactly: "No problem, let's try a simpler one."
-2. After that opener, ask ONE concretely simpler question that covers the same general domain
+2. After that opener, ask ONE concretely simpler question that covers the same JD-relevant domain
    but is easier to answer — requires less depth, fewer specifics, or a more conceptual answer.
-3. NEVER repeat any question from ALREADY ASKED.
-4. NEVER summarise the candidate's previous answer.
-5. NEVER use: "That's okay", "That happens", "Let's dive in", "No worries".
-6. Keep it brief: one opener line + one question.
-7. Use <thinking>...</thinking> for internal reasoning before your output.
+3. The simpler question MUST target a skill listed in the JD. NEVER pivot to a CV project or
+   technology that is not part of the JD requirements.
+4. NEVER repeat any question from ALREADY ASKED.
+5. NEVER summarise the candidate's previous answer.
+6. NEVER use: "That's okay", "That happens", "Let's dive in", "No worries".
+7. Keep it brief: one opener line + one question.
+8. Use <thinking>...</thinking> for internal reasoning before your output.
 
 OUTPUT FORMAT:
 No problem, let's try a simpler one. [simpler question]
@@ -408,6 +432,9 @@ INTERVIEW TRANSCRIPT WITH SCORES AND CLASSIFICATIONS:
 COMMUNICATION AND TONE DATA (from voice analysis per answer):
 {tone_summary}
 
+PROCTORING INTEGRITY DATA (from camera analysis during the session):
+{integrity_summary}
+
 INSTRUCTIONS:
 1. Analyze ALL questions, answers, and classifications to identify patterns — do not cherry-pick.
 2. Identify genuine STRENGTHS (areas where the candidate performed well with evidence from their answers).
@@ -420,8 +447,9 @@ INSTRUCTIONS:
    - Aggregate tone observations across all answers to identify patterns.
    - If tone data is not available, state "Tone analysis not available" and omit scores.
    - Be honest: flag nervousness, uncertainty, or inconsistency if present.
-9. Be constructive and specific — avoid vague praise or criticism.
-10. Base performance_level on the average score:
+9. If PROCTORING INTEGRITY DATA shows any violations (e.g., flagged answers, multiple faces, looking away), include an honest integrity_assessment section. Grade it as: Clean (0-1 minor), Minor Concerns (2-5 minor), Flagged (any serious), Critical (multiple serious).
+10. Be constructive and specific — avoid vague praise or criticism.
+11. Base performance_level on the average score:
     - 85-100: Excellent
     - 70-84:  Good
     - 55-69:  Needs Improvement
@@ -480,6 +508,11 @@ REQUIRED JSON OUTPUT:
         "recommendations": [
             "specific, actionable advice to improve communication (e.g., practice explaining technical concepts aloud to reduce filler words and hesitation)"
         ]
+    }},
+    "integrity_assessment": {{
+        "grade": "Clean | Minor Concerns | Flagged | Critical",
+        "summary": "1-2 sentence summary of proctoring findings based on the integrity_summary data",
+        "details": ["Specific observation 1 (e.g., candidate looked away from screen frequently during Q2)"]
     }}
 }}
 

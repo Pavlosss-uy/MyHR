@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { motion, AnimatePresence } from "framer-motion";
 import Navbar from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import JobCandidatesTab from "@/components/hr/JobCandidatesTab";
-import { createJob, getJobs } from "@/lib/interviewApi";
+import { createJob, getJobs, updateJob } from "@/lib/interviewApi";
+import { useSearchParams } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import {
     Plus,
@@ -19,6 +21,10 @@ import {
     Sparkles,
     ArrowLeft,
     X,
+    Save,
+    XCircle,
+    CheckCircle2,
+    Settings,
 } from "lucide-react";
 
 /** ── TabButton ──────────────────────────────────────────────────────────── */
@@ -38,6 +44,9 @@ const TabButton = ({ active, onClick, children }) => (
 const JobManagement = () => {
     const { toast } = useToast();
     const { user, loading: authLoading } = useAuth();
+    const [searchParams] = useSearchParams();
+    const deepLinkJobId = searchParams.get("jobId");
+    const deepLinkHandled = useRef(false);
 
     // View state: "list" | "detail"
     const [view, setView] = useState("list");
@@ -45,6 +54,11 @@ const JobManagement = () => {
     const [loading, setLoading] = useState(true);
     const [selectedJob, setSelectedJob] = useState(null);
     const [activeTab, setActiveTab] = useState("candidates");
+
+    // Settings tab state
+    const [editTitle, setEditTitle]       = useState("");
+    const [editDesc,  setEditDesc]        = useState("");
+    const [savingSettings, setSavingSettings] = useState(false);
 
     // Create job modal
     const [showCreate, setShowCreate] = useState(false);
@@ -68,6 +82,16 @@ const JobManagement = () => {
         if (!user?.uid) { setLoading(false); return; }
         fetchJobs();
     }, [fetchJobs, user?.uid, authLoading]);
+
+    // Auto-open a specific job when navigated here via ?jobId= (e.g. from the dashboard)
+    useEffect(() => {
+        if (!deepLinkJobId || deepLinkHandled.current || loading || jobs.length === 0) return;
+        const target = jobs.find((j) => j.id === deepLinkJobId);
+        if (target) {
+            deepLinkHandled.current = true;
+            openJob(target);
+        }
+    }, [deepLinkJobId, jobs, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Create job handler
     const handleCreateJob = async (e) => {
@@ -93,8 +117,27 @@ const JobManagement = () => {
     // Open job detail
     const openJob = (job) => {
         setSelectedJob(job);
+        setEditTitle(job.title || "");
+        setEditDesc(job.description || "");
         setActiveTab("candidates");
         setView("detail");
+    };
+
+    // Save job settings (title / description / status)
+    const handleSaveSettings = async ({ title, description, status } = {}) => {
+        setSavingSettings(true);
+        try {
+            const updated = await updateJob(selectedJob.id, { title, description, status });
+            setSelectedJob(updated);
+            if (title !== undefined)       setEditTitle(updated.title || "");
+            if (description !== undefined) setEditDesc(updated.description || "");
+            setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)));
+            toast({ title: "Saved", description: "Job updated successfully." });
+        } catch (err) {
+            toast({ title: "Error", description: err.message, variant: "destructive" });
+        } finally {
+            setSavingSettings(false);
+        }
     };
 
     /* ═══════════════════════════════════════════════════════════════════════ */
@@ -162,6 +205,7 @@ const JobManagement = () => {
                         <JobCandidatesTab
                             jobId={selectedJob.id}
                             jobTitle={selectedJob.title}
+                            jobStatus={selectedJob.status || "active"}
                             extractedSkills={selectedJob.extractedSkills || []}
                         />
                     )}
@@ -218,10 +262,83 @@ const JobManagement = () => {
                     )}
 
                     {activeTab === "settings" && (
-                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                            <div className="bg-card rounded-xl border border-border p-6 text-center text-muted-foreground text-sm">
-                                Job settings (close job, edit description, etc.) will be available here.
+                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+
+                            {/* Edit title + description */}
+                            <div className="bg-card rounded-xl border border-border p-6 space-y-5">
+                                <div className="flex items-center gap-2 mb-1">
+                                    <Settings className="w-4 h-4 text-cobalt" />
+                                    <h3 className="font-semibold text-foreground">Edit Job Details</h3>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="edit-title">Job Title</Label>
+                                    <Input
+                                        id="edit-title"
+                                        value={editTitle}
+                                        onChange={(e) => setEditTitle(e.target.value)}
+                                        maxLength={300}
+                                        placeholder="e.g. Senior Backend Engineer"
+                                    />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="edit-desc">Job Description</Label>
+                                    <Textarea
+                                        id="edit-desc"
+                                        value={editDesc}
+                                        onChange={(e) => setEditDesc(e.target.value)}
+                                        rows={10}
+                                        maxLength={5000}
+                                        placeholder="Full job description…"
+                                        className="resize-y font-mono text-xs"
+                                    />
+                                    <p className="text-xs text-muted-foreground">
+                                        AI-extracted skills will be updated automatically when you save.
+                                    </p>
+                                </div>
+
+                                <Button
+                                    onClick={() => handleSaveSettings({ title: editTitle, description: editDesc })}
+                                    disabled={savingSettings || (!editTitle.trim() && !editDesc.trim())}
+                                    className="gap-2"
+                                >
+                                    {savingSettings ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                                    Save Changes
+                                </Button>
                             </div>
+
+                            {/* Close / Reopen job */}
+                            <div className="bg-card rounded-xl border border-border p-6">
+                                <h3 className="font-semibold text-foreground mb-1">Job Status</h3>
+                                <p className="text-sm text-muted-foreground mb-4">
+                                    {selectedJob.status === "closed"
+                                        ? "This job is closed. Candidates can no longer be invited to interview."
+                                        : "This job is active. You can close it to stop accepting new interviews."}
+                                </p>
+                                {selectedJob.status === "closed" ? (
+                                    <Button
+                                        variant="outline"
+                                        className="gap-2 border-mint text-mint hover:bg-mint/10"
+                                        onClick={() => handleSaveSettings({ status: "active" })}
+                                        disabled={savingSettings}
+                                    >
+                                        {savingSettings ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                                        Reopen Job
+                                    </Button>
+                                ) : (
+                                    <Button
+                                        variant="outline"
+                                        className="gap-2 border-destructive text-destructive hover:bg-destructive/10"
+                                        onClick={() => handleSaveSettings({ status: "closed" })}
+                                        disabled={savingSettings}
+                                    >
+                                        {savingSettings ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                                        Close Job
+                                    </Button>
+                                )}
+                            </div>
+
                         </motion.div>
                     )}
                 </main>

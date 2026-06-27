@@ -490,6 +490,44 @@ async def get_job(job_id: str, company_id: str = Depends(get_current_company_id)
     return _get_authorized_job(job_id, company_id)
 
 
+@hr_router.patch("/jobs/{job_id}")
+async def update_job(
+    job_id: str,
+    company_id: str = Depends(get_current_company_id),
+    title: str = Form(default=None, max_length=300),
+    description: str = Form(default=None, max_length=5000),
+    status: str = Form(default=None),
+):
+    """Update job title, description, and/or status (active | closed).
+
+    Only fields that are explicitly provided are updated.
+    Re-extracts skills from the JD when the description is updated.
+    """
+    _get_authorized_job(job_id, company_id)  # ownership check
+
+    updates: dict = {"updatedAt": fs_admin.SERVER_TIMESTAMP}
+
+    if title is not None:
+        updates["title"] = title.strip()
+
+    if description is not None:
+        updates["description"] = description.strip()
+        updates["extractedSkills"] = extract_skills_keyword(description)
+
+    if status is not None:
+        if status not in ("active", "closed"):
+            raise HTTPException(status_code=422, detail="status must be 'active' or 'closed'.")
+        updates["status"] = status
+
+    if len(updates) == 1:  # only updatedAt — nothing was sent
+        raise HTTPException(status_code=422, detail="No fields to update.")
+
+    db.collection("Jobs").document(job_id).update(updates)
+
+    updated = _get_authorized_job(job_id, company_id)
+    return updated
+
+
 # ── CV upload helpers (extracted from upload_cvs for SRP / testability) ───────
 
 
@@ -813,6 +851,82 @@ async def get_candidate(
     return data
 
 
+@hr_router.post("/jobs/{job_id}/candidates/{candidate_id}/regenerate-report")
+async def regenerate_candidate_report(
+    job_id: str,
+    candidate_id: str,
+    company_id: str = Depends(get_current_company_id),
+):
+    """
+    Re-synthesise the interview report for a completed candidate session.
+    Used when a previous report failed to generate (e.g. scoring crash).
+    Re-runs synthesize_report from stored session state and updates Firestore.
+    """
+    _get_authorized_job(job_id, company_id)
+
+    ref = (
+        db.collection("Jobs").document(job_id)
+        .collection("Candidates").document(candidate_id)
+    )
+    snap = ref.get()
+    if not snap.exists:
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+
+    cand = snap.to_dict()
+    session_id = cand.get("interviewSessionId", "")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Candidate has no linked interview session.")
+    if cand.get("interviewStatus") != "completed":
+        raise HTTPException(status_code=400, detail="Interview not completed yet.")
+
+    try:
+        from firestore_client import get_session as _get_session
+        from agent import synthesize_report as _synthesize_report
+        from ingest import save_rich_report as _save_rich_report
+
+        _record = _get_session(session_id)
+        if not _record:
+            raise HTTPException(status_code=404, detail="Session data not found in Firestore.")
+
+        _state = _record.get("state_data", {})
+        _cname = _state.get("initial_job_context", {}).get("candidate_name", cand.get("name", "Candidate"))
+        _jtitle = _state.get("initial_job_context", {}).get("job_title", "Interview")
+
+        report_data = await asyncio.to_thread(_synthesize_report, _state, _cname, _jtitle)
+        if not report_data:
+            raise HTTPException(status_code=422, detail="Could not synthesise report — insufficient session data.")
+
+        # Overwrite report file on disk
+        await asyncio.to_thread(_save_rich_report, session_id, report_data)
+
+        # Recompute score
+        interview_score = float(report_data.get("overall_score", 0) or 0)
+        match_score = float(cand.get("matchScore", 50) or 50)
+        total_score = round(CV_SCORE_WEIGHT * match_score + INTERVIEW_SCORE_WEIGHT * interview_score, 1)
+
+        ref.update({
+            "interviewScore": interview_score,
+            "interviewReport": report_data,
+            "totalScore": total_score,
+            "updatedAt": fs_admin.SERVER_TIMESTAMP,
+        })
+
+        # Invalidate analytics
+        if company_id:
+            _invalidate_analytics_cache(company_id)
+
+        updated_snap = ref.get()
+        updated = updated_snap.to_dict()
+        updated["id"] = updated_snap.id
+        return updated
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("regenerate_candidate_report: %s / %s — %s", job_id, candidate_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @hr_router.delete("/jobs/{job_id}/candidates/{candidate_id}")
 async def ignore_candidate(
     job_id: str,
@@ -1001,12 +1115,18 @@ async def validate_interview_token(token: str):
 
 
 @hr_router.post("/candidate-interview/{token}/complete")
-async def complete_candidate_interview(token: str, sessionId: str = Form(...)):
+async def complete_candidate_interview(
+    token: str,
+    sessionId: str = Form(...),
+    violationLog: str = Form(default="[]"),
+):
     """
     Called when a candidate's AI interview finishes. Saves results to the HR
     dashboard. The score and report are read from the SERVER-GENERATED report
     (synthesized by the AI backend and written to disk) — NEVER from the client —
     so a candidate cannot submit their own score.
+    violationLog is a JSON array of timestamped proctoring events from the
+    frontend; it is advisory metadata only, never used to derive the score.
     """
 
 
@@ -1022,22 +1142,44 @@ async def complete_candidate_interview(token: str, sessionId: str = Form(...)):
     if not job_id or not candidate_id:
         raise HTTPException(status_code=400, detail="Token missing job/candidate reference.")
 
-    # Authoritative report + score come from the server-side synthesized report,
-    # produced only when the AI interview actually ran and completed.
+    # Authoritative report + score come from the server-side synthesized report.
+    # If the file is missing (e.g. synthesize_report failed during submit_answer),
+    # we recover from the session state stored in Firestore rather than returning 409.
     _rich_path = os.path.join("storage", "reports", f"{sessionId}_rich_report.json")
-    if not os.path.exists(_rich_path):
-        raise HTTPException(
-            status_code=409,
-            detail="Interview report not found — the interview was not completed on the server.",
-        )
-    try:
-        with open(_rich_path, "r", encoding="utf-8") as _f:
-            report_data = json.load(_f)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to read interview report.")
+    report_data: dict = {}
+    interview_score: float = 0.0
 
-    # Trust only the server-computed score.
-    interview_score = float(report_data.get("overall_score", 0) or 0)
+    if os.path.exists(_rich_path):
+        try:
+            with open(_rich_path, "r", encoding="utf-8") as _f:
+                report_data = json.load(_f)
+            interview_score = float(report_data.get("overall_score", 0) or 0)
+        except Exception as _e:
+            logger.warning("complete_candidate_interview: failed to parse rich report for %s: %s", sessionId, _e)
+    else:
+        # Rich report file missing — attempt recovery from Firestore session state
+        logger.warning("complete_candidate_interview: rich report missing for %s — attempting recovery", sessionId)
+        try:
+            from firestore_client import get_session as _get_session
+            from agent import synthesize_report as _synthesize_report
+            from ingest import save_rich_report as _save_rich_report
+            _record = _get_session(sessionId)
+            if _record:
+                _state = _record.get("state_data", {})
+                _cname = _state.get("initial_job_context", {}).get("candidate_name", "Candidate")
+                _jtitle = _state.get("initial_job_context", {}).get("job_title", "Interview")
+                report_data = _synthesize_report(_state, _cname, _jtitle) or {}
+                if report_data:
+                    _save_rich_report(sessionId, report_data)
+                    interview_score = float(report_data.get("overall_score", 0) or 0)
+                else:
+                    # Last resort: average raw evaluation scores
+                    _evals = _state.get("evaluations", [])
+                    if _evals:
+                        _scores = [float(e.get("score", 0)) for e in _evals if e.get("score") is not None]
+                        interview_score = round(sum(_scores) / len(_scores), 1) if _scores else 0.0
+        except Exception as _e:
+            logger.warning("complete_candidate_interview: recovery failed for %s: %s", sessionId, _e)
 
     # Update candidate with interview results
     ref = (
@@ -1054,12 +1196,20 @@ async def complete_candidate_interview(token: str, sessionId: str = Form(...)):
     # Compute total score: CV_SCORE_WEIGHT CV match + INTERVIEW_SCORE_WEIGHT interview
     total_score = round(CV_SCORE_WEIGHT * match_score + INTERVIEW_SCORE_WEIGHT * interview_score, 1)
 
+    # Parse frontend violation log (advisory — never affects score)
+    parsed_violations: list = []
+    try:
+        parsed_violations = json.loads(violationLog) if violationLog else []
+    except Exception:
+        pass
+
     ref.update({
         "interviewStatus": "completed",
         "interviewSessionId": sessionId,
         "interviewScore": interview_score,
         "interviewReport": report_data,
         "totalScore": total_score,
+        "proctorViolationLog": parsed_violations,
         "updatedAt": fs_admin.SERVER_TIMESTAMP,
     })
 

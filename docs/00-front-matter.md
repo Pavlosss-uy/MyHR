@@ -148,46 +148,60 @@ neural scoring, FastAPI, React, Firestore, adaptive difficulty.
 | &nbsp;&nbsp;&nbsp;&nbsp;1.1.2 Applications | 2 |
 | &nbsp;&nbsp;1.2 Motivation | 3 |
 | &nbsp;&nbsp;1.3 Objectives | 3 |
-| &nbsp;&nbsp;1.4 Scope | 4 |
-| &nbsp;&nbsp;1.5 Time Plan | 4 |
-| &nbsp;&nbsp;1.6 Documentation Outline | 5 |
-| **Chapter 2: Background** | 6 |
-| &nbsp;&nbsp;2.1 Retrieval-Augmented Generation | 6 |
-| &nbsp;&nbsp;2.2 LLM Agent Orchestration | 7 |
-| &nbsp;&nbsp;2.3 Transformer Embeddings & Reranking | 8 |
-| &nbsp;&nbsp;2.4 Neural Answer Scoring | 8 |
-| &nbsp;&nbsp;2.5 Reinforcement Learning for Adaptive Difficulty | 9 |
-| &nbsp;&nbsp;2.6 Emotion Recognition & Proctoring | 9 |
-| &nbsp;&nbsp;2.7 Platform Technologies | 10 |
-| **Chapter 3: Proposed System** | 11 |
-| &nbsp;&nbsp;3.1 System Architecture | 11 |
-| &nbsp;&nbsp;3.2 Three-Layer Architecture | 12 |
-| &nbsp;&nbsp;3.3 Component Diagram | 13 |
-| &nbsp;&nbsp;3.4 Enterprise Hiring Workflow | 14 |
-| &nbsp;&nbsp;3.5 Candidate Interview Workflow | 15 |
-| **Chapter 4: System Implementation** | 16 |
-| &nbsp;&nbsp;4.1 Hybrid RAG Pipeline | 16 |
-| &nbsp;&nbsp;4.2 LangGraph Interview Agent | 18 |
-| &nbsp;&nbsp;4.3 AI/ML Model Layer | 20 |
-| &nbsp;&nbsp;4.4 Enterprise Layer | 23 |
-| &nbsp;&nbsp;4.5 Training Layer | 25 |
-| &nbsp;&nbsp;4.6 Database Design | 27 |
-| &nbsp;&nbsp;4.7 API Reference | 29 |
-| &nbsp;&nbsp;4.8 Authentication & Authorization | 31 |
-| &nbsp;&nbsp;4.9 Configuration | 33 |
-| **Chapter 5: System Testing** | 34 |
-| &nbsp;&nbsp;5.1 Installation | 34 |
-| &nbsp;&nbsp;5.2 Running the System | 35 |
-| &nbsp;&nbsp;5.3 Automated Test Suite | 36 |
-| &nbsp;&nbsp;5.4 End-to-End Walkthrough | 37 |
-| **Chapter 6: Conclusion and Future Work** | 40 |
-| &nbsp;&nbsp;6.1 Conclusion | 40 |
-| &nbsp;&nbsp;6.2 Known Limitations | 40 |
-| &nbsp;&nbsp;6.3 Future Work | 41 |
-| Tools | 42 |
-| References | 43 |
-| Glossary & Abbreviations | 44 |
-| Appendices | 45 |
+| &nbsp;&nbsp;1.4 Scope | 5 |
+| &nbsp;&nbsp;1.5 Functional Requirements | 6 |
+| &nbsp;&nbsp;1.6 Non-Functional Requirements | 7 |
+| &nbsp;&nbsp;1.7 Project Timeline | 8 |
+| &nbsp;&nbsp;1.8 Documentation Outline | 9 |
+| **Chapter 2: Background** | 10 |
+| &nbsp;&nbsp;2.1 Retrieval-Augmented Generation | 10 |
+| &nbsp;&nbsp;2.2 LLM Agent Orchestration | 11 |
+| &nbsp;&nbsp;2.3 Transformer Embeddings & Reranking | 12 |
+| &nbsp;&nbsp;2.4 Neural Answer Scoring | 12 |
+| &nbsp;&nbsp;2.5 Reinforcement Learning for Adaptive Difficulty | 13 |
+| &nbsp;&nbsp;2.6 Emotion Recognition & Proctoring | 13 |
+| &nbsp;&nbsp;2.7 Platform Technologies | 14 |
+| **Chapter 3: System Analysis & Design** | 15 |
+| &nbsp;&nbsp;3.1 System Architecture | 15 |
+| &nbsp;&nbsp;3.2 Three-Layer Architecture | 16 |
+| &nbsp;&nbsp;3.3 Component Diagram | 17 |
+| &nbsp;&nbsp;3.4 Enterprise Hiring Workflow | 18 |
+| &nbsp;&nbsp;3.5 Candidate Interview Workflow | 19 |
+| &nbsp;&nbsp;3.6 Authentication & Authorization Design | 20 |
+| &nbsp;&nbsp;3.7 Database Design (ER Model) | 21 |
+| &nbsp;&nbsp;3.8 Deployment Design | 22 |
+| &nbsp;&nbsp;3.9 Interview Activity Diagram | 23 |
+| **Chapter 4: System Implementation** | 24 |
+| &nbsp;&nbsp;4.1 Hybrid RAG Pipeline | 24 |
+| &nbsp;&nbsp;4.2 LangGraph Interview Agent | 26 |
+| &nbsp;&nbsp;4.3 AI/ML Model Layer | 28 |
+| &nbsp;&nbsp;4.4 Enterprise Layer | 31 |
+| &nbsp;&nbsp;4.5 Training Layer | 33 |
+| &nbsp;&nbsp;4.6 Database Design | 35 |
+| &nbsp;&nbsp;4.7 API Reference | 37 |
+| &nbsp;&nbsp;4.8 Authentication & Authorization | 39 |
+| &nbsp;&nbsp;4.9 Configuration | 41 |
+| &nbsp;&nbsp;4.10 Proctoring, Speech & Anti-Cheating | 42 |
+| **Chapter 5: System Testing** | 45 |
+| &nbsp;&nbsp;5.1 Testing Strategy | 45 |
+| &nbsp;&nbsp;5.2 Installation | 46 |
+| &nbsp;&nbsp;5.3 Running the System | 47 |
+| &nbsp;&nbsp;5.4 Automated Test Suite | 48 |
+| &nbsp;&nbsp;5.5 End-to-End Walkthrough | 49 |
+| **Chapter 6: Results & Discussion** | 52 |
+| &nbsp;&nbsp;6.1 Model Results | 52 |
+| &nbsp;&nbsp;6.2 RAG & Grounding Results | 53 |
+| &nbsp;&nbsp;6.3 System & Backend Performance | 54 |
+| &nbsp;&nbsp;6.4 Enterprise Funnel Results | 55 |
+| &nbsp;&nbsp;6.5 Strengths · 6.6 Weaknesses · 6.7 Lessons Learned | 55 |
+| **Chapter 7: Conclusion and Future Work** | 58 |
+| &nbsp;&nbsp;7.1 Conclusion | 58 |
+| &nbsp;&nbsp;7.2 Known Limitations | 59 |
+| &nbsp;&nbsp;7.3 Future Work | 60 |
+| Tools | 61 |
+| References | 62 |
+| Glossary & Abbreviations | 63 |
+| Appendices | 64 |
 
 > Page numbers are indicative and should be regenerated after exporting to PDF/Word.
 
@@ -197,19 +211,26 @@ neural scoring, FastAPI, React, Firestore, adaptive difficulty.
 
 | Figure | Title | Page |
 |--------|-------|------|
-| Figure 1.1 | Project Time Plan (Gantt) | 4 |
-| Figure 3.1 | System Architecture | 11 |
-| Figure 3.2 | Three-Layer Architecture | 12 |
-| Figure 3.3 | Component Diagram | 13 |
-| Figure 3.4 | Enterprise Hiring Workflow (Sequence) | 14 |
-| Figure 3.5 | Candidate Interview Workflow (Sequence) | 15 |
-| Figure 4.1 | Hybrid RAG Pipeline | 16 |
-| Figure 4.2 | LangGraph Agent State Graph | 18 |
-| Figure 4.3 | Answer Scoring & Blend Flow | 19 |
-| Figure 4.4 | Training Pipeline | 25 |
-| Figure 4.5 | Database Relationships | 27 |
-| Figure 4.6 | Authentication & RBAC Flow | 31 |
-| Figure 5.1 | Deployment Architecture | 35 |
+| Figure 1.1 | Project Time Plan (Gantt) | 8 |
+| Figure 3.1 | System Architecture | 15 |
+| Figure 3.2 | Three-Layer Architecture | 16 |
+| Figure 3.3 | Component Diagram | 17 |
+| Figure 3.4 | Enterprise Hiring Workflow (Sequence) | 18 |
+| Figure 3.5 | Candidate Interview Workflow (Sequence) | 19 |
+| Figure 3.6 | Authentication & Authorization Flow | 20 |
+| Figure 3.7 | Database Entity-Relationship Diagram | 21 |
+| Figure 3.8 | Deployment Diagram | 22 |
+| Figure 3.9 | Interview Turn (Activity Diagram) | 23 |
+| Figure 4.1 | Hybrid RAG Pipeline | 24 |
+| Figure 4.2 | LangGraph Agent State Graph | 26 |
+| Figure 4.3 | Answer Scoring & Blend Flow | 27 |
+| Figure 4.4 | Training Pipeline | 33 |
+| Figure 4.5 | Database Relationships | 35 |
+| Figure 4.6 | Authentication & RBAC Flow | 39 |
+| Figure 4.7 | Proctoring Detection Pipeline | 42 |
+| Figure 4.8 | Anti-Cheating Recording State Machine | 43 |
+| Figure 5.1 | Deployment Architecture (run-time view) | 47 |
+| Figure 6.1 | Score Distribution & Model Agreement | 52 |
 
 ---
 
@@ -217,14 +238,18 @@ neural scoring, FastAPI, React, Firestore, adaptive difficulty.
 
 | Table | Title | Page |
 |-------|-------|------|
-| Table 2.1 | Platform Technology Stack | 10 |
-| Table 4.1 | Neural Model Layer (8 models) | 20 |
-| Table 4.2 | Firestore Collections | 27 |
-| Table 4.3 | API Reference — Interview Endpoints | 29 |
-| Table 4.4 | API Reference — Enterprise Endpoints | 30 |
-| Table 4.5 | Environment Variables | 33 |
-| Table 5.1 | Automated Test Summary | 36 |
-| Table T.1 | Tools Used | 42 |
+| Table 1.2 | Functional Requirements | 6 |
+| Table 1.3 | Non-Functional Requirements | 7 |
+| Table 2.1 | Platform Technology Stack | 14 |
+| Table 4.1 | Neural Model Layer | 28 |
+| Table 4.2 | Firestore Collections | 35 |
+| Table 4.3 | API Reference — Interview Endpoints | 37 |
+| Table 4.4 | API Reference — Enterprise Endpoints | 38 |
+| Table 4.5 | Environment Variables | 41 |
+| Table 5.1 | Automated Test Summary | 48 |
+| Table 6.1 | Model Test-Set Metrics | 52 |
+| Table 6.2 | System Strengths and Weaknesses | 56 |
+| Table T.1 | Tools Used | 61 |
 
 ---
 

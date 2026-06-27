@@ -349,6 +349,7 @@ def _build_initial_state(
         "multimodal_analysis": {},
         "facial_expression_data": {},
         "proctoring_data": {},
+        "proctoring_history": [],
         "cv_chunk": "",
         "jd_chunk": "",
         "skill_match_score": skill_score,
@@ -921,13 +922,16 @@ async def analyze_frame(
     # Offload the CPU-bound detection — do NOT block the event loop.
     result = await asyncio.to_thread(proctor.analyze, img)
 
-    # Log only flagged frames (multi-face / no-face / looking-away) to avoid spam.
+    # Log significant proctoring signals
     if result.get("multiple_faces"):
-        logger.warning("[PROCTOR] multiple faces detected: %s", result["face_count"])
+        logger.warning("[PROCTOR] multiple faces detected: %s", result.get("face_count"))
     elif not result.get("face_present"):
         logger.warning("[PROCTOR] no face in frame")
     elif result.get("looking_away"):
-        logger.warning("[PROCTOR] looking away (yaw=%s vspan=%s)", result.get("yaw"), result.get("vspan"))
+        gaze_info = f"gaze={result.get('gaze_score', 0):.2f}"
+        if result.get("iris_offset") is not None:
+            gaze_info += f" iris={result.get('iris_offset'):.2f}"
+        logger.warning("[PROCTOR] looking away (%s)", gaze_info)
 
     return result
 
@@ -990,7 +994,17 @@ async def submit_answer(
     if integrity:
         try:
             import json as _json
-            current_state["proctoring_data"] = _json.loads(integrity)
+            parsed_integrity = _json.loads(integrity)
+            current_state["proctoring_data"] = parsed_integrity
+            
+            # Cumulative session log
+            if "proctoring_history" not in current_state:
+                current_state["proctoring_history"] = []
+            
+            # Add metadata to track which question this belongs to
+            q_num = current_state.get("question_number", 1)
+            parsed_integrity["question_number"] = q_num
+            current_state["proctoring_history"].append(parsed_integrity)
         except Exception:
             pass  # malformed JSON — leave existing state as-is
 
@@ -1156,6 +1170,30 @@ async def metrics():
         models_status = {"error": str(e)}
     return {"uptime_seconds": uptime, "models": models_status}
 
+
+@app.get("/api/proctoring/{session_id}")
+async def get_proctoring_timeline(session_id: str, uid: str = Depends(verify_firebase_token)):
+    """Retrieve the full proctoring timeline for a session.
+    
+    Used by the HR dashboard and FeedbackReport to show integrity alerts.
+    """
+    record = get_session(session_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    state = record.get("state_data", {})
+    history = state.get("proctoring_history", [])
+    
+    # Simple aggregate if _aggregate_session_integrity hasn't run yet
+    total_violations = sum(h.get("violation_count", 0) for h in history)
+    max_suspicion = max([h.get("suspicion_score", 0) for h in history] + [0])
+    
+    return {
+        "session_id": session_id,
+        "total_violations": total_violations,
+        "max_suspicion_score": max_suspicion,
+        "per_answer_integrity": history
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

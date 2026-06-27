@@ -17,9 +17,11 @@ import {
     Copy,
     ExternalLink,
     X,
+    Lock,
 } from "lucide-react";
 
-const JobCandidatesTab = ({ jobId, jobTitle }) => {
+const JobCandidatesTab = ({ jobId, jobTitle, jobStatus = "active" }) => {
+    const isClosed = jobStatus === "closed";
     const { toast } = useToast();
     const navigate = useNavigate();
     const [candidates, setCandidates] = useState([]);
@@ -106,6 +108,10 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
     };
 
     const handleInvite = async (candidate) => {
+        if (isClosed) {
+            toast({ title: "Job is closed", description: "Reopen the job before inviting candidates.", variant: "destructive" });
+            return;
+        }
         setInvitingId(candidate.id);
         try {
             const result = await inviteToInterview(jobId, candidate.id);
@@ -126,6 +132,17 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
 
     return (
         <div className="space-y-6">
+            {/* Job Closed banner */}
+            {isClosed && (
+                <div className="flex items-center gap-3 bg-muted/60 border border-border rounded-xl px-5 py-3">
+                    <Lock className="w-4 h-4 text-muted-foreground shrink-0" />
+                    <p className="text-sm text-muted-foreground">
+                        <span className="font-semibold text-foreground">This job is closed.</span>{" "}
+                        New invitations are disabled. Go to the Settings tab to reopen it.
+                    </p>
+                </div>
+            )}
+
             {/* Upload Zone */}
             <div
                 onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -273,6 +290,7 @@ const JobCandidatesTab = ({ jobId, jobTitle }) => {
                             index={i}
                             inviting={invitingId === candidate.id}
                             ignoring={ignoringId === candidate.id}
+                            jobClosed={isClosed}
                             onViewDetails={(c) => {
                                 setDrawerCandidate(c);
                                 setDrawerOpen(true);
