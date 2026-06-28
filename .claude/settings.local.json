@@ -72,7 +72,13 @@
       "Bash(npm i *)",
       "Bash(node build.mjs)",
       "Bash(node build-docx.mjs)",
-      "Bash(unzip -l DOCUMENTATION.docx)"
+      "Bash(unzip -l DOCUMENTATION.docx)",
+      "Bash(awk '{print $5, $9}')",
+      "Bash(awk '{print $5, $NF}')",
+      "Bash(node build-pdf.mjs)",
+      "Bash(awk '{print \"  \"$5, $NF}')",
+      "Bash(unzip -t DOCUMENTATION.docx)",
+      "Bash(unzip -oq \"d:/Gam3a/Year 4 cs/Graduation Project/MyHR/DOCUMENTATION.docx\")"
     ]
   }
 }

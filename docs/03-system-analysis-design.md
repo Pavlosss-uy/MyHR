@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center" id="ch3">
 
 # Chapter Three
 
@@ -131,8 +131,9 @@ flowchart LR
 
 ## 3.3 Component Diagram
 
-**Figure 3.3 — Component Diagram.** The following diagram shows the principal backend modules
-and their dependencies.
+The following diagram shows the principal backend modules and their dependencies.
+
+**Figure 3.3 — Component Diagram.**
 
 ```mermaid
 flowchart TB
@@ -296,27 +297,21 @@ data. Tenant isolation is then enforced on every job-scoped route by checking th
 
 MyHR persists all enterprise state in **Cloud Firestore**, a NoSQL document database. The
 logical entities and their relationships are shown in Figure 3.7; the physical collection
-layout and field-level detail appear in Chapter 4.6.
+layout and field-level detail appear in Section 4.6.
 
 **Figure 3.7 — Database Entity-Relationship Diagram.**
 
 ```mermaid
 erDiagram
-    COMPANIES ||--o{ JOBS : owns
-    JOBS ||--o{ CANDIDATES : contains
-    COMPANIES ||--|| COMPANYSTATS : "1:1 analytics"
+    COMPANIES ||--o{ JOBS : "owns"
+    JOBS ||--o{ CANDIDATES : "contains"
+    COMPANIES ||--|| COMPANYSTATS : "has analytics"
     PENDINGREQUESTS ||--|| COMPANIES : "approval creates"
     INVITATIONTOKENS }o--|| COMPANIES : "scoped to"
-    USERS }o--o{ COMPANIES : "adminUIDs membership"
-
-    COMPANIES { string id; string name; array adminUIDs; string domain; object settings }
-    JOBS { string id; string companyId; string title; string description; array extractedSkills; string status; object stats }
-    CANDIDATES { string id; string name; string email; number matchScore; number interviewScore; number totalScore; string interviewStatus; object interviewReport }
-    USERS { string uid; string role }
-    PENDINGREQUESTS { string id; string companyName; string contactEmail; string status }
-    INVITATIONTOKENS { string token; string type; string companyId; string jobId; string candidateId; datetime expiresAt }
-    COMPANYSTATS { string companyId; object stats; array monthly_trends; datetime updatedAt }
+    USERS }o--o{ COMPANIES : "adminUIDs"
 ```
+
+The field-level contents of each collection are listed in Table 4.2 (Section 4.6).
 
 *Design rationale.* Candidates are stored as a **subcollection** under each job
 (`Jobs/{jobId}/Candidates`) rather than in a top-level collection, so that listing a job's
@@ -352,6 +347,17 @@ flowchart LR
 The frontend never contacts Groq, Pinecone, Deepgram, or the neural models directly; all AI
 work is mediated by the backend, which is the single place candidate scores are computed.
 
+The container configuration reflects two deliberate decisions. First, the backend image is
+based on `python:3.12-slim` and installs only the system libraries the runtime actually needs
+(`libglib2.0-0` for OpenCV, `libsndfile1` for audio, and `ffmpeg` for decoding); the heavy
+TensorFlow/DeepFace stack is intentionally excluded in favour of the lighter MediaPipe/YuNet
+proctor. Second, the multi-hundred-megabyte trained checkpoints are **not** baked into the
+image — they are excluded through `.dockerignore` and mounted read-only at runtime, which keeps
+the image small and lets models be updated without rebuilding. Secrets are supplied through an
+env-file rather than image layers, and generated reports and audio are persisted to host
+volumes. A single `docker compose up --build` brings up the backend (8000) and the frontend
+(8080) together.
+
 ---
 
 ## 3.9 Interview Activity Diagram
@@ -362,21 +368,20 @@ including the proctoring and anti-cheating timing introduced in the portal.
 **Figure 3.9 — Interview Turn (Activity Diagram).**
 
 ```mermaid
-flowchart TB
-    START(["Question TTS finishes"]) --> CD["Show 3-2-1 'get ready' countdown"]
-    CD --> REC["Enable VAD + start recording"]
-    REC --> SPOKE{"Candidate spoke<br/>within 45 s?"}
-    SPOKE -->|No| EMPTY["Auto-submit empty answer<br/>(anti-cheat)"]
-    SPOKE -->|Yes| SILENCE{"Silence detected<br/>after speech?"}
-    SILENCE -->|No, still talking| REC
-    SILENCE -->|Yes| SUBCD["Show 3 s submission countdown<br/>Keep Talking / Submit Now"]
-    SUBCD --> RESUME{"Candidate resumed<br/>speaking?"}
-    RESUME -->|Yes| REC
-    RESUME -->|No| SUBMIT["Submit audio → STT → evaluate"]
+flowchart LR
+    START(["Question<br/>ends"]) --> CD["3-2-1<br/>countdown"]
+    CD --> REC["Record<br/>(VAD on)"]
+    REC --> SPOKE{"Spoke in<br/>45 s?"}
+    SPOKE -->|No| EMPTY["Submit empty<br/>(anti-cheat)"]
+    SPOKE -->|Yes| SILENCE{"Silent after<br/>speech?"}
+    SILENCE -->|Still talking| REC
+    SILENCE -->|Yes| SUBCD["3 s submit<br/>countdown"]
+    SUBCD -->|Resumes| REC
+    SUBCD -->|Submit| SUBMIT["STT +<br/>evaluate"]
     EMPTY --> SUBMIT
-    SUBMIT --> NEXT{"More questions?"}
+    SUBMIT --> NEXT{"More<br/>questions?"}
     NEXT -->|Yes| START
-    NEXT -->|No| DONE(["Synthesize report, show thank-you"])
+    NEXT -->|No| DONE(["Report +<br/>thank-you"])
 ```
 
 The next chapter details how each of these components is implemented.

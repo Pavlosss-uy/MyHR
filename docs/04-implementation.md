@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center" id="ch4">
 
 # Chapter Four
 
@@ -20,10 +20,12 @@
 - 4.8 Authentication & Authorization
 - 4.9 Configuration
 - 4.10 Proctoring, Speech & Anti-Cheating
+- 4.11 Cross-Cutting Concerns
 
 This chapter describes the detailed implementation of each component. In keeping with the
-documentation standard, it presents **flowcharts and pseudocode** rather than source listings,
-followed by a short results-and-discussion note for each component.
+documentation standard, it explains the design, workflow, and engineering rationale of each
+subsystem using diagrams and prose rather than source listings, with a short
+results-and-discussion note where relevant.
 
 ---
 
@@ -42,46 +44,33 @@ carrying the candidate name and role, and the chunks are written to two stores i
 **Pinecone** (dense vectors, `all-mpnet-base-v2`, 768-D, namespaced by session) and a **local
 BM25 store** (raw chunk text for sparse retrieval).
 
-**Figure 4.1 — Hybrid RAG Pipeline.**
+The retrieval stage, illustrated in Figure 4.1, runs the query against both stores
+independently and retrieves the top twenty passages from each. The two ranked lists are merged
+by **Reciprocal Rank Fusion**, which assigns each passage a score of `1 / (k + rank)` summed
+across the lists (`k = 60`); because fusion depends only on a passage's rank in each list, it is
+robust to the incomparable raw scores produced by sparse and dense retrieval. The fused
+shortlist is then re-scored by the cross-encoder reranker, which reads the query and each
+passage jointly to produce the final ordering passed to the agent.
+
+**Figure 4.1 — Hybrid RAG Pipeline (indexing and retrieval).**
 
 ```mermaid
-flowchart TB
-    A["CV text + JD text"] --> B["PII redaction (Presidio)"]
-    B --> C["Prompt-injection sanitizer"]
-    C --> D["Chunk (512 / overlap 50)<br/>+ CV header injection"]
-    D --> E1["Pinecone index<br/>(dense, 768-D, per-session namespace)"]
-    D --> E2["Local BM25 store<br/>(sparse, raw chunks)"]
-    Q["Query (topic / role)"] --> F1["Dense retrieve (top 20)"]
-    Q --> F2["BM25 retrieve (top 20)"]
-    E1 --> F1
-    E2 --> F2
-    F1 --> G["Reciprocal Rank Fusion (k = 60)"]
-    F2 --> G
-    G --> H["Cross-encoder rerank"]
-    H --> I["Top grounded passages → agent"]
+flowchart LR
+    A["CV + JD<br/>text"] --> B["PII redaction +<br/>injection filter"]
+    B --> C["Chunk 512 / ov. 50<br/>+ CV header"]
+    C --> D1["Pinecone<br/>dense 768-D"]
+    C --> D2["BM25<br/>sparse"]
+    D1 --> E["RRF fusion<br/>k = 60"]
+    D2 --> E
+    E --> F["Cross-encoder<br/>rerank"]
+    F --> G["Grounded<br/>passages"]
 ```
 
-At retrieval time, the query is run against both stores; the two ranked lists are merged with
-**Reciprocal Rank Fusion** (`score += 1 / (k + rank + 1)`, `k = 60`); and the fused shortlist
-is re-scored by the cross-encoder reranker for final ordering.
-
-**Pseudocode — hybrid retrieval.**
-
-```
-function retrieve(query, session_id):
-    dense  = pinecone_index(session_id).search(query, top_k = 20)
-    sparse = bm25(session_id).search(query, top_k = 20)
-    fused  = {}
-    for rank, doc in enumerate(dense):  fused[doc] += 1 / (60 + rank + 1)
-    for rank, doc in enumerate(sparse): fused[doc] += 1 / (60 + rank + 1)
-    shortlist = sort(fused, descending)
-    return cross_encoder_rerank(query, shortlist)
-```
-
-*Results & discussion.* The hybrid design retrieves both exact-term matches (BM25 — useful for
-specific technologies named in a JD) and semantic matches (dense — useful for paraphrased
-experience). The embedder is initialized lazily at server startup so the ~400 MB model does
-not block import; the same embedder is used everywhere to avoid train/inference mismatch.
+The hybrid design captures both exact-term matches (BM25, useful for specific technologies named
+in a JD) and semantic matches (dense retrieval, useful for paraphrased experience). The embedder
+is initialized lazily at startup so the ~400 MB model does not block application import, and the
+same embedder is used at indexing and query time to avoid a train/inference representation
+mismatch.
 
 ---
 
@@ -93,20 +82,17 @@ checkpointer so each session's state survives between turns.
 **Figure 4.2 — LangGraph Agent State Graph.**
 
 ```mermaid
-stateDiagram-v2
-    [*] --> rewrite
-    rewrite --> retrieve
-    retrieve --> grade
-    grade --> generate: context sufficient
-    grade --> rewrite: insufficient (re-query)
-    generate --> [*]: emit question, await answer
-    [*] --> process_answer: answer received
-    process_answer --> generate: continue interview
-    process_answer --> [*]: end interview
+flowchart LR
+    S([Start]) --> R[rewrite] --> RT[retrieve] --> G{grade}
+    G -->|sufficient| GEN[generate] --> Q([emit question])
+    G -->|insufficient| R
+    A([answer received]) --> P[process_answer]
+    P -->|continue| GEN
+    P -->|end| E([finish])
 ```
 
 - **rewrite** — reformulates the current topic into an effective retrieval query.
-- **retrieve** — runs the hybrid RAG pipeline (4.1) to gather grounded evidence.
+- **retrieve** — runs the hybrid RAG pipeline (Section 4.1) to gather grounded evidence.
 - **grade** — checks whether the retrieved context is good enough; a conditional edge
   (`check_grade`) loops back to re-query if not.
 - **generate** — prompts the Groq LLM (`llama-3.3-70b-versatile`) to produce the next question
@@ -117,52 +103,35 @@ stateDiagram-v2
 
 ### Answer scoring and the blend
 
-When an answer arrives, three independent signals are computed and combined.
+When an answer is received, three independent quality signals are computed and combined, as
+shown in Figure 4.3. The **LLM judge** produces an overall score on a 0–100 scale; the
+**MultiHeadEvaluator** (MOD-4) scores the answer's relevance, clarity, and depth; and the
+**CandidateScoringMLP** (MOD-1) produces a deep-learned score from the question and answer
+embeddings. Before blending, a **relevance gate** scales the neural contribution by the cosine
+similarity between the question and answer embeddings, so a fluent but off-topic answer cannot
+earn a high neural score.
 
-**Figure 4.3 — Answer Scoring & Blend Flow.**
+**Figure 4.3 — Answer Scoring and Blend.**
 
 ```mermaid
-flowchart TB
-    ANS["Candidate answer"] --> LLMJ["LLM judgment (0–100)"]
-    ANS --> EVAL["MultiHeadEvaluator<br/>relevance / clarity / depth"]
-    ANS --> MOD1["CandidateScoringMLP (MOD-1)"]
-    QA["Q ↔ A cosine similarity"] --> GATE{"Relevance gate:<br/>answer on-topic?"}
-    EVAL --> GATE
+flowchart LR
+    ANS["Answer"] --> LLMJ["LLM judge<br/>0–100"]
+    ANS --> EVAL["Evaluator<br/>MOD-4"]
+    ANS --> MOD1["Scorer<br/>MOD-1"]
+    EVAL --> GATE["Q↔A relevance<br/>gate"]
     MOD1 --> GATE
-    LLMJ --> BLEND["Weighted blend"]
-    GATE -->|on-topic| BLEND
-    GATE -->|off-topic| SUPPRESS["Suppress neural contribution"]
-    SUPPRESS --> BLEND
-    BLEND --> SCORE["Final answer score"]
+    LLMJ --> BLEND["Weighted blend<br/>65 / 20 / 15"]
+    GATE --> BLEND
+    BLEND --> SCORE["Answer score"]
 ```
 
-The blend weights are explicit in the code: when all three signals are available, the final
-score is **65% LLM + 20% neural evaluator + 15% MOD-1** (`_BLEND_3WAY`); when MOD-1 is
-unavailable, the system falls back to **65% LLM + 35% evaluator** (`_BLEND_2WAY`). A **relevance
-gate** based on the cosine similarity between the question and the answer suppresses the neural
-contribution when the answer is off-topic, preventing a fluent but irrelevant answer from being
-rewarded by the neural models.
-
-**Pseudocode — answer evaluation.**
-
-```
-function evaluate_answer(question, answer):
-    llm   = llm_judge(question, answer)            # 0–100
-    eval3 = evaluator(question, answer)            # relevance, clarity, depth
-    mod1  = scoring_mlp(question, answer)          # 0–100
-    if cosine(question, answer) < threshold:       # relevance gate
-        neural = downweighted(eval3, mod1)
-    else:
-        neural = combine(eval3, mod1)
-    if mod1 available:  return 0.65*llm + 0.20*eval_score + 0.15*mod1
-    else:               return 0.65*llm + 0.35*eval_score
-```
-
-*Results & discussion.* The blend keeps the LLM as the primary judge while letting
-purpose-trained models temper its opinion, and the relevance gate guards against the most
-common failure mode (off-topic fluency). Proctoring signals are aggregated per answer and an
-answer is flagged "suspicious" if multiple faces appear, the face is absent for more than 20%
-of frames, or the candidate looks away for more than 30% of frames.
+The blend weights are fixed in the code. When all three signals are available the score is
+**65% LLM + 20% evaluator + 15% MOD-1** (`_BLEND_3WAY`); when MOD-1 is unavailable the system
+degrades gracefully to **65% LLM + 35% evaluator** (`_BLEND_2WAY`). This keeps the LLM as the
+primary judge while allowing the purpose-trained models to temper its opinion, and the relevance
+gate guards against the most common failure mode, off-topic fluency. Proctoring observations are
+aggregated per answer (Section 4.10) and an answer that is flagged suspicious incurs a score
+penalty at this stage.
 
 ---
 
@@ -178,17 +147,17 @@ guards against dimension and embedder mismatches.
 |---|-------|------|-------|--------|------|
 | MOD-1 | CandidateScoringMLP | `scoring_model.py` | Q+A embeddings (1536-D) | Score 0–100 | Deep answer scoring in the blend |
 | MOD-4 | MultiHeadEvaluator | `multi_head_evaluator.py` | Answer embedding (768-D) | relevance, clarity, depth | Multi-dimensional answer evaluation |
+| MOD-5 | NeuralCandidateRanker | `candidate_ranker.py` | 7-D candidate features | Ranking score | Order candidates within a job |
+| MOD-6 | PerformancePredictor | `performance_predictor.py` | Interview features | Market-positioning estimate | Auxiliary report signal |
 | — | SkillMatchSiamese | `skill_matcher.py` | CV skills, JD skills | Match similarity | CV↔JD skill matching for ranking |
-| — | NeuralCandidateRanker | `candidate_ranker.py` | 7-D candidate features | Ranking score | Order candidates within a job |
 | — | AdaptiveDifficulty | `difficulty_engine.py` | Performance state (3-D/6-D) | Difficulty action | RL-based question difficulty |
 | — | EmotionModel | `emotion_model.py` | Face/tone features | Emotion estimate | Affective context for the report |
-| — | PerformancePredictor | `performance_predictor.py` | Interview features | Market-positioning estimate | Auxiliary report signal |
 | — | CrossEncoderScorer | `cross_encoder_scorer.py` | (query, passage) | Relevance | RAG reranking |
 
-Supporting modules include `proctor.py` (OpenCV YuNet face/attention detection),
-`feature_extractor.py` (feature assembly), and `explainer.py` (score explanation helpers).
+Supporting modules include `proctor.py` (MediaPipe/YuNet face and iris-gaze detection),
+`feature_extractor.py` (feature assembly), and `explainer.py` (score-explanation helpers).
 
-*Results & discussion.* On held-out test sets (Chapter 4.5), the MultiHeadEvaluator reaches
+On held-out test sets (Section 4.5), the MultiHeadEvaluator reaches
 Spearman ≈ 0.95 on each of relevance, clarity, and depth, and the scoring MLP reaches
 MAE ≈ 0.067 with Spearman ≈ 0.93 — i.e. both models order answers very close to the reference
 labels. The candidate ranker is currently trained on synthetically generated comparative data
@@ -222,22 +191,12 @@ The enterprise layer implements the hiring funnel. Key implementation details:
 - **Ownership checks.** Every job-scoped route verifies that the job belongs to the caller's
   company before returning data, enforcing tenant isolation.
 
-**Pseudocode — batch CV upload.**
-
-```
-function upload_cvs(job_id, files, company_id):
-    job = authorize_job(job_id, company_id)
-    for file in files:
-        if size(file) > 5 MiB: skip
-        text   = parse(file)
-        if duplicate(hash(text)) or duplicate(email(text)): skip
-        skills = extract_skills(text)
-        match  = skill_matcher(skills, job.skills)
-        score  = rubric_score(text, job.description, job.skills)
-        persist_candidate(job_id, {skills, match, score, ...})
-    update_job_stats(job_id)         # atomic transaction
-    refresh_analytics(company_id)    # background
-```
+For each uploaded file the upload handler verifies job ownership, rejects oversized files,
+extracts the text, and skips duplicates by content hash and email. It then extracts the
+candidate's skills, runs the neural skill matcher against the job's skills, computes the rubric
+score, and persists the candidate document. After the batch completes, job statistics are
+updated in a single atomic transaction and the company analytics document is refreshed in the
+background, so neither concurrent uploads nor large batches block the response.
 
 ---
 
@@ -285,36 +244,18 @@ A **human-rating study** (`human_rating_study.py`) compares the system's scores 
 ratings on a stratified sample of answers, reporting Spearman's correlation (≈ 0.95) and
 Cohen's κ (≈ 0.50). A **fairness audit** and a **RAG evaluation** harness are also provided.
 
-*Results & discussion.* The held-out methodology and consistent embedder give the reported
-metrics credibility. As noted in Chapter 7, the human study currently has a single rater and
-should be extended to several raters for inter-rater reliability.
+The held-out methodology and the consistent embedder give the reported metrics credibility. As
+noted in Chapter 7, the human study currently uses a single rater and should be extended to
+several raters for inter-rater reliability.
 
 ---
 
 ## 4.6 Database Design
 
-MyHR persists all enterprise state in **Cloud Firestore**, a document database. Collections and
-their relationships are shown below.
-
-**Figure 4.5 — Database Relationships.**
-
-```mermaid
-erDiagram
-    COMPANIES ||--o{ JOBS : owns
-    JOBS ||--o{ CANDIDATES : contains
-    COMPANIES ||--o{ COMPANYSTATS : "1:1 analytics"
-    PENDINGREQUESTS ||--|| COMPANIES : "approval creates"
-    INVITATIONTOKENS }o--|| COMPANIES : "scoped to"
-    USERS }o--o{ COMPANIES : "adminUIDs membership"
-
-    COMPANIES { string id; string name; array adminUIDs; string domain; object settings }
-    JOBS { string id; string companyId; string title; string description; array extractedSkills; object stats }
-    CANDIDATES { string id; string name; string email; number matchScore; number interviewScore; number totalScore; string interviewStatus }
-    USERS { string uid; string role }
-    PENDINGREQUESTS { string id; string companyName; string contactEmail; string status }
-    INVITATIONTOKENS { string token; string type; string companyId; string jobId; string candidateId; datetime expiresAt }
-    COMPANYSTATS { string companyId; object stats; array monthly_trends; datetime updatedAt }
-```
+MyHR persists all enterprise state in **Cloud Firestore**, a NoSQL document database. The logical
+entity model and relationships were presented in the design chapter (Figure 3.7); this section
+documents the physical collection layout and the fields each collection carries, summarized in
+Table 4.2.
 
 **Table 4.2 — Firestore Collections.**
 
@@ -348,6 +289,7 @@ router in `hr_routes.py`.
 | GET | `/end_interview/{session_id}` | Session | End an interview and finalize |
 | POST | `/analyze_frame` | Session | Proctoring: analyze a single video frame |
 | POST | `/submit_answer` | Session | Submit and evaluate an answer |
+| GET | `/api/proctoring/{session_id}` | Session | Retrieve aggregated proctoring results |
 | POST | `/candidates/rank` | Internal | Rank candidates with the neural ranker |
 | GET | `/health` | Public | Liveness/health check |
 | GET | `/metrics` | Public | In-process metrics |
@@ -365,9 +307,11 @@ router in `hr_routes.py`.
 | POST | `/jobs` | HR | Create a job |
 | GET | `/jobs` | HR | List company jobs |
 | GET | `/jobs/{id}` | HR | Get a job |
+| PATCH | `/jobs/{id}` | HR | Edit a job; close or reopen it |
 | POST | `/jobs/{id}/upload-cvs` | HR | Batch upload + score CVs |
 | GET | `/jobs/{id}/candidates` | HR | List candidates (paged/filtered) |
 | GET | `/jobs/{id}/candidates/{cid}` | HR | Get a candidate (with report) |
+| POST | `/jobs/{id}/candidates/{cid}/regenerate-report` | HR | Re-synthesize a candidate's interview report |
 | DELETE | `/jobs/{id}/candidates/{cid}` | HR | Remove a candidate |
 | POST | `/user/role` | Firebase | Self-register as candidate |
 | GET | `/user/role/{uid}` | Public | Resolve a user's role |
@@ -397,30 +341,11 @@ Three roles exist:
 - **Super-admin** — a fixed allowlist email with platform privileges (approving requests).
 
 Public interview links use cryptographically strong tokens (`secrets.token_urlsafe`) with an
-expiry, validated server-side; the corporate-email gate restricts enterprise sign-up to
-corporate domains (with a `BYPASS_EMAIL_CHECK` escape hatch for local testing). Interview scores
-are computed only from the server-side synthesized report, so a candidate cannot submit their
-own score.
-
-**Figure 4.6 — Authentication & RBAC Flow.**
-
-```mermaid
-sequenceDiagram
-    actor U as User
-    participant FE as React SPA
-    participant FB as Firebase Auth
-    participant API as FastAPI
-    participant FS as Firestore
-
-    U->>FE: Sign in / sign up
-    FE->>FB: Authenticate
-    FB-->>FE: ID token
-    FE->>API: Request + Bearer ID token
-    API->>FB: Verify token → uid
-    API->>FS: Resolve role (adminUIDs / Users)
-    FS-->>API: role (candidate | hr | admin)
-    API-->>FE: Authorized response (role-gated)
-```
+expiry and are validated server-side. The corporate-email gate restricts enterprise sign-up to
+corporate domains, with a `BYPASS_EMAIL_CHECK` escape hatch for local testing. Because interview
+scores are computed only from the server-side synthesized report, a candidate cannot submit or
+influence their own score. The end-to-end token verification and role-resolution sequence was
+presented in the design chapter (Figure 3.6).
 
 ---
 
@@ -475,30 +400,30 @@ dependency:
    and a head-pose fallback when MediaPipe is unavailable.
 3. **Haar cascade** is the final fallback.
 
-**Figure 4.7 — Proctoring Detection Pipeline.**
+The detection pipeline is summarized in Figure 4.5. Each usable frame is processed by MediaPipe
+FaceMesh (or the YuNet fallback) to produce a gaze score and a face count, which are aggregated
+across all of an answer's frames and tested against the violation thresholds.
+
+**Figure 4.5 — Proctoring Detection Pipeline.**
 
 ```mermaid
-flowchart TB
-    F["Video frame (BGR)"] --> Q{"Quality OK?<br/>(brightness/blur)"}
-    Q -->|No| EMPTY["Empty result (skip)"]
-    Q -->|Yes| MP{"MediaPipe<br/>available?"}
-    MP -->|Yes| MESH["FaceMesh 478 landmarks"]
-    MESH --> IRIS["IPR (iris) + EAR (eyelids)"]
-    MESH --> FACES["Face count"]
-    MP -->|No| YUNET["YuNet head-pose + face count"]
-    IRIS --> SCORE["gaze_score = 0.55·iris + 0.45·head"]
-    YUNET --> SCORE
-    FACES --> AGG["Per-answer aggregation"]
-    SCORE --> AGG
-    AGG --> FLAG{"multiple faces, or<br/>face absent >20%, or<br/>looking away >30%?"}
-    FLAG -->|Yes| SUS["Mark answer suspicious"]
+flowchart LR
+    F["Video<br/>frame"] --> Q{"Frame<br/>usable?"}
+    Q -->|No| SKIP["Skip"]
+    Q -->|Yes| DET["FaceMesh 478 pts<br/>(YuNet fallback)"]
+    DET --> G["gaze_score<br/>0.55·iris + 0.45·head"]
+    DET --> C["Face<br/>count"]
+    G --> AGG["Per-answer<br/>aggregation"]
+    C --> AGG
+    AGG --> FLAG{"Violation<br/>thresholds?"}
+    FLAG -->|Yes| SUS["Suspicious"]
     FLAG -->|No| OK["Clean"]
 ```
 
-Observations are **aggregated per answer**. An answer is flagged *suspicious* if multiple faces
-appear, the face is absent for more than 20% of its frames, or the candidate looks away for more
-than 30% of its frames. As shown in Chapter 4.2, a suspicious answer incurs a score penalty
-(−5, or −8 when multiple faces are detected) at blend time.
+An answer is flagged *suspicious* when multiple faces appear, the face is absent for more than
+20% of its frames, or the candidate looks away for more than 30% of its frames. As described in
+Section 4.2, a suspicious answer incurs a score penalty (−5, or −8 when multiple faces are
+detected) at blend time.
 
 ### Speech (STT / TTS)
 
@@ -527,18 +452,38 @@ Detection (VAD)** (Silero VAD via `@ricky0123/vad-web`):
 - If the candidate never speaks at all, a **45-second no-speech timeout** auto-submits an empty
   answer, so silent non-participation cannot be used to dodge a question.
 
-**Figure 4.8 — Anti-Cheating Recording State Machine.** *(See also Figure 3.9.)*
+The complete control flow of these states — the pre-answer countdown, the recording and
+submission-countdown transitions, and the no-speech timeout — is shown in the interview activity
+diagram (Figure 3.9). Separating "the candidate is thinking" from "the candidate is done"
+removed the most common usability complaint (premature submission), while the mandatory
+pre-answer countdown and the no-speech timeout together close the two obvious ways to game a
+hands-off interview. Because this logic lives in the portal's state, it applies identically to
+the enterprise candidate portal and the practice interview room.
 
-```
-TTS ends ──▶ [PRE-ANSWER COUNTDOWN 3..2..1] ──▶ [LISTENING]
-   [LISTENING] ──speech──▶ [RECORDING] ──silence──▶ [SUBMIT COUNTDOWN 3..2..1]
-   [SUBMIT COUNTDOWN] ──speaks again / Keep Talking──▶ [RECORDING]
-   [SUBMIT COUNTDOWN] ──reaches 0 / Submit Now──▶ submit
-   [LISTENING] ──no speech for 45 s──▶ submit empty (anti-cheat)
-```
+---
 
-*Results & discussion.* Separating "the candidate is thinking" from "the candidate is done"
-removed the most common usability complaint (premature submission) while the mandatory pre-answer
-countdown and the no-speech timeout together close the two obvious ways to game a hands-off
-interview. Because the logic lives in the portal's state, it applies identically to the
-enterprise candidate portal and the practice interview room.
+## 4.11 Cross-Cutting Concerns
+
+Three concerns cut across the backend rather than belonging to any single feature: how requests
+are authenticated, how the service is protected from abuse, and how its behaviour is observed.
+
+**Dependency injection.** Authentication and tenancy are enforced through FastAPI's dependency
+injection rather than being repeated inside each handler. Reusable dependencies — verifying the
+Firebase ID token and resolving the caller's company (`get_current_company_id`) or requiring a
+platform administrator (`require_admin`) — are declared once and attached to routes with
+`Depends(...)`. Each protected enterprise route therefore receives an already-authorized
+company identifier, and a route that omits the dependency simply has no access to tenant data.
+Centralizing the checks in injected dependencies keeps authorization consistent and removes the
+risk of a handler forgetting to verify ownership.
+
+**Rate limiting.** The interview endpoints are protected by **SlowAPI**, a per-client rate
+limiter keyed on the remote address. A shared `Limiter` is registered on the application and a
+`RateLimitExceeded` handler returns a clean `429` response, preventing a single client from
+exhausting the LLM, speech, and vector-search services that each request fans out to.
+
+**Logging.** The backend configures Python's standard `logging` at start-up and obtains a
+module-level logger in each module (`logging.getLogger(__name__)`). Model-registry health, RAG
+indexing, the per-answer score blend, and proctoring penalties are logged at appropriate levels,
+which makes a failed interview traceable without exposing any candidate-facing detail. As noted
+in Chapter 7, this structured logging is the foundation for the production monitoring and tracing
+that are not yet part of the current implementation.

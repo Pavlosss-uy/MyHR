@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center" id="ch6">
 
 # Chapter Six
 
@@ -51,11 +51,10 @@ scores against human ratings on a stratified sample of answers, reporting a syst
 the moderate κ reflects that exact-category agreement is harder than rank agreement, and is also
 limited by the study currently using a single rater (see Chapter 7).
 
-**Figure 6.1 — Score Distribution & Model Agreement.** *(Insert the generated plot from the
-training run — e.g. the evaluator's predicted-vs-reference scatter and the blend's
-score-distribution histogram — before submission.)*
+**Figure 6.1 — Score Distribution & Model Agreement.**
 
-![Model agreement and score distribution](images/09-model-agreement.png)
+**[Add Figure: training-run plot — the evaluator's predicted-vs-reference scatter and the
+blend's score-distribution histogram (export from the TensorBoard / MLflow run).]**
 
 ---
 
@@ -116,7 +115,7 @@ that reaches the HR dashboard.
   HR role, tenant isolation, PII redaction, and prompt-injection sanitization.
 - **Rigorously trained models.** Held-out evaluation, consistent embedder, experiment tracking,
   and a human-rating study give the metrics credibility.
-- **Clean architecture.** Three well-separated layers, 29 documented endpoints, 70 automated
+- **Clean architecture.** Three well-separated layers, 32 documented endpoints, 70 automated
   tests, and Docker packaging.
 - **Robust candidate experience.** Voice-native interview with a usability-tuned, anti-cheat
   recording state machine.

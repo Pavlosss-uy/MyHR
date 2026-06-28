@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center" id="ch7">
 
 # Chapter Seven
 

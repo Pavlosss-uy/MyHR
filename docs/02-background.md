@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center" id="ch2">
 
 # Chapter Two
 
@@ -140,10 +140,11 @@ Two auxiliary signals enrich the interview:
 - **Emotion recognition** analyzes the candidate's facial expression and/or vocal tone to
   estimate affective state during the interview, providing context for the report.
 - **Proctoring** runs silently to detect integrity issues — whether a face is present, whether
-  the candidate is looking away, and whether multiple faces appear. MyHR uses **OpenCV** with
-  the lightweight **YuNet** face detector for this, deliberately avoiding heavyweight
-  dependencies. Proctoring observations are aggregated per answer and never shown to the
-  candidate.
+  the candidate is looking away, and whether multiple faces appear. The primary detector is
+  **MediaPipe FaceMesh**, which returns 478 facial landmarks including the iris contours and
+  therefore supports true eye-gaze estimation, with **OpenCV YuNet** as a lightweight fallback
+  for face counting and head pose. Proctoring observations are aggregated per answer and are
+  never shown to the candidate.
 
 ---
 
@@ -168,7 +169,7 @@ MyHR is assembled from established, production-grade components.
 | Embeddings | `sentence-transformers` (`all-mpnet-base-v2`) | 768-D text embeddings |
 | Neural layer | PyTorch | Eight custom models (scoring, ranking, etc.) |
 | Speech | Deepgram SDK | Speech-to-text and text-to-speech |
-| Proctoring | OpenCV (YuNet) | Silent face/attention detection |
+| Proctoring | MediaPipe FaceMesh + OpenCV (YuNet) | Silent face/iris-gaze detection |
 | Privacy | Microsoft Presidio | PII detection and redaction before indexing |
 | Auth | Firebase Authentication | Identity and ID-token verification |
 | Database | Google Cloud Firestore | Multi-tenant document persistence |

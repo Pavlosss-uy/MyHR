@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center" id="ch1">
 
 # Chapter One
 
@@ -89,6 +89,23 @@ The platform serves two distinct audiences from one codebase:
 
 Both audiences are gated by **role-based access control**: an account is either a *candidate*
 or an enterprise *HR* user, and the two roles are mutually exclusive for a given email.
+
+Table 1.1 positions MyHR against the two categories of existing tools. Traditional applicant
+tracking systems screen by keyword and cannot interview; a general-purpose LLM chatbot can
+converse but is ungrounded, scores opaquely, and offers no enterprise workflow. MyHR combines
+grounded interviewing with neural screening inside a multi-tenant product.
+
+**Table 1.1 — Comparison with Existing Solutions.**
+
+| Capability | Keyword ATS | Generic LLM chatbot | MyHR |
+|------------|:----------:|:-------------------:|:----:|
+| CV screening | Keyword match | None | Neural skill match + rubric |
+| Conducts an interview | No | Yes (ungrounded) | Yes (CV/JD-grounded) |
+| Answer scoring | None | Single opaque score | Transparent LLM + neural blend |
+| Resists off-topic fluency | N/A | No | Yes (relevance gate) |
+| Integrity / proctoring | No | No | Iris-gaze + face count |
+| Multi-tenant enterprise workflow | Yes | No | Yes |
+| Server-side, tamper-proof scoring | N/A | No | Yes |
 
 ---
 
@@ -224,33 +241,28 @@ lists them by category.
 
 ## 1.7 Project Timeline
 
-**Figure 1.1 — Project Time Plan.** The project was executed in five overlapping phases:
-foundations and research, core AI engine, enterprise layer, training and evaluation, and
-hardening and documentation.
+The project was executed in five overlapping phases: foundations and research, core AI engine,
+enterprise layer, training and evaluation, and hardening and documentation.
 
-```mermaid
-gantt
-    title MyHR — Project Time Plan
-    dateFormat  YYYY-MM
-    axisFormat  %b
-    section Foundations
-    Research & requirements      :a1, 2025-10, 1M
-    Stack setup (FastAPI/React)  :a2, 2025-10, 1M
-    section Core AI Engine
-    RAG pipeline                 :b1, 2025-11, 1M
-    LangGraph interview agent    :b2, 2025-11, 2M
-    Neural scoring & blend       :b3, 2025-12, 1M
-    section Enterprise Layer
-    Auth, RBAC & jobs            :c1, 2026-01, 1M
-    CV upload, ranking, invites  :c2, 2026-02, 1M
-    Analytics & dashboard        :c3, 2026-03, 1M
-    section Training & Evaluation
-    Train 8 neural models        :d1, 2026-03, 2M
-    Held-out tests & human study :d2, 2026-04, 1M
-    section Hardening
-    Email, fixes & tests         :e1, 2026-05, 1M
-    Documentation                :e2, 2026-06, 1M
-```
+**Figure 1.1 — Project Time Plan.**
+
+<table class="gantt">
+<thead>
+<tr><th>Phase</th><th>Oct</th><th>Nov</th><th>Dec</th><th>Jan</th><th>Feb</th><th>Mar</th><th>Apr</th><th>May</th><th>Jun</th><th>Jul</th></tr>
+</thead>
+<tbody>
+<tr><td>Foundations &amp; research</td><td class="on"></td><td class="on"></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>Core AI engine</td><td></td><td class="on"></td><td class="on"></td><td class="on"></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>Enterprise layer</td><td></td><td></td><td></td><td class="on"></td><td class="on"></td><td class="on"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>Training &amp; evaluation</td><td></td><td></td><td></td><td></td><td></td><td class="on"></td><td class="on"></td><td></td><td></td><td></td></tr>
+<tr><td>Hardening &amp; testing</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="on"></td><td></td><td></td></tr>
+<tr><td>Documentation</td><td></td><td class="on"></td><td class="on"></td><td class="on"></td><td class="on"></td><td class="on"></td><td class="on"></td><td class="on"></td><td class="on"></td><td class="on"></td></tr>
+</tbody>
+</table>
+
+The shaded cells mark each phase's active months (October 2025 – July 2026). Development phases
+run sequentially with short overlaps, while documentation is maintained continuously from
+mid-November alongside every phase through to final submission.
 
 ---
 
@@ -269,7 +281,7 @@ The remainder of this document is organized as follows:
 - **Chapter 4 (System Implementation)** describes each component in detail — the RAG pipeline,
   the interview agent, the neural models, the enterprise layer, proctoring and anti-cheating,
   the training layer, the database, the API surface, authentication and authorization, and
-  configuration — using diagrams and pseudocode rather than source listings.
+  configuration — using diagrams and prose descriptions rather than source listings.
 - **Chapter 5 (System Testing)** explains the testing strategy, how to install, configure, and
   run the system, the automated test suite, and the end-to-end golden path with screenshots.
 - **Chapter 6 (Results & Discussion)** reports the measured outcomes — model metrics, system

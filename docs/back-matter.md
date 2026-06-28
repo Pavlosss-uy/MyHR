@@ -21,7 +21,7 @@
 | Embeddings | `sentence-transformers` (`all-mpnet-base-v2`) | 768-D embeddings |
 | Deep learning | PyTorch | Eight neural models |
 | Speech | Deepgram SDK | STT / TTS |
-| Computer vision | OpenCV (YuNet) | Silent proctoring |
+| Computer vision | MediaPipe FaceMesh + OpenCV (YuNet) | Silent iris-gaze proctoring |
 | Privacy | Microsoft Presidio | PII redaction |
 | Auth | Firebase Authentication | Identity, ID tokens |
 | Database | Google Cloud Firestore | Persistence |
@@ -43,8 +43,8 @@
 
 </div>
 
-> Books and papers first (ordered by date), then websites (with last-retrieved dates). Replace
-> or extend with the exact sources cited in the final printed document.
+The following sources are ordered with books and papers first (by date), followed by the
+official documentation of the technologies used (with last-retrieved dates).
 
 1. A. Vaswani, N. Shazeer, N. Parmar, et al., "Attention Is All You Need," *Advances in Neural
    Information Processing Systems (NeurIPS)*, 2017.
@@ -63,47 +63,18 @@
 8. LangGraph Documentation, https://langchain-ai.github.io/langgraph/ , last retrieved
    27/06/2026.
 9. FastAPI Documentation, https://fastapi.tiangolo.com/ , last retrieved 27/06/2026.
-10. Pinecone Documentation, https://docs.pinecone.io/ , last retrieved 27/06/2026.
-11. Groq Documentation, https://console.groq.com/docs , last retrieved 27/06/2026.
-12. Firebase Documentation, https://firebase.google.com/docs , last retrieved 27/06/2026.
-13. Deepgram Documentation, https://developers.deepgram.com/ , last retrieved 27/06/2026.
-
----
-
-<div align="center">
-
-# Glossary & Abbreviations
-
-</div>
-
-| Term | Definition |
-|------|------------|
-| **API** | Application Programming Interface — the contract the backend exposes to the frontend. |
-| **ATS** | Applicant Tracking System — traditional, keyword-based hiring software. |
-| **BM25** | Sparse ranking function scoring documents by term overlap with the query. |
-| **Bi-encoder** | Embeds query and document independently for fast similarity search. |
-| **Cross-encoder** | Scores a (query, document) pair jointly for higher-precision reranking. |
-| **CV** | Curriculum Vitae — a candidate's résumé. |
-| **Dense retrieval** | Semantic search using vector embeddings and cosine similarity. |
-| **Embedding** | A fixed-length numeric vector representing the meaning of text. |
-| **JD** | Job Description. |
-| **Knock-out rule** | A rubric cap that limits the score of a clearly unqualified CV. |
-| **LLM** | Large Language Model. |
-| **MLP** | Multi-Layer Perceptron — a feed-forward neural network. |
-| **Multi-head** | A network with several output heads predicting different targets. |
-| **NDCG** | Normalized Discounted Cumulative Gain — a ranking-quality metric. |
-| **PII** | Personally Identifiable Information. |
-| **PPO** | Proximal Policy Optimization — a reinforcement-learning algorithm. |
-| **Proctoring** | Silent integrity monitoring (face presence, gaze, multiple faces). |
-| **RAG** | Retrieval-Augmented Generation. |
-| **RBAC** | Role-Based Access Control. |
-| **Relevance gate** | A check that suppresses the neural score when an answer is off-topic. |
-| **RL** | Reinforcement Learning. |
-| **RRF** | Reciprocal Rank Fusion — merges several ranked lists into one. |
-| **SPA** | Single-Page Application. |
-| **Spearman's ρ** | Rank correlation measuring whether two orderings agree. |
-| **STT / TTS** | Speech-to-Text / Text-to-Speech. |
-| **WebSocket (WS)** | A persistent two-way connection used for the live interview. |
+10. React Documentation, https://react.dev/ , last retrieved 27/06/2026.
+11. PyTorch Documentation, https://pytorch.org/docs/stable/index.html , last retrieved 27/06/2026.
+12. Pinecone Documentation, https://docs.pinecone.io/ , last retrieved 27/06/2026.
+13. Groq Documentation, https://console.groq.com/docs , last retrieved 27/06/2026.
+14. Firebase Authentication & Cloud Firestore Documentation, https://firebase.google.com/docs ,
+    last retrieved 27/06/2026.
+15. Deepgram Speech-to-Text & Text-to-Speech Documentation, https://developers.deepgram.com/ ,
+    last retrieved 27/06/2026.
+16. MediaPipe Face Mesh Documentation, https://developers.google.com/mediapipe , last retrieved
+    27/06/2026.
+17. Microsoft Presidio Documentation, https://microsoft.github.io/presidio/ , last retrieved
+    27/06/2026.
 
 ---
 
@@ -152,8 +123,8 @@ BYPASS_EMAIL_CHECK=
 
 ## Appendix B — Endpoint Index
 
-See **Tables 4.3 and 4.4** for the complete REST/WebSocket surface (9 interview/system
-endpoints in `server.py`, 20 enterprise endpoints in `hr_routes.py`).
+See **Tables 4.3 and 4.4** for the complete REST/WebSocket surface (10 interview/system
+endpoints in `server.py`, 22 enterprise endpoints in `hr_routes.py`).
 
 ## Appendix C — Repository Structure (selected)
 
