@@ -63,6 +63,7 @@ const InterviewRoom = () => {
             setSilenceCountdown(null);
             setPendingBlob(null);
         },
+        stream: audioStream,
     });
 
     // Interview state

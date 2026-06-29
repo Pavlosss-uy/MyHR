@@ -74,7 +74,9 @@ def _send_resend(to: str, subject: str, html_body: str) -> None:
         resend.Emails.send({"from": _FROM_RESEND, "to": [to], "subject": subject, "html": html_body})
         logger.info("sent (resend) → %s | %s", to, subject)
     except Exception as exc:
-        logger.error("Resend failed → %s | %s", to, exc)
+        # Resend free plan only delivers to verified domains / the account owner's email.
+        # If you see this error, add SMTP_USER + SMTP_PASS to .env instead.
+        logger.error("Resend failed → %s | %s | hint: use SMTP_USER+SMTP_PASS for unrestricted delivery", to, exc)
 
 
 # ── Shared layout shell ───────────────────────────────────────────────────────

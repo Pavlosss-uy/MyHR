@@ -86,6 +86,7 @@ const EnterpriseInterviewRoom = ({
             setSilenceCountdown(null);
             setPendingBlob(null);
         },
+        stream: audioStream,
     });
 
     // ── Interview state ──────────────────────────────────────────────────────

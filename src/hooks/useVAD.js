@@ -7,8 +7,13 @@ import { MicVAD, utils } from "@ricky0123/vad-web";
  * All assets are served from /public/ (committed to git):
  *   baseAssetPath  "/"  →  /vad.worklet.bundle.min.js + /silero_vad_legacy.onnx
  *   onnxWASMBasePath "/" →  /ort-wasm-simd-threaded*.wasm
+ *
+ * stream (optional): pass the existing MediaStream from useMediaDevices so the
+ * VAD reuses the already-granted mic instead of calling getUserMedia again.
+ * Dual concurrent getUserMedia calls on Windows can cause the second one to
+ * fail silently, breaking silence detection entirely.
  */
-export function useVAD({ onSpeechStart: onSpeechStartCb } = {}) {
+export function useVAD({ onSpeechStart: onSpeechStartCb, stream: providedStream } = {}) {
     const [vadBlob,      setVadBlob]      = useState(null);
     const [userSpeaking, setUserSpeaking] = useState(false);
     const [listening,    setListening]    = useState(false);
@@ -20,7 +25,21 @@ export function useVAD({ onSpeechStart: onSpeechStartCb } = {}) {
     cbRef.current = onSpeechStartCb;
 
     useEffect(() => {
+        // If a stream is expected (non-undefined) but not yet ready, wait for
+        // the next render when useMediaDevices resolves getUserMedia.
+        if (providedStream === null) return;
+
         let destroyed = false;
+
+        // Extract audio-only tracks from the provided stream so MicVAD doesn't
+        // choke on video tracks. Fall back to requesting its own mic if none given.
+        let streamOption = {};
+        if (providedStream) {
+            const audioTracks = providedStream.getAudioTracks();
+            if (audioTracks.length > 0) {
+                streamOption = { stream: new MediaStream(audioTracks) };
+            }
+        }
 
         MicVAD.new({
             model: "legacy",
@@ -31,6 +50,7 @@ export function useVAD({ onSpeechStart: onSpeechStartCb } = {}) {
                 // threaded variant — no SharedArrayBuffer needed.
                 ort.env.wasm.numThreads = 1;
             },
+            ...streamOption,
             onSpeechStart: () => {
                 if (destroyed || pausedRef.current) return;
                 setUserSpeaking(true);
@@ -48,10 +68,10 @@ export function useVAD({ onSpeechStart: onSpeechStartCb } = {}) {
                 }
             },
             onVADMisfire: () => setUserSpeaking(false),
-            positiveSpeechThreshold: 0.80,
+            positiveSpeechThreshold: 0.65,
             negativeSpeechThreshold: 0.30,
             minSpeechFrames:    3,
-            redemptionFrames:   25,
+            redemptionFrames:   20,
             preSpeechPadFrames: 2,
         })
             .then((vad) => {
@@ -72,7 +92,7 @@ export function useVAD({ onSpeechStart: onSpeechStartCb } = {}) {
                 vadRef.current = null;
             }
         };
-    }, []);
+    }, [providedStream]);
 
     const setVADPaused = (paused) => {
         pausedRef.current = paused;
