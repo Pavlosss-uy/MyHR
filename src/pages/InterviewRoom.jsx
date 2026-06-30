@@ -344,10 +344,10 @@ const InterviewRoom = () => {
         }
     }, [sessionId, navigate, stopSpeaking, isRecording, stopRecording, isEnding]);
 
-    // ── Mute VAD while TTS playing; start pre-answer countdown when it ends ──
+    // ── Mute VAD while browser TTS plays; start countdown when it ends ──────
+    // Backend audio is handled directly in onPlay/onEnded on the <audio> element.
     useEffect(() => {
-        const ttsActive = isBackendPlaying || isPlaying;
-        if (ttsActive) {
+        if (isPlaying) {
             wasPlayingRef.current = true;
             setVADPaused(true);
             setPreAnswerCountdown(null);
@@ -355,9 +355,9 @@ const InterviewRoom = () => {
             setPendingBlob(null);
         } else if (wasPlayingRef.current) {
             wasPlayingRef.current = false;
-            setPreAnswerCountdown(3);
+            setPreAnswerCountdown((prev) => prev === null ? 3 : prev);
         }
-    }, [isBackendPlaying, isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // ── Pre-answer countdown: 3→2→1→0 → enable VAD + start anti-cheat timer ─
     useEffect(() => {
@@ -476,9 +476,19 @@ const InterviewRoom = () => {
             <audio
                 ref={audioRef}
                 className="hidden"
-                onPlay={() => setIsBackendPlaying(true)}
+                onPlay={() => {
+                    setIsBackendPlaying(true);
+                    setVADPaused(true);
+                    wasPlayingRef.current = true;
+                }}
                 onPause={() => setIsBackendPlaying(false)}
-                onEnded={() => setIsBackendPlaying(false)}
+                onEnded={() => {
+                    setIsBackendPlaying(false);
+                    if (wasPlayingRef.current) {
+                        wasPlayingRef.current = false;
+                        setPreAnswerCountdown((prev) => prev === null ? 3 : prev);
+                    }
+                }}
             />
             {/* Hidden canvas for Task 5.3 frame capture */}
             <canvas ref={canvasRef} className="hidden" />
