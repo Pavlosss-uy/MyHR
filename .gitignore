@@ -34,3 +34,6 @@ node_modules
 node_modules
 
 myhr-a7b1f-firebase-adminsdk-fbsvc-bc755755d6.json
+
+# Claude Code local settings
+.claude/
