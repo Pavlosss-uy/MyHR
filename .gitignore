@@ -37,3 +37,10 @@ myhr-a7b1f-firebase-adminsdk-fbsvc-bc755755d6.json
 
 # Claude Code local settings
 .claude/
+
+# Documentation / thesis / planning files
+docs/
+docs.zip
+
+# Generated audit and evaluation reports
+training/results/
