@@ -900,6 +900,7 @@ async def end_interview(session_id: str):
 async def analyze_frame(
     request: Request,
     frame: str = Form(...),
+    uid: str = Depends(verify_firebase_token),
 ):
     """Proctoring — integrity signals for one video frame (OpenCV, no TensorFlow).
 
